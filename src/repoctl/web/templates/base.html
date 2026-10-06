@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Repo Control Plane</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="title-wrap">
+        <h1>Repo Control Plane</h1>
+        <p class="subtitle">Deterministic Evidence Console</p>
+      </div>
+      <div class="repo-pill">
+        <div class="label">Active Repository</div>
+        <div class="value">{{ repository_name }}</div>
+        <div class="muted">{{ repository_root }}</div>
+      </div>
+    </header>
+
+    <nav class="nav">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('context_page') }}">Context</a>
+      <a href="{{ url_for('snapshots_page') }}">Snapshots</a>
+      <a href="{{ url_for('comparisons_page') }}">Comparisons</a>
+      <a href="{{ url_for('analysis_page') }}">AI Review</a>
+      <a href="{{ url_for('workflow_page') }}">Workflow</a>
+    </nav>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="flash-stack">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+      <p>AI analysis is advisory. Deterministic repository evidence remains authoritative.</p>
+      <p>Server bound to {{ bound_host }}:{{ bound_port }} (loopback policy).</p>
+    </footer>
+  </body>
+</html>

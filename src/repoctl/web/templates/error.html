@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Operation Failed</h2>
+  <div class="card error">
+    <p><strong>{{ error_code }}</strong></p>
+    <p>{{ error_message }}</p>
+    <p class="muted">{{ mutation_note }}</p>
+  </div>
+</section>
+{% endblock %}

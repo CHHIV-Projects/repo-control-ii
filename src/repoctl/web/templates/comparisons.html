@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Structural Comparisons</h2>
+
+  <h3>Prepare Comparison</h3>
+  <form method="post" action="{{ url_for('create_comparison_action') }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="before_snapshot_id">Before snapshot</label>
+    <select id="before_snapshot_id" name="before_snapshot_id" required>
+      {% for row in snapshot_options %}
+        <option value="{{ row.snapshot_id }}"{% if row.snapshot_id == selected_before_snapshot_id %} selected{% endif %}>{{ row.summary_label }} ({{ row.snapshot_id }})</option>
+      {% endfor %}
+    </select>
+
+    {% if selected_before_snapshot %}
+      <article class="card">
+        <h4>Before Preview</h4>
+        <p><strong>{{ selected_before_snapshot.branch }} @ {{ selected_before_snapshot.head_short }}</strong> - {{ 'clean' if selected_before_snapshot.working_tree_clean else 'dirty' }}, {{ 'current' if selected_before_snapshot.current_state_match else 'historical' }}</p>
+        <p class="muted">Captured artifact time (UTC): {{ selected_before_snapshot.artifact_mtime_utc }}</p>
+        <p class="muted">Working tree counts (snapshot entry classification): staged={{ selected_before_snapshot.staged_count }}, unstaged={{ selected_before_snapshot.unstaged_count }}, untracked={{ selected_before_snapshot.untracked_count }}, conflicts={{ selected_before_snapshot.unmerged_count }}</p>
+        <p class="muted">Snapshot ID: {{ selected_before_snapshot.snapshot_id }}</p>
+      </article>
+    {% endif %}
+
+    <label for="after_snapshot_id">After snapshot</label>
+    <select id="after_snapshot_id" name="after_snapshot_id" required>
+      {% for row in snapshot_options %}
+        <option value="{{ row.snapshot_id }}"{% if row.snapshot_id == selected_after_snapshot_id %} selected{% endif %}>{{ row.summary_label }} ({{ row.snapshot_id }})</option>
+      {% endfor %}
+    </select>
+
+    {% if selected_after_snapshot %}
+      <article class="card">
+        <h4>After Preview</h4>
+        <p><strong>{{ selected_after_snapshot.branch }} @ {{ selected_after_snapshot.head_short }}</strong> - {{ 'clean' if selected_after_snapshot.working_tree_clean else 'dirty' }}, {{ 'current' if selected_after_snapshot.current_state_match else 'historical' }}</p>
+        <p class="muted">Captured artifact time (UTC): {{ selected_after_snapshot.artifact_mtime_utc }}</p>
+        <p class="muted">Working tree counts (snapshot entry classification): staged={{ selected_after_snapshot.staged_count }}, unstaged={{ selected_after_snapshot.unstaged_count }}, untracked={{ selected_after_snapshot.untracked_count }}, conflicts={{ selected_after_snapshot.unmerged_count }}</p>
+        <p class="muted">Snapshot ID: {{ selected_after_snapshot.snapshot_id }}</p>
+      </article>
+    {% endif %}
+
+    <button type="submit">Compare</button>
+  </form>
+
+  {% if selected_comparison and not selectors_match_selected_comparison %}
+    <p class="warning spaced-top">Selector previews above differ from the currently viewed saved comparison below.</p>
+  {% endif %}
+
+  <h3>Known comparisons</h3>
+  <p class="muted">Ordered by artifact filesystem time (newest first).</p>
+  <ul>
+    {% for row in comparisons %}
+      <li>
+        <a href="{{ url_for('comparisons_page', comparison_id=row.comparison_id, before_snapshot_id=row.before_snapshot_id, after_snapshot_id=row.after_snapshot_id) }}">{{ row.before_label }} -> {{ row.after_label }}</a>
+        <span class="muted">(Comparison ID: {{ row.comparison_id }} | Captured artifact time: {{ row.artifact_mtime_utc }})</span>
+        {% if selected_comparison_id == row.comparison_id %}<strong> [active]</strong>{% endif %}
+      </li>
+    {% else %}
+      <li>none</li>
+    {% endfor %}
+  </ul>
+
+  {% if selected_comparison %}
+    <article class="card">
+      <h3>Viewing Saved Comparison</h3>
+      <p><strong>Comparison ID:</strong> {{ selected_comparison.comparison_id }}</p>
+
+      <h4>Before</h4>
+      <p><strong>{{ selected_comparison.before_repository_state.branch.name if selected_comparison.before_repository_state.branch.state == 'attached' else '(detached)' }} @ {{ selected_comparison.before_repository_state.head_commit[:7] }}</strong> - {{ 'clean' if selected_comparison.before_repository_state.working_tree.is_clean else 'dirty' }}</p>
+      <p class="muted">Snapshot ID: {{ selected_comparison.before_snapshot_id }}</p>
+      {% if selected_before_snapshot and selected_before_snapshot.snapshot_id == selected_comparison.before_snapshot_id %}
+        <p class="muted">Captured artifact time (UTC): {{ selected_before_snapshot.artifact_mtime_utc }}</p>
+          <p class="muted">Working tree counts (snapshot entry classification): staged={{ selected_before_snapshot.staged_count }}, unstaged={{ selected_before_snapshot.unstaged_count }}, untracked={{ selected_before_snapshot.untracked_count }}, conflicts={{ selected_before_snapshot.unmerged_count }}</p>
+      {% endif %}
+
+      <p class="muted">&#8595;</p>
+
+      <h4>After</h4>
+      <p><strong>{{ selected_comparison.after_repository_state.branch.name if selected_comparison.after_repository_state.branch.state == 'attached' else '(detached)' }} @ {{ selected_comparison.after_repository_state.head_commit[:7] }}</strong> - {{ 'clean' if selected_comparison.after_repository_state.working_tree.is_clean else 'dirty' }}</p>
+      <p class="muted">Snapshot ID: {{ selected_comparison.after_snapshot_id }}</p>
+      {% if selected_after_snapshot and selected_after_snapshot.snapshot_id == selected_comparison.after_snapshot_id %}
+        <p class="muted">Captured artifact time (UTC): {{ selected_after_snapshot.artifact_mtime_utc }}</p>
+          <p class="muted">Working tree counts (snapshot entry classification): staged={{ selected_after_snapshot.staged_count }}, unstaged={{ selected_after_snapshot.unstaged_count }}, untracked={{ selected_after_snapshot.untracked_count }}, conflicts={{ selected_after_snapshot.unmerged_count }}</p>
+      {% endif %}
+
+      {% set files = selected_comparison.aggregate_counts.files %}
+      {% set symbols = selected_comparison.aggregate_counts.symbols %}
+      {% set calls = selected_comparison.aggregate_counts.calls %}
+      {% set tests = selected_comparison.aggregate_counts.test_references %}
+      <h4>Aggregate Counts</h4>
+      <ul>
+        <li>files: added={{ files.added }}, removed={{ files.removed }}, changed={{ files.content_changed }}</li>
+        <li>symbols: added={{ symbols.added }}, removed={{ symbols.removed }}, moved={{ symbols.source_location_changed }}</li>
+        <li>calls: added={{ calls.added }}, removed={{ calls.removed }}, changed-location={{ calls.location_changed }}</li>
+        <li>test references: added={{ tests.added }}, removed={{ tests.removed }}, changed-location={{ tests.location_changed }}</li>
+      </ul>
+      <h4>All Count Categories</h4>
+      <ul>
+        {% for key, value in selected_comparison.aggregate_counts.items()|sort %}
+          <li>{{ key }}: {{ value }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+  {% endif %}
+
+  <p class="muted">No target Git mutation occurs on comparison routes.</p>
+</section>
+{% endblock %}

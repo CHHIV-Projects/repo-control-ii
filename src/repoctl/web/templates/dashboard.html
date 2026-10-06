@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Repository Dashboard</h2>
+  <form method="post" action="{{ url_for('refresh_status') }}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Refresh Status</button>
+  </form>
+  <div class="grid two dashboard-grid">
+    <article class="card dashboard-primary">
+      <h3>Git State</h3>
+      <dl>
+        <dt>Current code</dt>
+        <dd>
+          {% if dashboard.head_tags %}
+            <div><strong>{{ dashboard.head_tags[0] }}</strong></div>
+          {% endif %}
+          <div>{{ dashboard.head_subject }}</div>
+          <div><strong>{{ dashboard.head_short }}</strong></div>
+        </dd>
+        <dt>Branch</dt><dd>{{ dashboard.branch }}</dd>
+        <dt>Full SHA</dt><dd class="muted">{{ dashboard.head }}</dd>
+        <dt>Workflow</dt><dd>{{ dashboard.workflow_state }}</dd>
+        <dt>Git operation</dt><dd>{{ dashboard.git_operation }}</dd>
+      </dl>
+      <details class="spaced-top">
+        <summary>State Help</summary>
+        <ul>
+          <li><strong>clean:</strong> no staged or unstaged working-tree changes.</li>
+          <li><strong>staged_only:</strong> staged changes exist with no additional unstaged changes.</li>
+          <li><strong>unstaged_only:</strong> working-tree changes exist but are not staged.</li>
+          <li><strong>staged_and_unstaged:</strong> staged changes exist and additional unstaged changes also exist.</li>
+          <li><strong>conflicted:</strong> unresolved Git conflicts exist.</li>
+        </ul>
+        <p class="muted">Active Git operation is reported separately from workflow state and reflects local operation markers (merge, rebase, cherry-pick, revert, bisect).</p>
+      </details>
+    </article>
+    <article class="card">
+      <h3>Working Tree</h3>
+      <dl>
+        <dt>Staged</dt><dd>{{ dashboard.staged_count }}</dd>
+        <dt>Unstaged</dt><dd>{{ dashboard.unstaged_count }}</dd>
+        <dt>Untracked</dt><dd>{{ dashboard.untracked_count }}</dd>
+        <dt>Conflicts</dt><dd>{{ dashboard.unmerged_count }}</dd>
+      </dl>
+      <details class="spaced-top">
+        <summary>Staged Files</summary>
+        <ul>
+          {% for path in dashboard.staged_paths %}
+            <li>{{ path }}</li>
+          {% else %}
+            <li>none</li>
+          {% endfor %}
+        </ul>
+      </details>
+      <details>
+        <summary>Unstaged Files</summary>
+        <ul>
+          {% for path in dashboard.unstaged_paths %}
+            <li>{{ path }}</li>
+          {% else %}
+            <li>none</li>
+          {% endfor %}
+        </ul>
+      </details>
+      <details>
+        <summary>Untracked Files</summary>
+        <ul>
+          {% for path in dashboard.untracked_paths %}
+            <li>{{ path }}</li>
+          {% else %}
+            <li>none</li>
+          {% endfor %}
+        </ul>
+      </details>
+      <details>
+        <summary>Conflict Files</summary>
+        <ul>
+          {% for path in dashboard.unmerged_paths %}
+            <li>{{ path }}</li>
+          {% else %}
+            <li>none</li>
+          {% endfor %}
+        </ul>
+      </details>
+    </article>
+    <article class="card dashboard-wide">
+      <h3>Upstream</h3>
+      <dl>
+        <dt>Ref</dt><dd>{{ dashboard.upstream_ref }}</dd>
+        <dt>Local relation</dt><dd>{{ dashboard.upstream_relation }}</dd>
+        <dt>Ahead</dt><dd>{{ dashboard.upstream_ahead }}</dd>
+        <dt>Behind</dt><dd>{{ dashboard.upstream_behind }}</dd>
+      </dl>
+      <p class="muted">{{ dashboard.remote_refresh_note }}</p>
+      <p class="muted">Ahead/behind values use locally known refs and may be stale versus remote servers.</p>
+    </article>
+    <article class="card dashboard-wide">
+      <h3>Snapshot Evidence</h3>
+      <dl>
+        <dt>Current candidate</dt><dd>{{ dashboard.current_snapshot_candidate_id }}</dd>
+        <dt>Matching snapshot</dt><dd>{{ dashboard.matching_snapshot_id }}</dd>
+      </dl>
+    </article>
+  </div>
+  <p class="muted">No target Git mutation occurs on this page.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Local GPT-OSS Review</h2>
+
+  <form method="post" action="{{ url_for('analysis_run_action') }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="comparison_id">Comparison</label>
+    <select id="comparison_id" name="comparison_id" required>
+      {% for row in comparisons %}
+        <option value="{{ row.comparison_id }}" {% if selected_comparison_id == row.comparison_id %}selected{% endif %}>{{ row.before_label }} -> {{ row.after_label }} ({{ row.comparison_id }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Analyze with Local GPT-OSS</button>
+  </form>
+
+  <p class="warning">AI analysis is advisory. Deterministic repository evidence remains authoritative.</p>
+
+  {% if analyses %}
+    <h3>Existing analyses</h3>
+    <ul>
+      {% for row in analyses %}
+        <li>
+          <a href="{{ url_for('analysis_page', comparison_id=row.comparison_id, analysis_id=row.analysis_id) }}">{{ row.model_name }}</a>
+          <span class="muted">(Analysis ID: {{ row.analysis_id }})</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if selected_analysis %}
+    <article class="card">
+      <h3>AI Review Summary</h3>
+      <p>Provider: {{ selected_analysis.provider }} | Model: {{ selected_analysis.model_name }}</p>
+      <p class="muted">Comparison ID: {{ selected_analysis.comparison_id }} | Analysis ID: {{ selected_analysis.analysis_id }}</p>
+      <h4>Summary</h4>
+      <p>{{ selected_analysis.summary }}</p>
+      <p class="muted">Evidence: {{ selected_analysis.summary_evidence_ids|join(', ') }}</p>
+
+      <h4>Review Signals</h4>
+      <ul>
+        {% for signal in selected_analysis.review_signals %}
+          <li>
+            {{ signal.review_priority|upper }} / {{ signal.category }}: {{ signal.observation }}
+            <div class="muted">{{ signal.interpretation }} | Evidence: {{ signal.evidence_ids|join(', ') }}</div>
+          </li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+
+      <h4>Questions for Human Review</h4>
+      <ul>
+        {% for q in selected_analysis.questions_for_human_review %}
+          <li>{{ q.review_priority|upper }}: {{ q.question }} ({{ q.evidence_ids|join(', ') }})</li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+    </article>
+  {% endif %}
+</section>
+{% endblock %}

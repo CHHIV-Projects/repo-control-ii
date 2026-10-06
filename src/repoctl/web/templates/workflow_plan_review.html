@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Plan Review</h2>
+  <article class="card">
+    <h3>Action: {{ plan.action }}</h3>
+    <dl>
+      <dt>Repository</dt>
+      <dd>{{ plan.repository }}</dd>
+
+      <dt>Branch</dt>
+      <dd>{{ plan.branch }}</dd>
+
+      <dt>Starting HEAD</dt>
+      <dd>
+        <strong>{{ plan.head_short }}</strong>
+        <span class="muted">{{ plan.head_full }}</span>
+      </dd>
+
+      {% if mode == 'stage' %}
+        <dt>Scope</dt>
+        <dd>
+          <div>Candidate count: {{ plan.candidate_count }}</div>
+          <div>Exact candidate paths:</div>
+          <ul>
+            {% for path in plan.candidate_paths %}
+              <li>{{ path }}{% if plan.candidate_classifications[path] %} ({{ plan.candidate_classifications[path] }}){% endif %}</li>
+            {% else %}
+              <li>none</li>
+            {% endfor %}
+          </ul>
+        </dd>
+        <dt>Exact Stage Plan ID</dt>
+        <dd><code>{{ plan.plan_id }}</code></dd>
+        {% if plan.compatibility %}
+          <dt>Compatibility</dt>
+          <dd>{{ plan.compatibility }}</dd>
+        {% endif %}
+        <form method="post" action="{{ url_for('workflow_stage_approve_action') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="plan_id" value="{{ plan.plan_id }}">
+          <button type="submit" class="primary">Approve Stage</button>
+        </form>
+      {% else %}
+        <dt>Commit Message</dt>
+        <dd>{{ plan.commit_message }}</dd>
+
+        <dt>Staged Scope</dt>
+        <dd>
+          {% if plan.staged_summary %}
+            <ul>
+              {% for item in plan.staged_summary %}
+                <li>{{ item.status }} {{ item.path }}</li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <div>no staged entries</div>
+          {% endif %}
+        </dd>
+
+        <dt>Matching Snapshot</dt>
+        <dd>{{ plan.matching_snapshot_id }}</dd>
+
+        <dt>Exact Commit Plan ID</dt>
+        <dd><code>{{ plan.plan_id }}</code></dd>
+
+        <form method="post" action="{{ url_for('workflow_commit_approve_action') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="plan_id" value="{{ plan.plan_id }}">
+          <button type="submit" class="primary">Approve Commit</button>
+        </form>
+      {% endif %}
+    </dl>
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Deterministic Context</h2>
+  <form method="post" action="{{ url_for('generate_context') }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="query">What are you working on?</label>
+    <input id="query" name="query" maxlength="{{ max_query_chars }}" required>
+    <button type="submit">Find Relevant Code</button>
+  </form>
+
+  {% if context_ids %}
+    <form method="get" action="{{ url_for('context_page') }}" class="inline-form spaced-top">
+      <label for="context_id">Existing context</label>
+      <select id="context_id" name="context_id">
+        {% for cid in context_ids %}
+          <option value="{{ cid }}"{% if selected_context_id == cid %} selected{% endif %}>{{ cid }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">View</button>
+    </form>
+  {% endif %}
+
+  {% if context_view %}
+    <article class="card spaced-top">
+      <h3>Context for "{{ context_view.query }}"</h3>
+      <p><strong>{{ context_view.freshness_status }}</strong> | {{ context_view.freshness_detail }}</p>
+      <p>Status: {{ match_label(context_view.match_status) }} | Seeds: {{ context_view.seed_count }}</p>
+      <dl>
+        <dt>Repository</dt><dd>{{ context_view.repository_root }}</dd>
+        <dt>Branch at generation</dt><dd>{{ context_view.branch }}</dd>
+        <dt>HEAD at generation</dt><dd><strong>{{ context_view.head_short }}</strong> <span class="muted">({{ context_view.head_commit }})</span></dd>
+        <dt>Working-tree origin</dt><dd>{{ context_view.working_tree_origin }}</dd>
+        <dt>Canonical query</dt><dd>{{ context_view.canonical_query }}</dd>
+        <dt>Context ID</dt>
+        <dd class="muted">
+          {{ context_view.context_id }}
+          <div>Identifies this saved query slot. Regenerating the same query can update its stored repository-state payload.</div>
+        </dd>
+      </dl>
+
+      <h4>Relevant Files</h4>
+      <ul>
+        {% for row in context_view.selected_files %}
+          <li>{{ row.path }} ({{ file_reason(row) }})</li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+
+      <h4>Relevant Symbols</h4>
+      <ul>
+        {% for row in context_view.selected_symbols %}
+          <li>{{ row.path }} :: {{ row.symbol_kind }} {{ row.symbol_name }} (line {{ row.start_line }})</li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+
+      <h4>Direct Relationships</h4>
+      <p class="muted">Direct Relationships summarize structural links in repository code, including test-reference edges.</p>
+      <ul>
+        {% for row in context_view.relationships %}
+          <li>{{ row.relationship_type }} | {{ row.source_file }} -> {{ row.target_file }} ({{ relation_reason(row) }})</li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+
+      <h4>Related Tests</h4>
+      <p class="muted">Related Tests groups deterministic test-reference evidence by logical test-target identity. Expand details to inspect distinct evidence records.</p>
+      <ul>
+        {% for row in context_view.grouped_tests %}
+          <li>
+            <strong>{{ row.test_name }}</strong>
+            <div>Target: {{ row.target_file }}::{{ row.target_symbol }}</div>
+            <div class="muted">Test file: {{ row.test_file }} | Evidence references: {{ row.evidence_count }}</div>
+            <details>
+              <summary>Details ({{ row.evidence_count }})</summary>
+              <ul>
+                {% for detail in row.details %}
+                  <li>
+                    kind={{ detail.reference_kind }} | line={{ detail.source_line if detail.source_line is not none else 'unknown' }}
+                    | class={{ detail.test_class }} | target_kind={{ detail.target_symbol_kind }}
+                  </li>
+                {% endfor %}
+              </ul>
+            </details>
+          </li>
+        {% else %}
+          <li>none</li>
+        {% endfor %}
+      </ul>
+
+      <h4>Diagnostics / Limitations</h4>
+      <ul>
+        {% for row in context_view.parse_limitations %}
+          <li>parse failure: {{ row.path }} | {{ row.parse_error }}</li>
+        {% endfor %}
+        {% for row in context_view.limitations %}
+          <li>{{ row.reason }} | {{ row.source_file }} | {{ row.reference }}</li>
+        {% endfor %}
+        {% if not context_view.parse_limitations and not context_view.limitations %}
+          <li>none</li>
+        {% endif %}
+      </ul>
+    </article>
+  {% endif %}
+</section>
+{% endblock %}

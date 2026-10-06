@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Snapshots</h2>
+  <form method="post" action="{{ url_for('create_snapshot_action') }}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Create Snapshot</button>
+  </form>
+
+  {% if selected_snapshot %}
+    <article class="card spaced-top selected-snapshot-card">
+      <h3>Snapshot captured</h3>
+      <p><strong>{{ selected_snapshot.branch }} @ {{ selected_snapshot.head_short }}</strong> - {{ 'clean' if selected_snapshot.working_tree_clean else 'dirty' }}, {{ 'current' if selected_snapshot.current_state_match else 'historical' }}</p>
+      <p class="muted">Snapshot ID: {{ selected_snapshot.snapshot_id }}</p>
+    </article>
+  {% endif %}
+
+  <p class="muted spaced-top">Ordered by artifact filesystem time (newest first).</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Snapshot State</th>
+        <th>Branch</th>
+        <th>HEAD</th>
+        <th>Clean</th>
+        <th>Current Match</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in snapshots %}
+        <tr{% if selected_snapshot_id == row.snapshot_id %} class="row-selected"{% endif %}>
+          <td>
+            <div><strong>{{ row.classification }}</strong></div>
+            <div class="muted">{{ row.summary_label }}</div>
+            <div class="muted">Snapshot ID: {{ row.snapshot_id }}</div>
+            <div class="muted">Captured artifact time (UTC): {{ row.artifact_mtime_utc }}</div>
+          </td>
+          <td>{{ row.branch }}</td>
+          <td><strong>{{ row.head_short }}</strong><div class="muted">{{ row.head_commit }}</div></td>
+          <td>{{ row.working_tree_clean }}</td>
+          <td>{{ row.current_state_match }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">No snapshots available.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="muted">Snapshot creation writes immutable external evidence only. No target Git mutation occurs.</p>
+</section>
+{% endblock %}

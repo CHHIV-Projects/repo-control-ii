@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Workflow Visibility</h2>
+  <p>Current workflow state: <strong>{{ workflow_state }}</strong></p>
+  <p class="muted">Workflow history - newest to oldest.</p>
+
+  <div class="grid two spaced-top">
+    {% if workflow_state in ['unstaged_only', 'staged_and_unstaged'] %}
+      <form method="post" action="{{ url_for('workflow_prepare_stage_action') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="primary">Prepare Stage</button>
+      </form>
+    {% else %}
+      <div class="muted">Prepare Stage is not available for the current workflow state: {{ workflow_state }}</div>
+    {% endif %}
+
+    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
+      <form method="post" action="{{ url_for('workflow_prepare_commit_action') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="commit_message">Commit message</label>
+        <input id="commit_message" name="commit_message" type="text" required placeholder="Describe the staged change">
+        <button type="submit" class="primary">Prepare Commit</button>
+      </form>
+    {% else %}
+      {% if workflow_state == 'staged_only' and not matching_snapshot_exists %}
+        <div>
+          <p class="muted">Matching Snapshot required before Prepare Commit.</p>
+          <p class="muted">Snapshot: none</p>
+          <form method="post" action="{{ url_for('workflow_create_snapshot_action') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="primary">Create Matching Snapshot</button>
+          </form>
+        </div>
+      {% else %}
+        <div class="muted">Prepare Commit is not available for the current workflow state: {{ workflow_state }}</div>
+      {% endif %}
+    {% endif %}
+
+    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
+      <div class="muted">Matching Snapshot available: {{ matching_snapshot_id }}</div>
+    {% endif %}
+  </div>
+
+  <details class="spaced-top">
+    <summary>Stage vs Commit help</summary>
+    <p><strong>Stage</strong> places approved changes into Git's staging/index state. It does not create a commit.</p>
+    <p><strong>Commit</strong> records the approved staged state as a new Git commit and advances HEAD.</p>
+    <p class="muted">Typical progression: working changes -> Stage -> staged state -> Commit -> new HEAD.</p>
+  </details>
+
+  {% for row in rows %}
+    <article class="card spaced-top">
+      <h3>{{ row.family }}</h3>
+      <p class="muted">Artifact chronology time (UTC): {{ row.chronology_time_utc }}</p>
+      <div class="grid two">
+        <section class="card">
+          <h4>Plan</h4>
+          <p><strong>{{ row.plan.action }}</strong></p>
+          <dl>
+            <dt>Branch</dt><dd>{{ row.plan.branch }}</dd>
+            <dt>Starting HEAD</dt>
+            <dd>
+              <div><strong>{{ row.plan.head_short }}</strong> <span class="muted">({{ row.plan.head }})</span></div>
+              <div>{{ row.plan.head_subject }}</div>
+              {% if row.plan.head_tags %}<div class="muted">Tags: {{ row.plan.head_tags | join(', ') }}</div>{% endif %}
+            </dd>
+            <dt>Scope</dt>
+            <dd>
+              <div>{{ row.plan.count }}</div>
+              <details>
+                <summary>View scope</summary>
+                <ul>
+                  {% for path in row.plan.scope_paths %}
+                    <li>{{ path }}</li>
+                  {% else %}
+                    <li>none</li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </dd>
+            <dt>Compatibility</dt><dd>{{ row.plan.compatibility }}</dd>
+            <dt>Plan artifact time</dt><dd>{{ row.plan.artifact_mtime_utc }}</dd>
+            <dt>Plan ID</dt><dd class="muted">{{ row.plan.plan_id }}</dd>
+          </dl>
+          <p class="muted">Compatibility indicates whether this historical plan matches the repository's current state, not whether historical execution succeeded.</p>
+        </section>
+        <section class="card">
+          <h4>Execution</h4>
+          {% if row.execution %}
+            <p><strong>{{ row.execution.status }}</strong></p>
+            <p>{{ row.execution.result }}</p>
+            <dl>
+              <dt>Resulting HEAD</dt>
+              <dd>
+                <div><strong>{{ row.execution.head_after_short }}</strong> <span class="muted">({{ row.execution.head_after }})</span></div>
+                <div>{{ row.execution.head_after_subject }}</div>
+                {% if row.execution.head_after_tags %}<div class="muted">Tags: {{ row.execution.head_after_tags | join(', ') }}</div>{% endif %}
+              </dd>
+              <dt>Execution artifact time</dt><dd>{{ row.execution.artifact_mtime_utc }}</dd>
+            </dl>
+            <p class="muted">Execution ID: {{ row.execution.execution_id }}</p>
+          {% else %}
+            <p><strong>Not executed</strong></p>
+            <p class="muted">No execution artifact is linked to this plan.</p>
+          {% endif %}
+        </section>
+      </div>
+    </article>
+  {% else %}
+    <article class="card spaced-top">No workflow plan/execution artifacts found.</article>
+  {% endfor %}
+</section>
+{% endblock %}
