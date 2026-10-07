@@ -1,12 +1,92 @@
 from __future__ import annotations
 
+import os
+import selectors
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 
 class ScanError(RuntimeError):
     pass
+
+
+def _run_git_bounded(
+    repo_root: Path,
+    args: list[str],
+    *,
+    stdout_limit: int,
+    stderr_limit: int = 16 * 1024,
+    timeout_seconds: float = 10,
+) -> tuple[bytes, bytes, int, bool]:
+    try:
+        env = os.environ.copy()
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo_root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            bufsize=0,
+        )
+    except OSError as exc:
+        raise ScanError(f"unable to start git command: {exc}") from exc
+
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    limits = {"stdout": stdout_limit, "stderr": stderr_limit}
+    truncated = False
+    selector = selectors.DefaultSelector()
+    selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+    deadline = time.monotonic() + timeout_seconds
+
+    try:
+        for key in (proc.stdout, proc.stderr):
+            os.set_blocking(key.fileno(), False)
+
+        while selector.get_map():
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0:
+                proc.kill()
+                proc.wait()
+                raise ScanError(f"git command timed out after {timeout_seconds:g} seconds")
+
+            for key, _ in selector.select(min(remaining_time, 0.1)):
+                stream_name = key.data
+                remaining_bytes = limits[stream_name] - len(output[stream_name])
+                chunk = os.read(key.fd, min(65536, remaining_bytes + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+
+                accepted = chunk[: max(remaining_bytes, 0)]
+                output[stream_name].extend(accepted)
+                if len(chunk) > len(accepted):
+                    truncated = True
+                    proc.kill()
+                    break
+
+            if truncated:
+                break
+
+        if truncated:
+            for key in list(selector.get_map().values()):
+                selector.unregister(key.fileobj)
+            proc.stdout.close()
+            proc.stderr.close()
+        returncode = proc.wait()
+    finally:
+        selector.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+
+    return bytes(output["stdout"]), bytes(output["stderr"]), returncode, truncated
 
 
 def _run_git(repo_root: Path, args: list[str]) -> str:
@@ -73,7 +153,7 @@ def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) ->
             continue
 
         if chunk.startswith(b"1 "):
-            text = chunk.decode("utf-8", errors="strict")
+            text = chunk.decode("utf-8", errors="surrogateescape")
             fields = text.split(" ", 8)
             if len(fields) != 9:
                 raise ScanError(f"unsupported porcelain v2 ordinary record: {text}")
@@ -93,14 +173,14 @@ def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) ->
             continue
 
         if chunk.startswith(b"2 "):
-            text = chunk.decode("utf-8", errors="strict")
+            text = chunk.decode("utf-8", errors="surrogateescape")
             fields = text.split(" ", 9)
             if len(fields) != 10:
                 raise ScanError(f"unsupported porcelain v2 rename/copy record: {text}")
             _, xy, sub, _mH, _mI, _mW, _hH, _hI, xscore, path = fields
             if i + 1 >= len(chunks):
                 raise ScanError(f"rename/copy record missing original path: {text}")
-            original_path = chunks[i + 1].decode("utf-8", errors="strict")
+            original_path = os.fsdecode(chunks[i + 1])
             if not xscore or xscore[0] not in ("R", "C"):
                 raise ScanError(f"unsupported rename/copy operation marker: {xscore}")
             similarity = xscore[1:] if len(xscore) > 1 else None
@@ -119,7 +199,7 @@ def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) ->
             continue
 
         if chunk.startswith(b"u "):
-            text = chunk.decode("utf-8", errors="strict")
+            text = chunk.decode("utf-8", errors="surrogateescape")
             fields = text.split(" ", 10)
             if len(fields) != 11:
                 raise ScanError(f"unsupported porcelain v2 unmerged record: {text}")
@@ -139,8 +219,7 @@ def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) ->
             continue
 
         if chunk.startswith(b"? "):
-            text = chunk.decode("utf-8", errors="strict")
-            path = text[2:]
+            path = os.fsdecode(chunk[2:])
             entries.append(
                 {
                     "kind": "untracked",
@@ -158,7 +237,7 @@ def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) ->
         prefix = chunk[:1].decode("utf-8", errors="replace")
         raise ScanError(f"unsupported porcelain v2 record type: {prefix}")
 
-    entries.sort(key=lambda e: (e["path"].encode(), (e["original_path"] or "").encode()))
+    entries.sort(key=lambda e: (os.fsencode(e["path"]), os.fsencode(e["original_path"] or "")))
     return {"headers": headers, "entries": entries}
 
 
@@ -173,8 +252,25 @@ def get_working_tree(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def get_working_tree_with_branch(repo_root: Path) -> dict[str, Any]:
-    output = _run_git_bytes(repo_root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])
+def get_working_tree_with_branch(
+    repo_root: Path,
+    *,
+    max_output_bytes: int | None = None,
+) -> dict[str, Any]:
+    args = ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]
+    if max_output_bytes is None:
+        output = _run_git_bytes(repo_root, args)
+    else:
+        output, stderr, returncode, truncated = _run_git_bounded(
+            repo_root,
+            args,
+            stdout_limit=max_output_bytes,
+        )
+        if truncated:
+            raise ScanError("git status output exceeded the configured limit; repository state is incomplete")
+        if returncode != 0:
+            message = stderr.decode("utf-8", errors="replace").strip()
+            raise ScanError(f"git command failed: status: {message}")
     chunks = [c for c in output.split(b"\x00") if c]
     parsed = _parse_porcelain_v2_chunks(chunks, include_headers=True)
 

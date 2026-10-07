@@ -178,12 +178,16 @@ def _derive_upstream(parsed_headers: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def inspect_git_state(repository_path: str) -> dict[str, Any]:
+def inspect_git_state(
+    repository_path: str,
+    *,
+    max_status_output_bytes: int | None = None,
+) -> dict[str, Any]:
     target_path = Path(repository_path).expanduser().resolve()
     repo_root = validate_git_worktree(target_path)
 
     try:
-        status = get_working_tree_with_branch(repo_root)
+        status = get_working_tree_with_branch(repo_root, max_output_bytes=max_status_output_bytes)
     except ScanError as exc:
         msg = str(exc)
         if msg.startswith("unsupported porcelain v2 record type: "):

@@ -20,6 +20,7 @@ from ..workflow.stage_execution import execute_prepared_stage
 from ..workflow.stage_plan import prepare_stage
 from ..workflow.commit_execution import execute_prepared_commit
 from ..workflow.commit_plan import prepare_commit
+from ..workflow.diff import GitReviewError, inspect_git_review
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .views import (
     comparison_id_choices,
@@ -392,6 +393,26 @@ def create_web_app(
         result = analyze_comparison(comparison_id, str(repo_root), state_root=effective_state_root)
         flash("Local GPT-OSS analysis completed.", "success")
         return redirect(url_for("analysis_page", comparison_id=comparison_id, analysis_id=result["analysis_id"]))
+
+    @app.get("/git-review")
+    def git_review_page():
+        selected_file = request.args.get("file")
+        error_message = None
+        review = None
+        status_code = 200
+        try:
+            review = inspect_git_review(str(repo_root), selected_file=selected_file)
+        except FileNotFoundError as exc:
+            raise WebUIError("changed_file_not_found", str(exc), status_code=404) from exc
+        except GitReviewError as exc:
+            error_message = str(exc)
+            status_code = 503
+        return render_template(
+            "git_review.html",
+            review=review,
+            error_message=error_message,
+            selected_file=selected_file,
+        ), status_code
 
     @app.get("/workflow")
     def workflow_page():

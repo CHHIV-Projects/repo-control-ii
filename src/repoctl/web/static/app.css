@@ -63,6 +63,7 @@ body {
 }
 
 .main { padding-bottom: 2rem; }
+.main.main-wide { width: min(98vw, 1920px); }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; overflow-x: auto; }
 .card { background: #fffefb; border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; }
 .card.error { border-color: #cf9a81; }
@@ -148,6 +149,86 @@ ul {
 
 .selected-snapshot-card {
   border-color: #7db39d;
+}
+
+.git-review-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.read-only-badge {
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  white-space: nowrap;
+}
+
+.git-review-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.75fr) minmax(0, 2.25fr);
+  gap: 0.8rem;
+}
+
+.git-review-files, .git-review-detail {
+  min-width: 0;
+}
+
+.git-file-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.git-file-list li {
+  border-bottom: 1px solid var(--line);
+  padding: 0.45rem;
+  overflow-wrap: anywhere;
+}
+
+.git-file-list a {
+  color: var(--accent);
+}
+
+.git-status-code {
+  color: var(--muted);
+  font-family: monospace;
+  font-size: 0.9em;
+  margin-left: 0.4rem;
+  white-space: nowrap;
+}
+
+.git-diff-section {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+}
+
+.git-diff {
+  background: #f4f4f0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.75rem;
+  white-space: pre;
+}
+
+.git-whitespace {
+  overflow-wrap: anywhere;
+}
+
+.git-whitespace pre {
+  white-space: pre-wrap;
+}
+
+@media (max-width: 960px) {
+  .git-review-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {

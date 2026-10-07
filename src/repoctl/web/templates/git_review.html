@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block main_class %}main-wide{% endblock %}
+{% block content %}
+<section class="panel git-review">
+  <div class="git-review-heading">
+    <div>
+      <h2>Git Review</h2>
+      <p class="muted">Read-only inspection. Selecting a file does not change Git or workflow state.</p>
+    </div>
+    <span class="read-only-badge">READ ONLY</span>
+  </div>
+
+  {% if error_message %}
+    <article class="card error" role="alert">
+      <h3>Git state unavailable</h3>
+      <p>{{ error_message }}</p>
+      <p class="muted">No partial status is presented as complete.</p>
+    </article>
+  {% elif review %}
+    <article class="card">
+      <h3>Repository</h3>
+      <dl>
+        <dt>Path</dt><dd>{{ review.repository_root }}</dd>
+        <dt>Branch</dt>
+        <dd>
+          {% if review.branch.state == 'attached' %}
+            {{ review.branch.name }}
+          {% else %}
+            Detached HEAD
+          {% endif %}
+        </dd>
+        <dt>HEAD</dt><dd><code>{{ review.head }}</code></dd>
+        <dt>Working tree</dt><dd>{{ review.workflow_state_label }}</dd>
+        <dt>Upstream</dt>
+        <dd>
+          {% if review.upstream.configured %}
+            {{ review.upstream.ref }}
+            {% if review.upstream.divergence_state == 'available' %}
+              — {{ review.upstream.ahead }} ahead, {{ review.upstream.behind }} behind (local refs)
+            {% else %}
+              — unavailable
+            {% endif %}
+          {% else %}
+            Not configured
+          {% endif %}
+          <div class="muted">{{ review.upstream_freshness }}</div>
+        </dd>
+        <dt>Git operation</dt>
+        <dd>
+          {% if review.git_operations %}
+            {{ review.git_operations | join(', ') }} in progress
+          {% else %}
+            None detected
+          {% endif %}
+        </dd>
+      </dl>
+    </article>
+
+    <div class="git-review-layout spaced-top">
+      <section class="card git-review-files">
+        <h3>Changed files ({{ review.files | length }})</h3>
+        {% if review.groups %}
+          {% for group in review.groups %}
+            <h4>{{ group.label }}</h4>
+            <ul class="git-file-list">
+              {% for file in group.files %}
+                <li{% if selected_file == file.token %} class="row-selected"{% endif %}>
+                  <a href="{{ url_for('git_review_page', file=file.token) }}">{{ file.display_path }}</a>
+                  {% if file.display_original_path %}
+                    <div class="muted">from {{ file.display_original_path }}</div>
+                  {% endif %}
+                  <div class="muted">{{ file.display_label }}</div>
+                  {% if file.xy %}<span class="git-status-code">Git status: {{ file.xy }}</span>{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endfor %}
+        {% else %}
+          <p>The working tree is clean.</p>
+        {% endif %}
+      </section>
+
+      <section class="card git-review-detail">
+        {% if review.selected %}
+          <h3>{{ review.selected.display_path }}</h3>
+          <p><strong>{{ review.selected.display_status }}</strong>
+            {% if review.selected.xy %}<span class="git-status-code">Git status: {{ review.selected.xy }}</span>{% endif %}
+          </p>
+          <dl>
+            <dt>File type</dt><dd>{{ review.selected.metadata.file_type }}</dd>
+            <dt>Size</dt>
+            <dd>
+              {% if review.selected.metadata.size_bytes is not none %}
+                {{ review.selected.metadata.size_bytes }} bytes
+              {% else %}
+                unavailable
+              {% endif %}
+            </dd>
+          </dl>
+
+          {% if review.selected.conflict_note %}
+            <p class="warning" role="status">{{ review.selected.conflict_note }}</p>
+          {% endif %}
+
+          {% if review.selected.preview %}
+            <h4>Untracked file preview</h4>
+            {% if review.selected.preview.available %}
+              {% if not review.selected.preview.complete %}
+                <p class="warning">Preview incomplete: {{ review.selected.preview.reason }}</p>
+              {% endif %}
+              <pre class="git-diff">{{ review.selected.preview.text }}</pre>
+            {% else %}
+              <p class="warning">Preview unavailable: {{ review.selected.preview.reason }}</p>
+              <p class="muted">The file remains untracked; it was not added to Git.</p>
+            {% endif %}
+          {% endif %}
+
+          {% for diff in review.selected.diffs %}
+            <article class="git-diff-section">
+              <h4>{{ diff.side }}</h4>
+              {% if diff.truncated %}
+                <p class="warning">Diff is incomplete because it exceeded the {{ review.bounds.diff_bytes }} byte output limit.</p>
+              {% endif %}
+              {% if diff.available %}
+                <pre class="git-diff">{{ diff.text }}</pre>
+              {% else %}
+                <p class="warning">{{ diff.reason }}</p>
+              {% endif %}
+              <div class="git-whitespace">
+                <strong>{{ diff.whitespace.label }}</strong>
+                {% if diff.whitespace.details %}
+                  <pre>{{ diff.whitespace.details }}</pre>
+                {% endif %}
+              </div>
+            </article>
+          {% endfor %}
+
+          {% if not review.selected.conflict_note and not review.selected.preview and not review.selected.diffs %}
+            <p class="muted">No ordinary diff evidence is available for this status entry.</p>
+          {% endif %}
+        {% else %}
+          <h3>Select a changed file</h3>
+          <p class="muted">The file list is based on the current Git status. No file is selected by default.</p>
+        {% endif %}
+      </section>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

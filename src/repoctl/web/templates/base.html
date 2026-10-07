@@ -21,11 +21,8 @@
 
     <nav class="nav">
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
-      <a href="{{ url_for('context_page') }}">Context</a>
-      <a href="{{ url_for('snapshots_page') }}">Snapshots</a>
-      <a href="{{ url_for('comparisons_page') }}">Comparisons</a>
-      <a href="{{ url_for('analysis_page') }}">AI Review</a>
       <a href="{{ url_for('workflow_page') }}">Workflow</a>
+      <a href="{{ url_for('git_review_page') }}">Git Review</a>
     </nav>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -38,7 +35,7 @@
       {% endif %}
     {% endwith %}
 
-    <main class="main">
+    <main class="main {% block main_class %}{% endblock %}">
       {% block content %}{% endblock %}
     </main>
 

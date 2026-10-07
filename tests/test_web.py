@@ -16,6 +16,7 @@ from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
+from repoctl.workflow.diff import GitReviewError
 from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
 
@@ -741,3 +742,109 @@ class WebTests(unittest.TestCase):
                 client.get("/workflow")
                 self.assertFalse(cmp_mock.called)
                 self.assertFalse(snap_mock.called)
+
+    def test_git_review_is_read_only_and_renders_distinct_change_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            tracked = repo / "app.py"
+            tracked.write_text("def run():\n    return 2\n", encoding="utf-8")
+            _git(repo, "add", "app.py")
+            tracked.write_text("def run():\n    return 3\n", encoding="utf-8")
+            unusual = repo / "<script>.txt"
+            unusual.write_text("<script>alert(1)</script>\n", encoding="utf-8")
+
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+
+            def snapshot_tree(path: Path) -> dict[str, bytes | str]:
+                result: dict[str, bytes | str] = {}
+                for item in sorted(path.rglob("*")):
+                    relative = str(item.relative_to(path))
+                    if item.is_symlink():
+                        result[relative] = f"symlink:{os.readlink(item)}"
+                    elif item.is_file():
+                        result[relative] = item.read_bytes()
+                return result
+
+            repository_before = snapshot_tree(repo)
+            state_before = snapshot_tree(state_root)
+
+            with (
+                mock.patch("repoctl.web.app.generate_milestone_status") as status_mock,
+                mock.patch("repoctl.web.app.run_scan_with_artifacts") as scan_mock,
+                mock.patch("repoctl.web.app.create_snapshot") as snapshot_mock,
+                mock.patch("repoctl.web.app.prepare_stage") as stage_plan_mock,
+                mock.patch("repoctl.web.app.execute_prepared_stage") as stage_execute_mock,
+                mock.patch("repoctl.web.app.prepare_commit") as commit_plan_mock,
+                mock.patch("repoctl.web.app.execute_prepared_commit") as commit_execute_mock,
+            ):
+                listing = client.get("/git-review")
+                listing_text = listing.get_data(as_text=True)
+                self.assertEqual(listing.status_code, 200)
+                self.assertIn("Git Review", listing_text)
+                self.assertIn("READ ONLY", listing_text)
+                self.assertIn('class="main main-wide"', listing_text)
+                self.assertIn("Staged + additional unstaged changes", listing_text)
+                self.assertIn("New / untracked", listing_text)
+                self.assertIn("Git status: ??", listing_text)
+                self.assertIn("&lt;script&gt;.txt", listing_text)
+                self.assertNotIn("<script>alert(1)</script>", listing_text)
+                nav = listing_text.split('<nav class="nav">', 1)[1].split("</nav>", 1)[0]
+                for label in ("Dashboard", "Git Review", "Workflow"):
+                    self.assertIn(f">{label}</a>", nav)
+                for legacy_label in ("Context", "Snapshots", "Comparisons", "AI Review"):
+                    self.assertNotIn(f">{legacy_label}</a>", nav)
+                route_paths = {rule.rule for rule in app.url_map.iter_rules()}
+                self.assertTrue({"/context", "/snapshots", "/comparisons", "/analysis"} <= route_paths)
+
+                match = re.search(r'href="/git-review\?file=([A-Za-z0-9_-]+)">app\.py</a>', listing_text)
+                self.assertIsNotNone(match)
+                detail = client.get(f"/git-review?file={match.group(1)}")
+                self.assertEqual(detail.status_code, 200)
+                self.assertIn("Select a changed file", listing_text)
+                detail_text = detail.get_data(as_text=True)
+                self.assertIn("Staged — index vs HEAD", detail_text)
+                self.assertIn("Unstaged — working tree vs index", detail_text)
+
+                untracked_match = re.search(
+                    r'href="/git-review\?file=([A-Za-z0-9_-]+)">&lt;script&gt;\.txt</a>',
+                    listing_text,
+                )
+                self.assertIsNotNone(untracked_match)
+                preview = client.get(f"/git-review?file={untracked_match.group(1)}")
+                preview_text = preview.get_data(as_text=True)
+                self.assertEqual(preview.status_code, 200)
+                self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", preview_text)
+                self.assertNotIn("<script>alert(1)</script>", preview_text)
+
+                status_mock.assert_not_called()
+                scan_mock.assert_not_called()
+                snapshot_mock.assert_not_called()
+                stage_plan_mock.assert_not_called()
+                stage_execute_mock.assert_not_called()
+                commit_plan_mock.assert_not_called()
+                commit_execute_mock.assert_not_called()
+
+            self.assertEqual(repository_before, snapshot_tree(repo))
+            self.assertEqual(state_before, snapshot_tree(state_root))
+
+    def test_git_review_surfaces_git_errors_without_reporting_clean_state(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+
+            with mock.patch(
+                "repoctl.web.app.inspect_git_review",
+                side_effect=GitReviewError("status evidence exceeded limit"),
+            ):
+                response = client.get("/git-review")
+
+            self.assertEqual(response.status_code, 503)
+            text = response.get_data(as_text=True)
+            self.assertIn("Git state unavailable", text)
+            self.assertIn("status evidence exceeded limit", text)
+            self.assertNotIn("The working tree is clean.", text)
