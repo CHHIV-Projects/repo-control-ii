@@ -98,8 +98,102 @@
             </dd>
           </dl>
 
-          {% if review.selected.conflict_note %}
-            <p class="warning" role="status">{{ review.selected.conflict_note }}</p>
+          <section class="diagnosis-card">
+            <h4>Diagnosis</h4>
+            <dl>
+              <dt>Observed state</dt><dd>{{ review.selected.diagnosis.observed_state }}</dd>
+              <dt>Comparison basis</dt><dd>{{ review.selected.diagnosis.comparison }}</dd>
+              <dt>HEAD</dt><dd><code>{{ review.selected.diagnosis.head_oid }}</code></dd>
+            </dl>
+            {% if review.selected.diagnosis.changes %}
+              <h5>What changed</h5>
+              <ul>
+                {% for change in review.selected.diagnosis.changes %}
+                  <li><strong>{{ change.side }}:</strong> {{ change.summary }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            <h5>Known from Git</h5>
+            <ul>
+              {% for fact in review.selected.diagnosis.known %}<li>{{ fact }}</li>{% endfor %}
+            </ul>
+            {% if review.selected.diagnosis.signals %}
+              <h5>Advisory signal(s)</h5>
+              <ul>
+                {% for signal in review.selected.diagnosis.signals %}<li>{{ signal }}</li>{% endfor %}
+              </ul>
+            {% endif %}
+            <h5>Scope evidence</h5>
+            <p>{{ review.selected.diagnosis.scope }}</p>
+            <h5>Unknown</h5>
+            <ul>
+              {% for unknown in review.selected.diagnosis.unknown %}<li>{{ unknown }}</li>{% endfor %}
+            </ul>
+            <p><strong>Question:</strong> {{ review.selected.diagnosis.question }}</p>
+          </section>
+
+          <section class="action-preview-list">
+            <h4>Possible choices — preview only</h4>
+            <p class="muted">No choice on this page executes a Git operation.</p>
+            {% for action in review.selected.action_previews %}
+              {% if action.available %}
+                <a class="preview-link" href="{{ url_for('git_review_page', file=review.selected.token, preview=action.key) }}">Preview: {{ action.title }}</a>
+              {% else %}
+                <p class="preview-unavailable">Preview unavailable: {{ action.title }} — evidence is incomplete or unsupported.</p>
+              {% endif %}
+            {% endfor %}
+            {% if review.selected.conflict_note %}
+              <p class="warning">{{ review.selected.conflict_note }}</p>
+            {% endif %}
+          </section>
+
+          {% if review.selected.action_preview %}
+            <article class="card consequence-preview" role="status">
+              <h4>Preview: {{ review.selected.action_preview.title }}</h4>
+              <p class="read-only-badge">NO CHANGE HAS BEEN APPLIED</p>
+              {% if not review.selected.action_preview.available %}
+                <p class="warning"><strong>This preview is unavailable or incomplete and is not fully reviewed.</strong></p>
+              {% endif %}
+              <dl>
+                <dt>Repository</dt><dd>{{ review.repository_root }}</dd>
+                <dt>Branch</dt>
+                <dd>{% if review.branch.state == 'attached' %}{{ review.branch.name }}{% else %}Detached HEAD{% endif %}</dd>
+                <dt>HEAD source</dt><dd><code>{{ review.head }}</code></dd>
+                <dt>Selected path</dt><dd>{{ review.selected.display_path }}</dd>
+              </dl>
+              <p>{{ review.selected.action_preview.comparison }}</p>
+              <p><strong>Would change:</strong> {{ review.selected.action_preview.affected_layers | join(', ') if review.selected.action_preview.affected_layers else 'Nothing' }}</p>
+              <h5>Would preserve / result in</h5>
+              <ul>
+                {% for item in review.selected.action_preview.preserves %}<li>{{ item }}</li>{% endfor %}
+              </ul>
+              {% if review.selected.action_preview.would_discard %}
+                <p><strong>State/content replaced:</strong></p>
+                <ul>
+                  {% for item in review.selected.action_preview.would_discard %}<li>{{ item }}</li>{% endfor %}
+                </ul>
+              {% else %}
+                <p>No content loss is expected from this no-operation choice.</p>
+              {% endif %}
+              {% if review.selected.action_preview.possible_content_loss %}
+                <p class="warning"><strong>Potential file-content loss is present in the evidence below.</strong></p>
+              {% else %}
+                <p class="muted">No file-content loss is expected; the described Git-layer state may still change.</p>
+              {% endif %}
+              {% for evidence in review.selected.action_preview.evidence %}
+                <h5>{{ evidence.side }}</h5>
+                {% if not evidence.complete %}
+                  <p class="warning">Evidence is incomplete; this preview is not fully reviewed.</p>
+                {% endif %}
+                {% if evidence.available and evidence.text %}
+                  <pre class="git-diff">{{ evidence.text }}</pre>
+                {% elif not evidence.available %}
+                  <p class="warning">{{ evidence.reason }}</p>
+                {% else %}
+                  <p class="muted">No difference is present for this comparison.</p>
+                {% endif %}
+              {% endfor %}
+            </article>
           {% endif %}
 
           {% if review.selected.preview %}
@@ -131,6 +225,7 @@
                 {% if diff.whitespace.details %}
                   <pre>{{ diff.whitespace.details }}</pre>
                 {% endif %}
+                <p class="muted">{{ diff.whitespace_comparison.label }} This signal does not establish intent or safety.</p>
               </div>
             </article>
           {% endfor %}

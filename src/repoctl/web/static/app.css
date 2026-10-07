@@ -225,6 +225,35 @@ ul {
   white-space: pre-wrap;
 }
 
+.diagnosis-card, .action-preview-list, .consequence-preview {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 0.7rem;
+}
+
+.diagnosis-card ul, .consequence-preview ul {
+  margin-top: 0.35rem;
+}
+
+.preview-link {
+  display: inline-block;
+  background: #f1f8f6;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  color: var(--accent);
+  margin: 0 0.45rem 0.45rem 0;
+  padding: 0.4rem 0.6rem;
+  text-decoration: none;
+}
+
+.preview-unavailable {
+  color: var(--muted);
+}
+
+.consequence-preview .read-only-badge {
+  display: inline-block;
+}
+
 @media (max-width: 960px) {
   .git-review-layout {
     grid-template-columns: 1fr;

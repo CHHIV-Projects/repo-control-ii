@@ -218,7 +218,371 @@ def _tracked_diff(repo_root: Path, entry: dict[str, Any], *, staged: bool) -> di
             "truncated": False,
         }
     evidence["whitespace"] = _whitespace_warnings(repo_root, entry, staged=staged)
+    evidence["whitespace_comparison"] = _whitespace_comparison(
+        repo_root,
+        entry,
+        staged=staged,
+        ordinary=evidence,
+    )
     return evidence
+
+
+def _whitespace_comparison(
+    repo_root: Path,
+    entry: dict[str, Any],
+    *,
+    staged: bool,
+    ordinary: dict[str, Any],
+) -> dict[str, Any]:
+    if not ordinary["available"] or not ordinary["complete"]:
+        return {
+            "state": "unavailable",
+            "label": "Whitespace comparison unavailable for incomplete or non-text diff evidence.",
+            "complete": False,
+        }
+
+    args = ["diff", "--ignore-all-space", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames"]
+    if staged:
+        args.extend(["--cached", "HEAD"])
+    args.append("--")
+    args.extend(_pathspecs(entry))
+    stdout, _stderr, _returncode, truncated = _run_bounded_git(
+        repo_root,
+        args,
+        output_limit=MAX_DIFF_OUTPUT_BYTES,
+    )
+    if truncated:
+        return {
+            "state": "incomplete",
+            "label": "Whitespace comparison exceeded the configured output limit.",
+            "complete": False,
+        }
+    if stdout and (b"Binary files " in stdout or b"GIT binary patch" in stdout):
+        return {
+            "state": "unavailable",
+            "label": "Whitespace comparison is not available for binary content.",
+            "complete": True,
+        }
+    if not stdout:
+        return {
+            "state": "whitespace_only",
+            "label": "Under Git's --ignore-all-space comparison, no text difference remains.",
+            "complete": True,
+        }
+    return {
+        "state": "non_whitespace_difference",
+        "label": "Under Git's --ignore-all-space comparison, a difference remains.",
+        "complete": True,
+    }
+
+
+def _working_tree_head_diff(repo_root: Path, entry: dict[str, Any]) -> dict[str, Any]:
+    args = [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-renames",
+        "--unified=3",
+        "HEAD",
+        "--",
+        *_pathspecs(entry),
+    ]
+    stdout, _stderr, _returncode, truncated = _run_bounded_git(
+        repo_root,
+        args,
+        output_limit=MAX_DIFF_OUTPUT_BYTES,
+    )
+    if truncated:
+        return {
+            "available": False,
+            "complete": False,
+            "text": "",
+            "reason": "Working-tree vs HEAD evidence exceeded the configured output limit.",
+        }
+    if b"Binary files " in stdout or b"GIT binary patch" in stdout:
+        return {
+            "available": False,
+            "complete": True,
+            "text": "",
+            "reason": "Git reports binary content; a text comparison is not available.",
+        }
+    try:
+        text = stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return {
+            "available": False,
+            "complete": True,
+            "text": "",
+            "reason": "Working-tree vs HEAD evidence contains undecodable bytes.",
+        }
+    return {
+        "available": True,
+        "complete": True,
+        "text": text,
+        "reason": "",
+        "differs": bool(stdout),
+    }
+
+
+def _preview(
+    *,
+    key: str,
+    title: str,
+    comparison: dict[str, Any],
+    affected_layers: list[str],
+    preserves: list[str],
+    would_discard: list[str],
+    evidence: list[dict[str, Any]],
+    possible_content_loss: bool,
+) -> dict[str, Any]:
+    complete = all(item.get("complete", False) for item in evidence)
+    available = complete and all(item.get("available", False) for item in evidence)
+    return {
+        "key": key,
+        "title": title,
+        "available": available,
+        "complete": complete,
+        "affected_layers": affected_layers,
+        "comparison": comparison,
+        "preserves": preserves,
+        "would_discard": would_discard,
+        "possible_content_loss": possible_content_loss,
+        "evidence": evidence,
+    }
+
+
+def _has_text_content_change(diff: dict[str, Any]) -> bool:
+    if not diff.get("available"):
+        return True
+    return any(
+        (line.startswith("+") and not line.startswith("+++"))
+        or (line.startswith("-") and not line.startswith("---"))
+        for line in diff.get("text", "").splitlines()
+    )
+
+
+def _action_previews(
+    entry: dict[str, Any],
+    status: dict[str, Any],
+    diffs: list[dict[str, Any]],
+    worktree_head: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    leave_unchanged = {
+        "key": "leave-unchanged",
+        "title": "Leave unchanged",
+        "available": True,
+        "complete": True,
+        "affected_layers": [],
+        "comparison": "No Git operation is needed.",
+        "preserves": ["The current repository state."],
+        "would_discard": [],
+        "possible_content_loss": False,
+        "evidence": [],
+    }
+    if entry["kind"] == "untracked":
+        return [
+            leave_unchanged,
+            {
+                "key": "keep-for-later",
+                "title": "Keep for later review",
+                "available": True,
+                "complete": True,
+                "affected_layers": [],
+                "comparison": "No Git operation is needed; the path remains untracked.",
+                "preserves": ["The current untracked file and repository state."],
+                "would_discard": [],
+                "possible_content_loss": False,
+                "evidence": [],
+            },
+        ]
+    if status["conflicted"] or entry["kind"] != "ordinary":
+        return [leave_unchanged]
+
+    by_side = {diff["side"]: diff for diff in diffs}
+    previews = [leave_unchanged]
+    if status["staged"]:
+        staged_diff = by_side.get("Staged — index vs HEAD")
+        if staged_diff is not None:
+            staged_code = (entry.get("xy") or "..")[0]
+            if staged_code == "A":
+                unstage_result = (
+                    "The staged addition would leave the index; because the current worktree file is present, it would become untracked."
+                )
+            elif staged_code == "D":
+                unstage_result = (
+                    "The staged deletion would leave the index; because the worktree path remains absent, the deletion would become unstaged."
+                )
+            else:
+                unstage_result = "The staged change would leave the index; the current worktree would remain exactly as it is."
+            previews.append(
+                _preview(
+                    key="unstage",
+                    title="Unstage",
+                    comparison="Index vs HEAD; a future unstage would restore the index from HEAD for this path.",
+                    affected_layers=["index"],
+                    preserves=[unstage_result],
+                    would_discard=[
+                        (
+                            "The staged index state would be removed. With additional unstaged edits, staged content may not remain in the worktree."
+                            if status["unstaged"] and _has_text_content_change(staged_diff)
+                            else "The staged index state would be removed; the current worktree content would remain unchanged."
+                        )
+                    ],
+                    evidence=[staged_diff],
+                    possible_content_loss=(
+                        status["unstaged"] and _has_text_content_change(staged_diff)
+                    ),
+                )
+            )
+    if status["unstaged"]:
+        unstaged_diff = by_side.get("Unstaged — working tree vs index")
+        if unstaged_diff is not None:
+            previews.append(
+                _preview(
+                    key="restore-unstaged",
+                    title="Restore unstaged changes",
+                    comparison="Working tree vs index; a future restore would replace worktree content with index content.",
+                    affected_layers=["worktree"],
+                    preserves=["Current index content, including any staged changes."],
+                    would_discard=[
+                        "The current working-tree difference shown in the unstaged diff."
+                    ],
+                    evidence=[unstaged_diff],
+                    possible_content_loss=_has_text_content_change(unstaged_diff),
+                )
+            )
+    if worktree_head is not None:
+        staged_diff = by_side.get("Staged — index vs HEAD")
+        evidence = [worktree_head]
+        if staged_diff is not None:
+            evidence.insert(0, staged_diff)
+        else:
+            evidence.insert(
+                0,
+                {
+                    "side": "Index vs HEAD",
+                    "available": True,
+                    "complete": True,
+                    "text": "",
+                    "reason": "No staged change is present; the index currently matches HEAD for this path.",
+                },
+            )
+        previews.append(
+            _preview(
+                key="restore-head",
+                title="Restore to HEAD",
+                comparison="HEAD vs current index and worktree; a future restore to HEAD would update both layers.",
+                affected_layers=["index", "worktree"],
+                preserves=[
+                    f"HEAD content from {worktree_head.get('head_oid', 'the current HEAD')} would become both the index and worktree content."
+                ],
+                would_discard=[
+                    "Any staged index difference shown in the staged diff.",
+                    "Any current worktree difference from HEAD shown in the worktree-vs-HEAD diff.",
+                ],
+                evidence=evidence,
+                possible_content_loss=(
+                    (staged_diff is not None and _has_text_content_change(staged_diff))
+                    or _has_text_content_change(worktree_head)
+                ),
+            )
+        )
+    return previews
+
+
+def _file_diagnosis(
+    entry: dict[str, Any],
+    status: dict[str, Any],
+    diffs: list[dict[str, Any]],
+    head_oid: str,
+    worktree_head: dict[str, Any] | None,
+) -> dict[str, Any]:
+    known: list[str] = []
+    if status["conflicted"]:
+        known.append("Git reports this path as unmerged/conflicted.")
+    elif entry["kind"] == "untracked":
+        known.append("Git reports this path as untracked; it has no staged or unstaged tracked diff.")
+    else:
+        if status["staged"]:
+            known.append("The index differs from HEAD for this path.")
+        if status["unstaged"]:
+            known.append("The working tree differs from the index for this path.")
+        if not known:
+            known.append("Git status identifies this path as changed, but no staged or unstaged layer was classified.")
+
+    changes = []
+    for diff in diffs:
+        if not diff["available"]:
+            summary = f"Text-line summary unavailable: {diff['reason']}"
+        else:
+            lines = diff["text"].splitlines()
+            added = sum(line.startswith("+") and not line.startswith("+++") for line in lines)
+            removed = sum(line.startswith("-") and not line.startswith("---") for line in lines)
+            if diff["complete"]:
+                summary = f"{added} added and {removed} removed text lines in the complete diff."
+            else:
+                summary = (
+                    f"At least {added} added and {removed} removed text lines are visible; "
+                    "the bounded diff is incomplete."
+                )
+        changes.append({"side": diff["side"], "summary": summary})
+    if entry["kind"] == "untracked":
+        changes.append({
+            "side": "Untracked content",
+            "summary": "No tracked diff exists; the bounded untracked preview is shown separately.",
+        })
+    elif status["conflicted"]:
+        changes.append({
+            "side": "Conflict",
+            "summary": "Conflict stages are not represented as an ordinary two-way diff here.",
+        })
+
+    signals = [
+        f"{diff['side']}: {diff['whitespace_comparison']['label']}"
+        for diff in diffs
+        if diff.get("whitespace_comparison")
+    ]
+    if worktree_head is not None and not worktree_head["complete"]:
+        signals.append("Worktree-vs-HEAD comparison is incomplete.")
+    if entry["kind"] == "rename_or_copy":
+        signals.append("Rename/copy path identity is not previewed as an ordinary single-path recovery.")
+
+    if status["conflicted"]:
+        question = "Which conflict-resolution result do you intend to keep?"
+    elif entry["kind"] == "untracked":
+        question = "Did you intend to keep this new file for later review?"
+    elif status["staged"] and status["unstaged"]:
+        question = "Do you want the staged version preserved while reviewing the additional worktree edits?"
+    else:
+        question = "Did you intend to keep this change?"
+
+    if entry["kind"] == "untracked":
+        comparison = "Untracked path; Git has no index or HEAD version for this file."
+    elif status["conflicted"]:
+        comparison = "Unmerged index/worktree state; ordinary two-way diffs may not describe all conflict stages."
+    elif status["staged"] and status["unstaged"]:
+        comparison = "Staged: index vs HEAD. Unstaged: working tree vs index."
+    elif status["staged"]:
+        comparison = "Index vs HEAD."
+    else:
+        comparison = "Working tree vs index."
+
+    return {
+        "observed_state": status["display_label"],
+        "comparison": comparison,
+        "changes": changes,
+        "head_oid": head_oid,
+        "known": known,
+        "signals": signals,
+        "unknown": [
+            "Why this file changed, who intended the change, and whether it is harmless or safe to discard are not established by Git evidence."
+        ],
+        "question": question,
+        "scope": (
+            "No machine-readable active milestone/file-scope association is available; scope ownership is unknown."
+        ),
+    }
 
 
 def _untracked_preview(repo_root: Path, path: str) -> dict[str, Any]:
@@ -293,7 +657,11 @@ def _file_metadata(repo_root: Path, path: str) -> dict[str, Any]:
     return {"size_bytes": metadata.st_size, "file_type": file_type}
 
 
-def inspect_git_review(repository_path: str, selected_file: str | None = None) -> dict[str, Any]:
+def inspect_git_review(
+    repository_path: str,
+    selected_file: str | None = None,
+    preview_action: str | None = None,
+) -> dict[str, Any]:
     target = Path(repository_path).expanduser().resolve()
     try:
         repo_root = validate_git_worktree(target)
@@ -365,11 +733,14 @@ def inspect_git_review(repository_path: str, selected_file: str | None = None) -
             "diffs": [],
             "preview": None,
             "conflict_note": None,
+            "diagnosis": None,
+            "action_previews": [],
+            "action_preview": None,
         }
         if status["conflicted"]:
             selected["conflict_note"] = (
                 "Git reports this path as unmerged. Ordinary staged/unstaged diff evidence "
-                "may be incomplete; conflict resolution is not available here."
+                "may be incomplete; conflict recovery previews are limited in this milestone."
             )
         elif entry["kind"] == "untracked":
             selected["preview"] = _untracked_preview(repo_root, path)
@@ -378,6 +749,31 @@ def inspect_git_review(repository_path: str, selected_file: str | None = None) -
                 selected["diffs"].append(_tracked_diff(repo_root, entry, staged=True))
             if status["unstaged"]:
                 selected["diffs"].append(_tracked_diff(repo_root, entry, staged=False))
+        worktree_head = None
+        if entry["kind"] == "ordinary" and not status["conflicted"]:
+            worktree_head = _working_tree_head_diff(repo_root, entry)
+            worktree_head["side"] = "Worktree vs HEAD"
+            worktree_head["head_oid"] = git_state["head"]
+        selected["diagnosis"] = _file_diagnosis(
+            entry,
+            status,
+            selected["diffs"],
+            git_state["head"],
+            worktree_head,
+        )
+        selected["action_previews"] = _action_previews(
+            entry,
+            status,
+            selected["diffs"],
+            worktree_head,
+        )
+        if preview_action is not None:
+            selected["action_preview"] = next(
+                (item for item in selected["action_previews"] if item["key"] == preview_action),
+                None,
+            )
+            if selected["action_preview"] is None:
+                raise ValueError("The requested preview is not available for this Git state.")
 
     upstream = git_state["upstream"]
     workflow_state_labels = {

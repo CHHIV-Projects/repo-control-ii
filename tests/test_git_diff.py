@@ -86,6 +86,121 @@ class GitDiffTests(unittest.TestCase):
             self.assertIn("+unstaged value", unstaged["text"])
             self.assertNotIn("+staged value", unstaged["text"])
 
+    def test_diagnosis_and_preview_semantics_for_staged_and_unstaged_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            tracked = repo / "tracked.txt"
+            tracked.write_text("staged version\n", encoding="utf-8")
+            _git(repo, "add", "tracked.txt")
+            tracked.write_text("current worktree version\n", encoding="utf-8")
+
+            listing = inspect_git_review(str(repo))
+            item = next(file for file in listing["files"] if file["path"] == "tracked.txt")
+            selected = inspect_git_review(str(repo), selected_file=item["token"])["selected"]
+            previews = {preview["key"]: preview for preview in selected["action_previews"]}
+
+            self.assertEqual(
+                selected["diagnosis"]["comparison"],
+                "Staged: index vs HEAD. Unstaged: working tree vs index.",
+            )
+            self.assertIn("The index differs from HEAD", selected["diagnosis"]["known"][0])
+            self.assertIn("intended", selected["diagnosis"]["unknown"][0])
+            self.assertIn("active milestone/file-scope", selected["diagnosis"]["scope"])
+            self.assertEqual(previews["unstage"]["affected_layers"], ["index"])
+            self.assertIn("worktree would remain", previews["unstage"]["preserves"][0])
+            self.assertTrue(previews["unstage"]["possible_content_loss"])
+            self.assertIn("+staged version", previews["unstage"]["evidence"][0]["text"])
+
+            self.assertEqual(previews["restore-unstaged"]["affected_layers"], ["worktree"])
+            self.assertIn("staged changes", previews["restore-unstaged"]["preserves"][0])
+            self.assertIn("+current worktree version", previews["restore-unstaged"]["evidence"][0]["text"])
+
+            restore_head = previews["restore-head"]
+            self.assertEqual(restore_head["affected_layers"], ["index", "worktree"])
+            self.assertTrue(restore_head["possible_content_loss"])
+            self.assertEqual(restore_head["evidence"][0]["side"], "Staged — index vs HEAD")
+            self.assertEqual(restore_head["evidence"][1]["side"], "Worktree vs HEAD")
+            self.assertIn("+current worktree version", restore_head["evidence"][1]["text"])
+            self.assertEqual(restore_head["evidence"][1]["head_oid"], selected["diagnosis"]["head_oid"])
+
+            requested = inspect_git_review(
+                str(repo),
+                selected_file=item["token"],
+                preview_action="restore-unstaged",
+            )["selected"]["action_preview"]
+            self.assertEqual(requested["key"], "restore-unstaged")
+            self.assertIn("No Git operation", inspect_git_review(
+                str(repo), selected_file=item["token"], preview_action="leave-unchanged"
+            )["selected"]["action_preview"]["comparison"])
+
+    def test_whitespace_equivalence_is_comparison_specific_and_advisory(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            tracked = repo / "tracked.txt"
+            tracked.write_text("original \n", encoding="utf-8")
+            listing = inspect_git_review(str(repo))
+            item = next(file for file in listing["files"] if file["path"] == "tracked.txt")
+            whitespace_diff = inspect_git_review(str(repo), selected_file=item["token"])["selected"]["diffs"][0]
+            self.assertEqual(whitespace_diff["whitespace_comparison"]["state"], "whitespace_only")
+            self.assertIn("--ignore-all-space", whitespace_diff["whitespace_comparison"]["label"])
+            self.assertIn("+original ", whitespace_diff["text"])
+
+            tracked.write_text("different substantive value\n", encoding="utf-8")
+            substantive = inspect_git_review(str(repo), selected_file=item["token"])["selected"]["diffs"][0]
+            self.assertEqual(
+                substantive["whitespace_comparison"]["state"],
+                "non_whitespace_difference",
+            )
+
+    def test_untracked_conflict_deleted_and_bounded_preview_options(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            new_file = repo / "new.txt"
+            new_file.write_text("new content\n", encoding="utf-8")
+            listing = inspect_git_review(str(repo))
+            untracked = next(file for file in listing["files"] if file["path"] == "new.txt")
+            selected = inspect_git_review(str(repo), selected_file=untracked["token"])["selected"]
+            preview_keys = {preview["key"] for preview in selected["action_previews"]}
+            self.assertEqual(preview_keys, {"leave-unchanged", "keep-for-later"})
+            with self.assertRaisesRegex(ValueError, "not available"):
+                inspect_git_review(str(repo), selected_file=untracked["token"], preview_action="restore-head")
+
+            (repo / "tracked.txt").unlink()
+            listing = inspect_git_review(str(repo))
+            deleted = next(file for file in listing["files"] if file["path"] == "tracked.txt")
+            deleted_selected = inspect_git_review(str(repo), selected_file=deleted["token"])["selected"]
+            deleted_preview = next(
+                preview for preview in deleted_selected["action_previews"]
+                if preview["key"] == "restore-unstaged"
+            )
+            self.assertTrue(deleted_preview["available"])
+            self.assertIn("deleted file", deleted_preview["evidence"][0]["text"])
+
+    def test_unstage_preview_explains_staged_addition_and_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            added = repo / "added.txt"
+            added.write_text("staged new file\n", encoding="utf-8")
+            _git(repo, "add", "added.txt")
+            listing = inspect_git_review(str(repo))
+            added_item = next(file for file in listing["files"] if file["path"] == "added.txt")
+            added_selected = inspect_git_review(str(repo), selected_file=added_item["token"])["selected"]
+            added_unstage = next(
+                preview for preview in added_selected["action_previews"]
+                if preview["key"] == "unstage"
+            )
+            self.assertIn("become untracked", added_unstage["preserves"][0])
+
+            _git(repo, "rm", "tracked.txt")
+            listing = inspect_git_review(str(repo))
+            deleted_item = next(file for file in listing["files"] if file["path"] == "tracked.txt")
+            deleted_selected = inspect_git_review(str(repo), selected_file=deleted_item["token"])["selected"]
+            deleted_unstage = next(
+                preview for preview in deleted_selected["action_previews"]
+                if preview["key"] == "unstage"
+            )
+            self.assertIn("deletion would become unstaged", deleted_unstage["preserves"][0])
+
     def test_untracked_text_binary_and_large_preview_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = _init_repo(Path(td))
@@ -161,6 +276,13 @@ class GitDiffTests(unittest.TestCase):
             self.assertTrue(large_diff["truncated"])
             self.assertFalse(large_diff["complete"])
             self.assertLessEqual(len(large_diff["text"].encode("utf-8")), MAX_DIFF_OUTPUT_BYTES)
+            large_previews = {
+                preview["key"]: preview for preview in inspect_git_review(
+                    str(repo), selected_file=large_file["token"]
+                )["selected"]["action_previews"]
+            }
+            self.assertFalse(large_previews["restore-unstaged"]["available"])
+            self.assertFalse(large_previews["restore-unstaged"]["complete"])
 
             undecodable = repo / "undecodable.txt"
             undecodable.write_bytes(b"\xff")
@@ -218,6 +340,11 @@ class GitDiffTests(unittest.TestCase):
             renamed = next(item for item in rename_review["files"] if item["path"] == "renamed.txt")
             self.assertEqual(renamed["kind"], "rename_or_copy")
             self.assertEqual(renamed["original_path"], "tracked.txt")
+            renamed_selected = inspect_git_review(str(repo), selected_file=renamed["token"])["selected"]
+            self.assertEqual(
+                [preview["key"] for preview in renamed_selected["action_previews"]],
+                ["leave-unchanged"],
+            )
 
             _git(repo, "reset", "--hard")
             _git(repo, "rm", "tracked.txt")
@@ -253,6 +380,10 @@ class GitDiffTests(unittest.TestCase):
             selected = inspect_git_review(str(repo), selected_file=item["token"])["selected"]
             self.assertIn("unmerged", selected["conflict_note"])
             self.assertEqual(selected["diffs"], [])
+            self.assertEqual(
+                [preview["key"] for preview in selected["action_previews"]],
+                ["leave-unchanged"],
+            )
 
     def test_status_output_limit_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as td:

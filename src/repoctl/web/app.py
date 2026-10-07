@@ -397,13 +397,20 @@ def create_web_app(
     @app.get("/git-review")
     def git_review_page():
         selected_file = request.args.get("file")
+        preview_action = request.args.get("preview")
         error_message = None
         review = None
         status_code = 200
         try:
-            review = inspect_git_review(str(repo_root), selected_file=selected_file)
+            review = inspect_git_review(
+                str(repo_root),
+                selected_file=selected_file,
+                preview_action=preview_action,
+            )
         except FileNotFoundError as exc:
             raise WebUIError("changed_file_not_found", str(exc), status_code=404) from exc
+        except ValueError as exc:
+            raise WebUIError("invalid_preview", str(exc), status_code=400) from exc
         except GitReviewError as exc:
             error_message = str(exc)
             status_code = 503

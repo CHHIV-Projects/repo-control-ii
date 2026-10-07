@@ -805,8 +805,31 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(detail.status_code, 200)
                 self.assertIn("Select a changed file", listing_text)
                 detail_text = detail.get_data(as_text=True)
+                self.assertIn("Possible choices — preview only", detail_text)
                 self.assertIn("Staged — index vs HEAD", detail_text)
                 self.assertIn("Unstaged — working tree vs index", detail_text)
+                self.assertIn("Known from Git", detail_text)
+                self.assertIn("Unknown", detail_text)
+                self.assertIn("Scope evidence", detail_text)
+                self.assertIn("Preview: Restore unstaged changes", detail_text)
+
+                restore_head = client.get(f"/git-review?file={match.group(1)}&preview=restore-head")
+                restore_head_text = restore_head.get_data(as_text=True)
+                self.assertEqual(restore_head.status_code, 200)
+                self.assertIn("Preview: Restore to HEAD", restore_head_text)
+                self.assertIn("NO CHANGE HAS BEEN APPLIED", restore_head_text)
+                self.assertIn("HEAD source", restore_head_text)
+                self.assertIn("State/content replaced", restore_head_text)
+                self.assertIn("Potential file-content loss", restore_head_text)
+                self.assertIn("Would change:</strong> index, worktree", restore_head_text)
+                self.assertIn("Worktree vs HEAD", restore_head_text)
+
+                unstage_preview = client.get(f"/git-review?file={match.group(1)}&preview=unstage")
+                self.assertEqual(unstage_preview.status_code, 200)
+                self.assertIn("Would change:</strong> index", unstage_preview.get_data(as_text=True))
+
+                invalid_preview = client.get(f"/git-review?file={match.group(1)}&preview=commit")
+                self.assertEqual(invalid_preview.status_code, 400)
 
                 untracked_match = re.search(
                     r'href="/git-review\?file=([A-Za-z0-9_-]+)">&lt;script&gt;\.txt</a>',
@@ -818,6 +841,8 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(preview.status_code, 200)
                 self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", preview_text)
                 self.assertNotIn("<script>alert(1)</script>", preview_text)
+                self.assertNotIn("Preview: Restore to HEAD", preview_text)
+                self.assertIn("Keep for later review", preview_text)
 
                 status_mock.assert_not_called()
                 scan_mock.assert_not_called()
