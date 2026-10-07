@@ -174,6 +174,62 @@ ul {
   gap: 0.8rem;
 }
 
+.git-review-tabs {
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.8rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.git-review-tabs a {
+  color: var(--accent);
+  padding: 0.45rem 0.7rem;
+  text-decoration: none;
+}
+
+.git-review-tabs a[aria-current="page"] {
+  border: 1px solid var(--line);
+  border-bottom-color: #fffefb;
+  border-radius: 7px 7px 0 0;
+  background: #fffefb;
+  font-weight: 700;
+}
+
+.history-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);
+  gap: 0.8rem;
+}
+
+.branch-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr);
+  gap: 0.8rem;
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+}
+
+.history-list li {
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 0.35rem;
+}
+
+.history-list a, .branch-table a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.branch-table {
+  min-width: 680px;
+}
+
 .git-review-files, .git-review-detail {
   min-width: 0;
 }
@@ -256,6 +312,10 @@ ul {
 
 @media (max-width: 960px) {
   .git-review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .history-layout, .branch-layout {
     grid-template-columns: 1fr;
   }
 }

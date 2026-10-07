@@ -21,6 +21,12 @@ from ..workflow.stage_plan import prepare_stage
 from ..workflow.commit_execution import execute_prepared_commit
 from ..workflow.commit_plan import prepare_commit
 from ..workflow.diff import GitReviewError, inspect_git_review
+from ..workflow.git_history import (
+    GitHistoryError,
+    inspect_branches,
+    inspect_file_history,
+    inspect_history,
+)
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .views import (
     comparison_id_choices,
@@ -396,27 +402,54 @@ def create_web_app(
 
     @app.get("/git-review")
     def git_review_page():
+        review_view = request.args.get("view", "changes")
         selected_file = request.args.get("file")
         preview_action = request.args.get("preview")
         error_message = None
         review = None
+        history = None
+        file_history = None
+        branches = None
         status_code = 200
         try:
-            review = inspect_git_review(
-                str(repo_root),
-                selected_file=selected_file,
-                preview_action=preview_action,
-            )
+            if review_view == "changes":
+                review = inspect_git_review(
+                    str(repo_root),
+                    selected_file=selected_file,
+                    preview_action=preview_action,
+                )
+            elif review_view == "history":
+                history = inspect_history(
+                    str(repo_root),
+                    selected_commit=request.args.get("commit"),
+                )
+                file_token = request.args.get("file_history")
+                if file_token:
+                    file_history = inspect_file_history(str(repo_root), file_token)
+            elif review_view == "branches":
+                branches = inspect_branches(
+                    str(repo_root),
+                    selected_branch=request.args.get("branch"),
+                )
+            else:
+                raise ValueError("Git Review view must be changes, history, or branches.")
         except FileNotFoundError as exc:
-            raise WebUIError("changed_file_not_found", str(exc), status_code=404) from exc
+            raise WebUIError("git_selection_not_found", str(exc), status_code=404) from exc
         except ValueError as exc:
-            raise WebUIError("invalid_preview", str(exc), status_code=400) from exc
-        except GitReviewError as exc:
+            raise WebUIError("invalid_git_selection", str(exc), status_code=400) from exc
+        except (GitReviewError, GitHistoryError) as exc:
             error_message = str(exc)
             status_code = 503
         return render_template(
             "git_review.html",
+            review_view=review_view,
             review=review,
+            history=history,
+            file_history=file_history,
+            branches=branches,
+            selected_commit=request.args.get("commit"),
+            selected_file_history=request.args.get("file_history"),
+            selected_branch=request.args.get("branch"),
             error_message=error_message,
             selected_file=selected_file,
         ), status_code
