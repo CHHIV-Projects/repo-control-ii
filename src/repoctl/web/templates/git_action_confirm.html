@@ -11,7 +11,6 @@
     <dt>Repository</dt><dd>{{ preview.repository_root }}</dd>
     <dt>Branch</dt><dd>{{ preview.branch }}</dd>
     <dt>HEAD</dt><dd><code>{{ preview.head }}</code></dd>
-    {% if preview.path %}<dt>Selected path</dt><dd><code>{{ preview.path }}</code></dd>{% endif %}
     {% if preview.layers %}<dt>Git layers affected</dt><dd>{{ preview.layers | join(', ') }}</dd>{% endif %}
     {% if preview.message is defined %}<dt>Commit message</dt><dd>{{ preview.message }}</dd>{% endif %}
   </dl>
@@ -30,44 +29,58 @@
     {% endif %}
     <h3>Staged diff</h3>
     <pre class="git-diff">{{ preview.diff }}</pre>
-  {% elif preview.details.preview %}
-    <p><strong>Would change:</strong> {{ preview.details.preview.affected_layers | join(', ') }}</p>
-    {% if preview.details.preview.would_discard %}
-      <h3>State/content that would be replaced</h3>
-      <ul>{% for item in preview.details.preview.would_discard %}<li>{{ item }}</li>{% endfor %}</ul>
+  {% elif preview.paths %}
+    <h3>Selected paths ({{ preview.paths | length }})</h3>
+    <ul class="selected-action-paths">
+      {% for item in preview.paths %}
+        <li><code>{{ item.path }}</code>{% if item.layers %}<span class="git-status-code">Changes: {{ item.layers | join(', ') }}</span>{% endif %}<div>{{ item.summary }}</div></li>
+      {% endfor %}
+    </ul>
+    {% if preview.action in ['restore-unstaged', 'restore-head'] %}
+      <p><strong>Review the consequence evidence for every selected path before confirming.</strong></p>
     {% endif %}
-    {% for evidence in preview.details.preview.evidence %}
-      <h3>{{ evidence.side }}</h3>
-      {% if evidence.available and evidence.text %}
-        <pre class="git-diff">{{ evidence.text }}</pre>
-      {% elif evidence.available %}
-        <p class="muted">No difference is present for this comparison.</p>
-      {% else %}
-        <p class="warning">{{ evidence.reason }}</p>
-      {% endif %}
+    {% for item in preview.paths %}
+      <details class="prepared-path-evidence">
+        <summary>Review evidence: {{ item.path }}</summary>
+        {% if item.details.preview %}
+          <p><strong>Would change:</strong> {{ item.details.preview.affected_layers | join(', ') }}</p>
+          {% if item.details.preview.would_discard %}
+            <h4>State/content that would be replaced</h4>
+            <ul>{% for lost in item.details.preview.would_discard %}<li>{{ lost }}</li>{% endfor %}</ul>
+          {% endif %}
+          {% for evidence in item.details.preview.evidence %}
+            <h4>{{ evidence.side }}</h4>
+            {% if evidence.available and evidence.text %}
+              <pre class="git-diff">{{ evidence.text }}</pre>
+            {% elif evidence.available %}
+              <p class="muted">No difference is present for this comparison.</p>
+            {% else %}
+              <p class="warning">{{ evidence.reason }}</p>
+            {% endif %}
+          {% endfor %}
+        {% elif item.details.diffs %}
+          {% for evidence in item.details.diffs %}
+            <h4>{{ evidence.side }}</h4>
+            {% if evidence.available and evidence.text %}
+              <pre class="git-diff">{{ evidence.text }}</pre>
+            {% elif evidence.available %}
+              <p class="muted">No text difference is present for this comparison.</p>
+            {% else %}
+              <p class="warning">{{ evidence.reason }}</p>
+            {% endif %}
+          {% endfor %}
+        {% elif item.details.evidence %}
+          {% if item.details.evidence.available and item.details.evidence.text %}
+            <pre class="git-diff">{{ item.details.evidence.text }}</pre>
+            {% if not item.details.evidence.complete %}<p class="warning">Preview is incomplete; the full file may contain additional content.</p>{% endif %}
+          {% elif item.details.evidence.available %}
+            <p class="muted">The selected file is empty.</p>
+          {% else %}
+            <p class="warning">{{ item.details.evidence.reason }} The stage action remains limited to this explicitly selected path.</p>
+          {% endif %}
+        {% endif %}
+      </details>
     {% endfor %}
-  {% elif preview.details.diffs %}
-    <h3>Selected path diff evidence</h3>
-    {% for evidence in preview.details.diffs %}
-      <h4>{{ evidence.side }}</h4>
-      {% if evidence.available and evidence.text %}
-        <pre class="git-diff">{{ evidence.text }}</pre>
-      {% elif evidence.available %}
-        <p class="muted">No text difference is present for this comparison.</p>
-      {% else %}
-        <p class="warning">{{ evidence.reason }}</p>
-      {% endif %}
-    {% endfor %}
-  {% elif preview.details.evidence %}
-    <h3>Untracked file preview</h3>
-    {% if preview.details.evidence.available and preview.details.evidence.text %}
-      <pre class="git-diff">{{ preview.details.evidence.text }}</pre>
-      {% if not preview.details.evidence.complete %}<p class="warning">Preview is incomplete; the full file may contain additional content.</p>{% endif %}
-    {% elif preview.details.evidence.available %}
-      <p class="muted">The selected file is empty.</p>
-    {% else %}
-      <p class="warning">{{ preview.details.evidence.reason }} The explicit stage action remains limited to this selected path.</p>
-    {% endif %}
   {% endif %}
 
   <div class="confirmation-actions">

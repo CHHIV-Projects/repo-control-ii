@@ -728,11 +728,17 @@ class WebTests(unittest.TestCase):
                 listing_text = listing.get_data(as_text=True)
                 self.assertEqual(listing.status_code, 200)
                 self.assertIn("Git Review", listing_text)
-                self.assertIn("READ ONLY", listing_text)
+                self.assertIn("REVIEW · CONFIRM TO ACT", listing_text)
                 self.assertIn('class="main main-wide"', listing_text)
                 self.assertIn("Staged + additional unstaged changes", listing_text)
                 self.assertIn("New / untracked", listing_text)
-                self.assertIn("Git status: ??", listing_text)
+                self.assertIn(">??</span>", listing_text)
+                self.assertIn("Select all visible", listing_text)
+                self.assertIn("Clear selection", listing_text)
+                self.assertIn("Stage selected", listing_text)
+                self.assertIn("Unstage selected", listing_text)
+                self.assertIn("Restore unstaged", listing_text)
+                self.assertIn("Restore to HEAD", listing_text)
                 self.assertIn("&lt;script&gt;.txt", listing_text)
                 self.assertNotIn("<script>alert(1)</script>", listing_text)
                 nav = listing_text.split('<nav class="nav">', 1)[1].split("</nav>", 1)[0]
@@ -744,13 +750,13 @@ class WebTests(unittest.TestCase):
                 route_paths = {rule.rule for rule in app.url_map.iter_rules()}
                 self.assertTrue({"/context", "/snapshots", "/comparisons", "/analysis"} <= route_paths)
 
-                match = re.search(r'href="/git-review\?file=([A-Za-z0-9_-]+)">app\.py</a>', listing_text)
+                match = re.search(r'name="path_token" value="([A-Za-z0-9_-]+)"[^>]*aria-label="Select app\.py"', listing_text)
                 self.assertIsNotNone(match)
                 detail = client.get(f"/git-review?file={match.group(1)}")
                 self.assertEqual(detail.status_code, 200)
                 self.assertIn("Select a changed file", listing_text)
                 detail_text = detail.get_data(as_text=True)
-                self.assertIn("Possible choices — preview only", detail_text)
+                self.assertIn("Recovery previews", detail_text)
                 self.assertIn("Staged — index vs HEAD", detail_text)
                 self.assertIn("Unstaged — working tree vs index", detail_text)
                 self.assertIn("Known from Git", detail_text)
@@ -777,7 +783,7 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(invalid_preview.status_code, 400)
 
                 untracked_match = re.search(
-                    r'href="/git-review\?file=([A-Za-z0-9_-]+)">&lt;script&gt;\.txt</a>',
+                    r'name="path_token" value="([A-Za-z0-9_-]+)"[^>]*aria-label="Select &lt;script&gt;\.txt"',
                     listing_text,
                 )
                 self.assertIsNotNone(untracked_match)

@@ -438,7 +438,7 @@ def create_web_app(
         file_history = None
         branches = None
         status_code = 200
-        action_options = {"actions": [], "blocked_reason": None, "unavailable_actions": []}
+        file_action_options = {}
         commit_options = {"available": False, "reason": "Commit is available when supported changes are staged."}
         try:
             if review_view == "changes":
@@ -447,8 +447,10 @@ def create_web_app(
                     selected_file=selected_file,
                     preview_action=preview_action,
                 )
-                if review["selected"]:
-                    action_options = git_actions.options(str(repo_root), review["selected"]["token"])
+                file_action_options = git_actions.options_for_tokens(
+                    str(repo_root),
+                    [item["token"] for item in review["files"]],
+                )
                 commit_options = git_actions.can_commit(str(repo_root))
             elif review_view == "history":
                 history = inspect_history(
@@ -482,7 +484,7 @@ def create_web_app(
             selected_commit=request.args.get("commit"),
             selected_file_history=request.args.get("file_history"),
             selected_branch=request.args.get("branch"),
-            action_options=action_options,
+            file_action_options=file_action_options,
             commit_options=commit_options,
             error_message=error_message,
             selected_file=selected_file,
@@ -507,7 +509,7 @@ def create_web_app(
         token, preview = git_actions.prepare(
             str(repo_root),
             action,
-            path_token=request.form.get("path_token"),
+            path_tokens=request.form.getlist("path_token"),
             message=request.form.get("commit_message"),
         )
         return render_template(

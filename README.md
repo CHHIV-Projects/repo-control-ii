@@ -84,13 +84,13 @@ Current primary pages and capabilities:
 
 - Dashboard (deterministic workflow status)
 - Git Review (current changes, diagnosis/recovery previews, history, and branches)
-- Git Review provides explicitly selected stage, unstage, restore, and local commit actions through preview, confirmation, fresh-state revalidation, and post-action verification.
+- Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
 
 Browser Git mutation boundary:
 
 - GET requests are read-only. Mutations require a CSRF-protected POST, a short-lived single-use confirmation token, and fresh Git-state validation.
-- Stage/unstage/restore are limited to one explicitly selected changed path at a time. Commit includes only the reviewed staged content and never stages implicitly.
+- Batch stage/unstage/restore use only the explicit selected path set; an action is unavailable unless every selected path supports it. Commit includes the complete reviewed staged set and never stages implicitly.
 - Branch/remote mutation, push, fetch, pull, conflict resolution, and unsupported/incomplete cases remain out of scope.
 
 Windows access from a remote workstation can use SSH port forwarding, for example:

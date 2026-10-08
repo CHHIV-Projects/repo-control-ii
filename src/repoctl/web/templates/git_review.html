@@ -7,7 +7,7 @@
       <h2>Git Review</h2>
       <p class="muted">Read-only inspection. Selecting a file does not change Git or workflow state.</p>
     </div>
-    <span class="read-only-badge">READ ONLY</span>
+    <span class="read-only-badge">{% if review_view == 'changes' %}REVIEW · CONFIRM TO ACT{% else %}READ ONLY{% endif %}</span>
   </div>
 
   <nav class="git-review-tabs" aria-label="Git Review views">
@@ -169,6 +169,7 @@
       {% endif %}
     </div>
   {% elif review %}
+    {% if review_view == 'changes' %}<script src="{{ url_for('static', filename='git_review.js') }}" defer></script>{% endif %}
     <article class="card">
       <h3>Repository</h3>
       <dl>
@@ -209,7 +210,7 @@
     </article>
 
     <article class="card spaced-top commit-review">
-      <h3>Commit explicitly staged content</h3>
+      <h3>Staged set: {% if commit_options.available %}{{ commit_options.staged_paths | length }} file{% if commit_options.staged_paths | length != 1 %}s{% endif %}{% else %}commit unavailable{% endif %}</h3>
       <p>Commit will include only the staged paths and diff shown below. Unstaged and untracked changes remain outside the commit; no automatic staging occurs.</p>
       {% if commit_options.available %}
         <dl>
@@ -228,7 +229,7 @@
           <input type="hidden" name="action" value="commit">
           <label for="git-commit-message">Commit message</label>
           <input id="git-commit-message" name="commit_message" type="text" maxlength="500" required placeholder="Describe the staged change">
-          <button type="submit" class="primary">Review commit confirmation</button>
+          <button type="submit" class="primary">Review commit of staged files</button>
         </form>
       {% else %}
         <p class="muted">{{ commit_options.reason }}</p>
@@ -236,28 +237,54 @@
     </article>
 
     <div class="git-review-layout spaced-top">
+      <form id="batch-action-form" method="post" action="{{ url_for('git_action_prepare') }}" data-max-paths="256">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <section class="card git-review-files">
         <h3>Changed files ({{ review.files | length }})</h3>
-        {% if review.groups %}
-          {% for group in review.groups %}
-            <h4>{{ group.label }}</h4>
-            <ul class="git-file-list">
-              {% for file in group.files %}
-                <li{% if selected_file == file.token %} class="row-selected"{% endif %}>
-                  <a href="{{ url_for('git_review_page', file=file.token) }}">{{ file.display_path }}</a>
-                  {% if file.display_original_path %}
-                    <div class="muted">from {{ file.display_original_path }}</div>
-                  {% endif %}
-                  <div class="muted">{{ file.display_label }}</div>
-                  {% if file.xy %}<span class="git-status-code">Git status: {{ file.xy }}</span>{% endif %}
-                </li>
-              {% endfor %}
-            </ul>
-          {% endfor %}
+        {% if review.files %}
+          <div class="batch-selection-toolbar">
+            <label><input id="select-all-visible" type="checkbox"> Select all visible</label>
+            <button id="clear-selection" type="button" class="secondary">Clear selection</button>
+            <strong>Selected: <span id="selected-path-count">0</span></strong>
+          </div>
+          <div class="batch-action-toolbar">
+            <div>
+              <strong>Routine</strong>
+              <button type="submit" name="action" value="stage" data-batch-action="stage" disabled>Stage selected</button>
+              <button type="submit" name="action" value="unstage" data-batch-action="unstage" disabled>Unstage selected</button>
+            </div>
+            <div class="batch-destructive-actions">
+              <strong>Discard / restore</strong>
+              <button type="submit" name="action" value="restore-unstaged" data-batch-action="restore-unstaged" class="danger" disabled>Restore unstaged</button>
+              <button type="submit" name="action" value="restore-head" data-batch-action="restore-head" class="danger" disabled>Restore to HEAD</button>
+            </div>
+          </div>
+          <p id="batch-action-eligibility" class="muted" aria-live="polite">Select one or more files. An action is enabled only when every selected file supports it.</p>
+          <div class="table-scroll">
+            <table class="changed-files-table">
+              <thead><tr><th><span class="visually-hidden">Select</span></th><th>State</th><th>Git</th><th>File</th><th>Detail</th></tr></thead>
+              <tbody>
+                {% for group in review.groups %}
+                  <tr class="changed-files-group"><th colspan="5">{{ group.label }}</th></tr>
+                  {% for file in group.files %}
+                    {% set file_actions = file_action_options.get(file.token, {}).get('actions', []) %}
+                    <tr{% if selected_file == file.token %} class="row-selected"{% endif %}>
+                      <td><input type="checkbox" name="path_token" value="{{ file.token }}" data-path-selection data-actions="{{ file_actions | join(' ') }}" aria-label="Select {{ file.display_path }}"></td>
+                      <td>{{ file.display_label }}</td>
+                      <td>{% if file.xy %}<span class="git-status-code">{{ file.xy }}</span>{% endif %}</td>
+                      <td><code>{{ file.display_path }}</code>{% if file.display_original_path %}<div class="muted">from {{ file.display_original_path }}</div>{% endif %}</td>
+                      <td><a href="{{ url_for('git_review_page', file=file.token) }}">Open</a></td>
+                    </tr>
+                  {% endfor %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
         {% else %}
           <p>The working tree is clean.</p>
         {% endif %}
       </section>
+      </form>
 
       <section class="card git-review-detail">
         {% if review.selected %}
@@ -277,8 +304,8 @@
             </dd>
           </dl>
 
-          <section class="diagnosis-card">
-            <h4>Diagnosis</h4>
+          <details class="diagnosis-card">
+            <summary>Diagnosis and intent boundaries</summary>
             <dl>
               <dt>Observed state</dt><dd>{{ review.selected.diagnosis.observed_state }}</dd>
               <dt>Comparison basis</dt><dd>{{ review.selected.diagnosis.comparison }}</dd>
@@ -309,14 +336,14 @@
               {% for unknown in review.selected.diagnosis.unknown %}<li>{{ unknown }}</li>{% endfor %}
             </ul>
             <p><strong>Question:</strong> {{ review.selected.diagnosis.question }}</p>
-          </section>
+          </details>
           {% if review.selected.kind == 'ordinary' %}
             <p><a href="{{ url_for('git_review_page', view='history', file_history=review.selected.token) }}">View committed file history</a></p>
           {% endif %}
 
-          <section class="action-preview-list">
-            <h4>Possible choices — preview only</h4>
-            <p class="muted">No choice on this page executes a Git operation.</p>
+          <details class="action-preview-list">
+            <summary>Recovery previews</summary>
+            <p class="muted">Preview evidence is read-only. To act on one or more paths, select them in the table and use the shared action toolbar.</p>
             {% for action in review.selected.action_previews %}
               {% if action.available %}
                 <a class="preview-link" href="{{ url_for('git_review_page', file=review.selected.token, preview=action.key) }}">Preview: {{ action.title }}</a>
@@ -327,33 +354,7 @@
             {% if review.selected.conflict_note %}
               <p class="warning">{{ review.selected.conflict_note }}</p>
             {% endif %}
-          </section>
-
-          <section class="git-local-actions">
-            <h4>Local actions for this selected path</h4>
-            {% if action_options.actions %}
-              <div class="local-action-buttons">
-                {% for action in action_options.actions %}
-                  <form method="post" action="{{ url_for('git_action_prepare') }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="hidden" name="action" value="{{ action }}">
-                    <input type="hidden" name="path_token" value="{{ review.selected.token }}">
-                    <button type="submit" class="{% if action in ['restore-unstaged', 'restore-head'] %}danger{% else %}primary{% endif %}">
-                      {% if action == 'stage' %}Review Stage{% elif action == 'unstage' %}Review Unstage{% elif action == 'restore-unstaged' %}Review Restore Unstaged{% else %}Review Restore to HEAD{% endif %}
-                    </button>
-                  </form>
-                {% endfor %}
-              </div>
-              <p class="muted">Each action opens a separate confirmation. No mutation occurs from this page or from a GET request.</p>
-            {% elif action_options.blocked_reason %}
-              <p class="muted">{{ action_options.blocked_reason }}</p>
-            {% else %}
-              <p class="muted">No supported local action is available for this path state.</p>
-            {% endif %}
-            {% for unavailable in action_options.unavailable_actions %}
-              <p class="muted">{{ unavailable.action }} unavailable: {{ unavailable.reason }}</p>
-            {% endfor %}
-          </section>
+          </details>
 
           {% if review.selected.action_preview %}
             <article class="card consequence-preview" role="status">
@@ -417,26 +418,29 @@
             {% endif %}
           {% endif %}
 
-          {% for diff in review.selected.diffs %}
-            <article class="git-diff-section">
-              <h4>{{ diff.side }}</h4>
-              {% if diff.truncated %}
-                <p class="warning">Diff is incomplete because it exceeded the {{ review.bounds.diff_bytes }} byte output limit.</p>
-              {% endif %}
-              {% if diff.available %}
-                <pre class="git-diff">{{ diff.text }}</pre>
-              {% else %}
-                <p class="warning">{{ diff.reason }}</p>
-              {% endif %}
-              <div class="git-whitespace">
-                <strong>{{ diff.whitespace.label }}</strong>
-                {% if diff.whitespace.details %}
-                  <pre>{{ diff.whitespace.details }}</pre>
+          <details class="file-diff-details">
+            <summary>Diff and whitespace evidence</summary>
+            {% for diff in review.selected.diffs %}
+              <article class="git-diff-section">
+                <h4>{{ diff.side }}</h4>
+                {% if diff.truncated %}
+                  <p class="warning">Diff is incomplete because it exceeded the {{ review.bounds.diff_bytes }} byte output limit.</p>
                 {% endif %}
-                <p class="muted">{{ diff.whitespace_comparison.label }} This signal does not establish intent or safety.</p>
-              </div>
-            </article>
-          {% endfor %}
+                {% if diff.available %}
+                  <pre class="git-diff">{{ diff.text }}</pre>
+                {% else %}
+                  <p class="warning">{{ diff.reason }}</p>
+                {% endif %}
+                <div class="git-whitespace">
+                  <strong>{{ diff.whitespace.label }}</strong>
+                  {% if diff.whitespace.details %}
+                    <pre>{{ diff.whitespace.details }}</pre>
+                  {% endif %}
+                  <p class="muted">{{ diff.whitespace_comparison.label }} This signal does not establish intent or safety.</p>
+                </div>
+              </article>
+            {% endfor %}
+          </details>
 
           {% if not review.selected.conflict_note and not review.selected.preview and not review.selected.diffs %}
             <p class="muted">No ordinary diff evidence is available for this status entry.</p>

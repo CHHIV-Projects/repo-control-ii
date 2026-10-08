@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from repoctl.web.app import create_web_app
 from repoctl.workflow.diff import inspect_git_review
@@ -64,6 +65,11 @@ def _prepare(actions: PreparedGitActions, repo: Path, action: str, path: str) ->
     return token
 
 
+def _prepare_many(actions: PreparedGitActions, repo: Path, action: str, paths: list[str]) -> tuple[str, dict]:
+    tokens = [_token(repo, path) for path in paths]
+    return actions.prepare(str(repo), action, path_tokens=tokens)
+
+
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
@@ -79,6 +85,125 @@ def _tree_digest(root: Path) -> str:
 
 
 class GitActionTests(unittest.TestCase):
+    def test_batch_stage_explicit_tracked_untracked_and_unselected_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            (repo / "tracked.txt").write_text("staged tracked\n", encoding="utf-8")
+            (repo / "other.txt").write_text("leave unstaged\n", encoding="utf-8")
+            (repo / "new file.txt").write_text("staged untracked\n", encoding="utf-8")
+
+            token, preview = _prepare_many(actions, repo, "stage", ["new file.txt", "tracked.txt"])
+            self.assertEqual([item["path"] for item in preview["paths"]], ["new file.txt", "tracked.txt"])
+            self.assertEqual(_status_lines(repo), {' M tracked.txt', ' M other.txt', '?? "new file.txt"'})
+            result = actions.confirm(str(repo), "stage", token)
+
+            self.assertEqual(result["paths"], ["new file.txt", "tracked.txt"])
+            self.assertEqual(_status_lines(repo), {'A  "new file.txt"', "M  tracked.txt", " M other.txt"})
+            self.assertEqual(_git(repo, "show", ":tracked.txt"), b"staged tracked\n")
+            self.assertEqual(_git(repo, "show", ":new file.txt"), b"staged untracked\n")
+
+    def test_batch_unstage_preserves_worktrees_and_unselected_staged_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            for path, content in (
+                ("tracked.txt", "first staged\n"),
+                ("other.txt", "second staged\n"),
+            ):
+                (repo / path).write_text(content, encoding="utf-8")
+                _git(repo, "add", path)
+            (repo / "unselected staged.txt").write_text("keep staged\n", encoding="utf-8")
+            _git(repo, "add", "unselected staged.txt")
+
+            token, preview = _prepare_many(actions, repo, "unstage", ["tracked.txt", "other.txt"])
+            self.assertIn("INDEX WILL CHANGE", preview["warning"])
+            self.assertIn("WORKTREE CONTENT WILL NOT BE REPLACED", preview["warning"])
+            actions.confirm(str(repo), "unstage", token)
+
+            self.assertEqual((repo / "tracked.txt").read_text(), "first staged\n")
+            self.assertEqual((repo / "other.txt").read_text(), "second staged\n")
+            self.assertEqual(_git(repo, "show", ":unselected staged.txt"), b"keep staged\n")
+            self.assertEqual(_status_lines(repo), {" M tracked.txt", " M other.txt", 'A  "unselected staged.txt"'})
+
+    def test_batch_restore_modes_confirm_once_and_leave_unselected_path_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            (repo / "tracked.txt").write_text("restore first\n", encoding="utf-8")
+            (repo / "other.txt").write_text("restore second\n", encoding="utf-8")
+            token, preview = _prepare_many(actions, repo, "restore-unstaged", ["tracked.txt", "other.txt"])
+            self.assertIn("UNSTAGED WORKTREE CONTENT FOR ALL SELECTED PATHS WILL BE DISCARDED", preview["warning"])
+            self.assertEqual(len(preview["paths"]), 2)
+            actions.confirm(str(repo), "restore-unstaged", token)
+            self.assertEqual((repo / "tracked.txt").read_text(), "original\n")
+            self.assertEqual((repo / "other.txt").read_text(), "other original\n")
+            self.assertEqual(_status(repo), "")
+
+            (repo / "tracked.txt").write_text("restore head first\n", encoding="utf-8")
+            (repo / "other.txt").write_text("restore head second\n", encoding="utf-8")
+            token, preview = _prepare_many(actions, repo, "restore-head", ["tracked.txt", "other.txt"])
+            self.assertIn("STAGED AND UNSTAGED CHANGES FOR THE SELECTED PATHS MAY BE DISCARDED", preview["warning"])
+            actions.confirm(str(repo), "restore-head", token)
+            self.assertEqual((repo / "tracked.txt").read_text(), "original\n")
+            self.assertEqual((repo / "other.txt").read_text(), "other original\n")
+            self.assertEqual(_status(repo), "")
+
+    def test_batch_mixed_ineligible_injected_duplicate_and_oversized_selection_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            (repo / "tracked.txt").write_text("unstaged\n", encoding="utf-8")
+            (repo / "other.txt").write_text("staged\n", encoding="utf-8")
+            _git(repo, "add", "other.txt")
+            with self.assertRaisesRegex(GitActionError, "does not support"):
+                _prepare_many(actions, repo, "restore-unstaged", ["tracked.txt", "other.txt"])
+            with self.assertRaisesRegex(GitActionError, "no longer available"):
+                actions.prepare(str(repo), "stage", path_tokens=["not-a-status-token"])
+            token = _token(repo, "tracked.txt")
+            with self.assertRaisesRegex(GitActionError, "duplicate"):
+                actions.prepare(str(repo), "stage", path_tokens=[token, token])
+            with self.assertRaisesRegex(GitActionError, "safe action limit"):
+                actions.prepare(str(repo), "stage", path_tokens=[token] * 257)
+
+    def test_one_stale_batch_member_blocks_every_command_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            (repo / "tracked.txt").write_text("valid selected path\n", encoding="utf-8")
+            (repo / "other.txt").write_text("prepared selected path\n", encoding="utf-8")
+            token, preview = _prepare_many(actions, repo, "stage", ["tracked.txt", "other.txt"])
+            self.assertEqual(len(preview["paths"]), 2)
+            (repo / "other.txt").write_text("changed after review\n", encoding="utf-8")
+
+            with mock.patch("repoctl.workflow.git_actions._run_mutation") as mutate:
+                with self.assertRaisesRegex(GitActionError, "stale"):
+                    actions.confirm(str(repo), "stage", token)
+            mutate.assert_not_called()
+            self.assertEqual(_status_lines(repo), {" M tracked.txt", " M other.txt"})
+
+    def test_stale_batch_member_blocks_unstage_and_both_restore_modes(self) -> None:
+        for action in ("unstage", "restore-unstaged", "restore-head"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temporary:
+                repo = _repo(Path(temporary))
+                actions = PreparedGitActions()
+                for path in ("tracked.txt", "other.txt"):
+                    (repo / path).write_text(f"prepared {action}\n", encoding="utf-8")
+                    if action in {"unstage", "restore-head"}:
+                        _git(repo, "add", path)
+                        if action == "restore-head":
+                            (repo / path).write_text(f"unstaged {action}\n", encoding="utf-8")
+                token, _preview = _prepare_many(actions, repo, action, ["tracked.txt", "other.txt"])
+                (repo / "other.txt").write_text("stale before execution\n", encoding="utf-8")
+
+                with mock.patch("repoctl.workflow.git_actions._run_mutation") as mutate:
+                    with self.assertRaisesRegex(GitActionError, "stale"):
+                        actions.confirm(str(repo), action, token)
+                mutate.assert_not_called()
+                if action in {"unstage", "restore-head"}:
+                    self.assertEqual(_git(repo, "show", ":tracked.txt"), b"prepared " + action.encode() + b"\n")
+                self.assertEqual((repo / "tracked.txt").read_text(), f"prepared {action}\n" if action != "restore-head" else f"unstaged {action}\n")
+
     def test_stage_unstage_and_selected_path_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = _repo(Path(temporary))
@@ -187,7 +312,7 @@ class GitActionTests(unittest.TestCase):
             self.assertEqual((repo / "tracked.txt").read_text(), "original\n")
 
             (repo / "new.txt").write_text("new\n", encoding="utf-8")
-            with self.assertRaisesRegex(GitActionError, "unsupported"):
+            with self.assertRaisesRegex(GitActionError, "does not support"):
                 _prepare(actions, repo, "restore-head", "new.txt")
 
     def test_commit_only_commits_reviewed_staged_state_and_leaves_other_changes(self) -> None:
@@ -360,7 +485,8 @@ class GitActionTests(unittest.TestCase):
             before_state = _tree_digest(root / "state")
             listing = client.get(f"/git-review?file={_token(repo, 'tracked.txt')}")
             self.assertEqual(listing.status_code, 200)
-            self.assertIn("Review Stage", listing.get_data(as_text=True))
+            self.assertIn("Stage selected", listing.get_data(as_text=True))
+            self.assertIn('name="path_token"', listing.get_data(as_text=True))
             self.assertEqual(client.get("/git-review/action/prepare").status_code, 405)
             self.assertEqual(client.get("/git-review/action/confirm").status_code, 405)
             self.assertEqual(client.get("/git-review/action/cancel").status_code, 405)
@@ -435,6 +561,56 @@ class GitActionTests(unittest.TestCase):
             self.assertNotIn("Prepare Stage", workflow.get_data(as_text=True))
             self.assertNotIn("Prepare Commit", workflow.get_data(as_text=True))
 
+    def test_browser_batch_prepare_confirms_exact_displayed_path_tokens_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = _repo(root)
+            (repo / "tracked.txt").write_text("selected tracked\n", encoding="utf-8")
+            (repo / "other.txt").write_text("must remain unstaged\n", encoding="utf-8")
+            (repo / "untracked.txt").write_text("selected new\n", encoding="utf-8")
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+            listing = client.get("/git-review")
+            text = listing.get_data(as_text=True)
+            self.assertIn("Select all visible", text)
+            self.assertIn("Clear selection", text)
+            self.assertEqual(text.count("data-path-selection"), 3)
+            csrf = _csrf(client)
+
+            selected_tokens = [_token(repo, "tracked.txt"), _token(repo, "untracked.txt")]
+            prepared = client.post(
+                "/git-review/action/prepare",
+                data={"csrf_token": csrf, "action": "stage", "path_token": selected_tokens},
+            )
+            self.assertEqual(prepared.status_code, 200)
+            prepared_text = prepared.get_data(as_text=True)
+            self.assertIn("Selected paths (2)", prepared_text)
+            self.assertIn("<code>tracked.txt</code>", prepared_text)
+            self.assertIn("<code>untracked.txt</code>", prepared_text)
+            self.assertNotIn("<code>other.txt</code>", prepared_text)
+            self.assertEqual(_status_lines(repo), {" M tracked.txt", " M other.txt", "?? untracked.txt"})
+
+            token_match = re.search(rb'name="token" value="([A-Za-z0-9_-]+)"', prepared.data)
+            self.assertIsNotNone(token_match)
+            confirmed = client.post(
+                "/git-review/action/confirm",
+                data={
+                    "csrf_token": csrf,
+                    "action": "stage",
+                    "token": token_match.group(1).decode("ascii"),
+                    "path_token": [_token(repo, "other.txt")],
+                },
+            )
+            self.assertEqual(confirmed.status_code, 302)
+            self.assertEqual(_status_lines(repo), {"M  tracked.txt", " M other.txt", "A  untracked.txt"})
+            self.assertEqual(_git(repo, "ls-files", "other.txt"), b"other.txt\n")
+
+            arbitrary = client.post(
+                "/git-review/action/prepare",
+                data={"csrf_token": csrf, "action": "stage", "path_token": "other.txt"},
+            )
+            self.assertEqual(arbitrary.status_code, 404)
+
     def test_browser_commit_prepares_without_mutation_and_commits_only_staged_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -449,7 +625,7 @@ class GitActionTests(unittest.TestCase):
             review = client.get("/git-review")
             self.assertEqual(review.status_code, 200)
             review_text = review.get_data(as_text=True)
-            self.assertIn("Commit explicitly staged content", review_text)
+            self.assertIn("Staged set: 1 file", review_text)
             self.assertIn("other.txt", review_text)
             self.assertIn("Unstaged and untracked changes remain outside the commit", review_text)
             csrf = _csrf(client)

@@ -22,6 +22,8 @@ MAX_INDEX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_ACTION_OUTPUT_BYTES = 64 * 1024
 MAX_COMMIT_DIFF_BYTES = 512 * 1024
 MAX_COMMIT_PATHS = 256
+MAX_ACTION_PATHS = 256
+MAX_ACTION_PATH_BYTES = 32 * 1024
 MAX_FILE_HASH_BYTES = 256 * 1024 * 1024
 ACTION_TTL_SECONDS = 300
 MAX_PREPARED_ACTIONS = 64
@@ -198,8 +200,15 @@ def _assert_no_custom_filter(repo_root: Path, path: str) -> None:
         raise GitActionError("unsupported_clean_filter", "A configured clean filter may alter staged content; this path is unsupported.")
 
 
-def _capture_path(repo_root: Path, path: str) -> dict[str, Any]:
-    state = _state(repo_root)
+def _capture_path(
+    repo_root: Path,
+    path: str,
+    *,
+    state: dict[str, Any] | None = None,
+    index_state: str | None = None,
+) -> dict[str, Any]:
+    if state is None:
+        state = _state(repo_root)
     entry = _status_entry(state, path)
     if entry is None:
         raise GitActionError("path_not_changed", "The selected path is no longer changed.")
@@ -218,11 +227,40 @@ def _capture_path(repo_root: Path, path: str) -> dict[str, Any]:
             "xy": entry.get("xy"),
             "path": entry["path"],
         },
-        "index_state": _digest(_index_records(repo_root)),
+        "index_state": index_state or _digest(_index_records(repo_root)),
         "index_path_records": _digest(_index_records(repo_root, path)),
         "worktree": _file_identity(repo_root, path),
         "head_path_records": _digest(_head_entry(repo_root, path)),
         "path": path,
+    }
+
+
+def _capture_paths(repo_root: Path, paths: list[str]) -> dict[str, Any]:
+    if not paths:
+        raise GitActionError("path_required", "Select at least one changed path for this action.", 400)
+    if len(paths) > MAX_ACTION_PATHS or sum(len(os.fsencode(path)) for path in paths) > MAX_ACTION_PATH_BYTES:
+        raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
+    if len(set(paths)) != len(paths):
+        raise GitActionError("duplicate_path", "The selected path set contains duplicate paths.", 400)
+    ordered_paths = sorted(paths, key=os.fsencode)
+    state = _state(repo_root)
+    index_state = _digest(_index_records(repo_root))
+    captured = [
+        _capture_path(repo_root, path, state=state, index_state=index_state)
+        for path in ordered_paths
+    ]
+    baseline = captured[0]
+    for item in captured[1:]:
+        for key in ("repository_id", "repository_root", "head", "branch", "index_state"):
+            if item[key] != baseline[key]:
+                raise GitActionError("stale_prepared_action", "Repository state changed while preparing the selected path set.")
+    return {
+        "repository_id": baseline["repository_id"],
+        "repository_root": baseline["repository_root"],
+        "head": baseline["head"],
+        "branch": baseline["branch"],
+        "index_state": baseline["index_state"],
+        "paths": captured,
     }
 
 
@@ -393,42 +431,73 @@ class PreparedGitActions:
                 self._actions.pop(token, None)
 
     def options(self, repository_path: str, path_token: str) -> dict[str, Any]:
+        return self.options_for_tokens(repository_path, [path_token])[path_token]
+
+    def options_for_tokens(self, repository_path: str, path_tokens: list[str]) -> dict[str, dict[str, Any]]:
         repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
-        path = _raw_selected_path(repo_root, path_token)
-        state = _state(repo_root)
-        entry = _status_entry(state, path)
-        if entry is None:
-            return {"actions": [], "blocked_reason": "The selected path is no longer changed.", "unavailable_actions": []}
+        try:
+            state = _state(repo_root)
+        except GitActionError as exc:
+            return {
+                path_token: {"actions": [], "blocked_reason": str(exc), "unavailable_actions": []}
+                for path_token in path_tokens
+            }
+        entries_by_token = {_path_token(entry["path"]): entry for entry in state["working_tree"]["entries"]}
+        results = {}
+        for path_token in path_tokens:
+            entry = entries_by_token.get(path_token)
+            if entry is None:
+                results[path_token] = {
+                    "actions": [],
+                    "blocked_reason": "The selected path is no longer changed.",
+                    "unavailable_actions": [],
+                }
+                continue
+            results[path_token] = self._options_for_entry(repo_root, state, entry)
+        return results
+
+    def _options_for_entry(self, repo_root: Path, state: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+        path = entry["path"]
+        try:
+            entry = _status_entry(state, path)
+            if entry is None:
+                return {"actions": [], "blocked_reason": "The selected path is no longer changed.", "unavailable_actions": []}
+            if entry["kind"] not in {"ordinary", "untracked"} or entry.get("submodule") not in {None, "N..."}:
+                return {"actions": [], "blocked_reason": "This changed path state is unsupported for local actions.", "unavailable_actions": []}
+            _file_identity(repo_root, path)
+            _assert_no_custom_filter(repo_root, path)
+        except GitActionError as exc:
+            return {"actions": [], "blocked_reason": str(exc), "unavailable_actions": []}
         xy = entry.get("xy") or ""
         actions = []
         unavailable_actions = []
-        if entry["kind"] == "ordinary" and entry.get("submodule", "N...") == "N...":
+        if entry["kind"] == "untracked":
+            actions.append("stage")
+        elif len(xy) > 1 and xy[1] != ".":
+            actions.append("stage")
+        if xy and xy[0] != ".":
+            actions.append("unstage")
+        if entry["kind"] == "ordinary" and len(xy) >= 2 and (xy[0] != "." or xy[1] != "."):
             try:
-                _file_identity(repo_root, path)
-                if entry["kind"] == "untracked" or len(xy) > 1 and xy[1] != ".":
-                    actions.append("stage")
-                if xy and xy[0] != ".":
-                    actions.append("unstage")
-                if xy and xy[1] != ".":
-                    try:
-                        _path_preview(repo_root, "restore-unstaged", path)
-                        actions.append("restore-unstaged")
-                    except GitActionError as exc:
-                        unavailable_actions.append({"action": "restore-unstaged", "reason": str(exc)})
-                if entry["kind"] == "ordinary":
-                    try:
-                        _path_preview(repo_root, "restore-head", path)
-                        actions.append("restore-head")
-                    except GitActionError as exc:
-                        unavailable_actions.append({"action": "restore-head", "reason": str(exc)})
-            except GitActionError as exc:
-                return {"actions": [], "blocked_reason": str(exc), "unavailable_actions": []}
-        elif entry["kind"] == "untracked":
-            try:
-                _file_identity(repo_root, path)
-                actions.append("stage")
-            except GitActionError as exc:
-                return {"actions": [], "blocked_reason": str(exc), "unavailable_actions": []}
+                review = inspect_git_review(str(repo_root), selected_file=_path_token(path))
+                previews = {item["key"]: item for item in review["selected"]["action_previews"]}
+                possible = []
+                if xy[1] != ".":
+                    possible.append("restore-unstaged")
+                if xy[0] != "." or xy[1] != ".":
+                    possible.append("restore-head")
+                for action in possible:
+                    item = previews.get(action)
+                    if item and item.get("available") and item.get("complete"):
+                        actions.append(action)
+                    elif action == "restore-head" or len(xy) > 1 and xy[1] != ".":
+                        reason = item.get("reason") if item else None
+                        unavailable_actions.append(
+                            {"action": action, "reason": reason or "Complete supported consequence evidence is unavailable."}
+                        )
+            except (GitReviewError, FileNotFoundError, ValueError) as exc:
+                for action in ("restore-unstaged", "restore-head"):
+                    unavailable_actions.append({"action": action, "reason": str(exc)})
         return {"actions": actions, "blocked_reason": None, "unavailable_actions": unavailable_actions}
 
     def can_commit(self, repository_path: str) -> dict[str, Any]:
@@ -452,6 +521,7 @@ class PreparedGitActions:
         action: str,
         *,
         path_token: str | None = None,
+        path_tokens: list[str] | None = None,
         message: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         if action not in _ACTIONS:
@@ -474,32 +544,71 @@ class PreparedGitActions:
                 "warning": "Only the explicitly staged content shown here will be committed. Unstaged and untracked paths remain outside the commit.",
             }
         else:
-            if not path_token:
-                raise GitActionError("path_required", "Select one changed path for this action.", 400)
-            path = _raw_selected_path(repo_root, path_token)
-            state = _capture_path(repo_root, path)
-            options = self.options(str(repo_root), path_token)["actions"]
-            if action not in options:
-                raise GitActionError("action_unavailable", "This action is unsupported for the selected path state.")
-            preview_data = _path_preview(repo_root, action, path)
+            submitted_tokens = path_tokens if path_tokens is not None else ([path_token] if path_token else [])
+            if not submitted_tokens:
+                raise GitActionError("path_required", "Select at least one changed path for this action.", 400)
+            if len(submitted_tokens) > MAX_ACTION_PATHS:
+                raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
+            if len(set(submitted_tokens)) != len(submitted_tokens):
+                raise GitActionError("duplicate_path", "The selected path set contains duplicate paths.", 400)
+            inventory = _state(repo_root)["working_tree"]["entries"]
+            paths_by_token = {_path_token(entry["path"]): entry["path"] for entry in inventory}
+            try:
+                paths = sorted((paths_by_token[token] for token in submitted_tokens), key=os.fsencode)
+            except KeyError as exc:
+                raise GitActionError("path_not_found", "A selected changed path is no longer available.", 404) from exc
+            if sum(len(os.fsencode(path)) for path in paths) > MAX_ACTION_PATH_BYTES:
+                raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
+            state = _capture_paths(repo_root, paths)
+            options_by_token = self.options_for_tokens(
+                str(repo_root),
+                [_path_token(path) for path in paths],
+            )
+            path_previews = []
+            for path in paths:
+                options = options_by_token[_path_token(path)]
+                if action not in options["actions"]:
+                    reason = options.get("blocked_reason") or next(
+                        (item["reason"] for item in options.get("unavailable_actions", []) if item["action"] == action),
+                        "At least one selected path does not support this action.",
+                    )
+                    raise GitActionError("action_unavailable", f"{path}: {reason}")
+                preview_data = _path_preview(repo_root, action, path)
+                path_previews.append(
+                    {
+                        "path": path,
+                        "summary": preview_data["summary"],
+                        "layers": preview_data["layers"],
+                        "details": preview_data,
+                    }
+                )
+            if _capture_paths(repo_root, paths) != state:
+                raise GitActionError(
+                    "stale_prepared_action",
+                    "Repository state changed while preparing the selected path set; review current evidence again.",
+                )
+            action_titles = {
+                "stage": "Stage selected paths",
+                "unstage": "Unstage selected paths",
+                "restore-unstaged": "Restore unstaged changes",
+                "restore-head": "Restore selected paths to HEAD",
+            }
+            warning = {
+                "restore-unstaged": "UNSTAGED WORKTREE CONTENT FOR ALL SELECTED PATHS WILL BE DISCARDED. This discards unstaged worktree content for every selected path.",
+                "restore-head": "STAGED AND UNSTAGED CHANGES FOR THE SELECTED PATHS MAY BE DISCARDED. Both layers will be replaced from the current HEAD version for every selected path.",
+                "unstage": "INDEX WILL CHANGE. WORKTREE CONTENT WILL NOT BE REPLACED.",
+            }.get(action, "")
             preview = {
                 "action": action,
-                "title": preview_data["title"],
+                "title": action_titles[action],
                 "repository_root": str(repo_root),
                 "branch": state["branch"],
                 "head": state["head"],
-                "path": preview_data["path"],
-                "summary": preview_data["summary"],
-                "layers": preview_data["layers"],
-                "details": preview_data,
-                "warning": (
-                    "This action discards unstaged worktree content for this path."
-                    if action == "restore-unstaged"
-                    else "This action replaces both index and worktree state for this path with the current HEAD version."
-                    if action == "restore-head"
-                    else ""
-                ),
+                "paths": path_previews,
+                "warning": warning,
             }
+            if len(path_previews) == 1:
+                preview.update(path_previews[0])
         now = time.monotonic()
         token = secrets.token_urlsafe(32)
         prepared = PreparedAction(
@@ -537,27 +646,29 @@ class PreparedGitActions:
             self._actions.pop(token, None)
             if prepared.expires_at <= now:
                 raise GitActionError("prepared_action_expired", "Prepared action expired; review current Git state again.")
-            current = _capture_commit(repo_root) if action == "commit" else _capture_path(repo_root, prepared.state["path"])
+            current = _capture_commit(repo_root) if action == "commit" else _capture_paths(
+                repo_root,
+                [item["path"] for item in prepared.state["paths"]],
+            )
             if current != prepared.state:
                 raise GitActionError("stale_prepared_action", "Prepared action is stale. Repository state changed; review current evidence again.")
             if action == "commit":
                 _assert_hooks_supported(repo_root)
                 self._execute_commit(repo_root, prepared)
                 return self._verify_commit(repo_root, prepared)
-            self._execute_path(repo_root, prepared)
-            return self._verify_path(repo_root, prepared)
+            self._execute_paths(repo_root, prepared)
+            return self._verify_paths(repo_root, prepared)
 
-    def _execute_path(self, repo_root: Path, prepared: PreparedAction) -> None:
-        path = prepared.state["path"]
-        literal_path = f":(literal){path}"
+    def _execute_paths(self, repo_root: Path, prepared: PreparedAction) -> None:
+        pathspecs = [f":(literal){item['path']}" for item in prepared.state["paths"]]
         if prepared.action == "stage":
-            args = ["add", "--", literal_path]
+            args = ["add", "--", *pathspecs]
         elif prepared.action == "unstage":
-            args = ["restore", "--staged", "--", literal_path]
+            args = ["restore", "--staged", "--", *pathspecs]
         elif prepared.action == "restore-unstaged":
-            args = ["restore", "--worktree", "--", literal_path]
+            args = ["restore", "--worktree", "--", *pathspecs]
         elif prepared.action == "restore-head":
-            args = ["restore", "--source=HEAD", "--staged", "--worktree", "--", literal_path]
+            args = ["restore", "--source=HEAD", "--staged", "--worktree", "--", *pathspecs]
         else:
             raise GitActionError("invalid_action", "Unsupported local Git action.", 400)
         self._check_index_lock(repo_root)
@@ -581,40 +692,41 @@ class PreparedGitActions:
         if lock.exists():
             raise GitActionError("git_index_locked", "Git index is locked by another process.")
 
-    def _verify_path(self, repo_root: Path, prepared: PreparedAction) -> dict[str, Any]:
-        path = prepared.state["path"]
+    def _verify_paths(self, repo_root: Path, prepared: PreparedAction) -> dict[str, Any]:
         state = _state(repo_root)
-        entry = _status_entry(state, path)
-        if prepared.action == "stage":
+        for prepared_path in prepared.state["paths"]:
+            path = prepared_path["path"]
+            entry = _status_entry(state, path)
             xy = (entry.get("xy") or "") if entry else ""
-            if entry is None or entry["kind"] == "untracked" or len(xy) < 2 or xy[0] == ".":
-                raise GitActionError("post_action_verification_failed", "Stage command returned but the selected path is not verified as staged.", 503)
-            if xy[1] != ".":
-                raise GitActionError("post_action_verification_failed", "Stage command returned but unstaged changes remain for the selected path.", 503)
-            result = "Path is now staged; other paths were not selected."
-        elif prepared.action == "unstage":
-            xy = (entry.get("xy") or "") if entry else ""
-            if entry is not None and xy and xy[0] != ".":
-                raise GitActionError("post_action_verification_failed", "Unstage command returned but the selected path remains staged.", 503)
-            if _file_identity(repo_root, path) != prepared.state["worktree"]:
-                raise GitActionError("post_action_verification_failed", "Unstage command returned but worktree identity changed.", 503)
-            result = "Path is no longer staged; worktree content remains unchanged."
-        elif prepared.action == "restore-unstaged":
-            if entry is not None and (entry.get("xy") or "")[1] != ".":
-                raise GitActionError("post_action_verification_failed", "Restore command returned but unstaged changes remain for the selected path.", 503)
-            if _digest(_index_records(repo_root, path)) != prepared.state["index_path_records"]:
-                raise GitActionError("post_action_verification_failed", "Restore command changed the selected index state.", 503)
-            result = "Unstaged changes for this path are no longer present; index state is unchanged."
-        else:
-            if entry is not None:
-                raise GitActionError("post_action_verification_failed", "Restore-to-HEAD returned but the selected path is still changed.", 503)
-            if state["head"] != prepared.state["head"]:
-                raise GitActionError("post_action_verification_failed", "HEAD changed during restore-to-HEAD verification.", 503)
-            result = "Selected path now matches HEAD in both index and worktree."
+            if prepared.action == "stage":
+                if entry is None or entry["kind"] == "untracked" or len(xy) < 2 or xy[0] == "." or xy[1] != ".":
+                    raise GitActionError("post_action_verification_failed", f"Stage command returned but {path} is not verified as fully staged.", 503)
+            elif prepared.action == "unstage":
+                if entry is not None and xy and xy[0] != ".":
+                    raise GitActionError("post_action_verification_failed", f"Unstage command returned but {path} remains staged.", 503)
+                if _file_identity(repo_root, path) != prepared_path["worktree"]:
+                    raise GitActionError("post_action_verification_failed", f"Unstage command changed the worktree identity for {path}.", 503)
+            elif prepared.action == "restore-unstaged":
+                if entry is not None and len(xy) > 1 and xy[1] != ".":
+                    raise GitActionError("post_action_verification_failed", f"Restore command returned but unstaged changes remain for {path}.", 503)
+                if _digest(_index_records(repo_root, path)) != prepared_path["index_path_records"]:
+                    raise GitActionError("post_action_verification_failed", f"Restore command changed the index state for {path}.", 503)
+            else:
+                if entry is not None:
+                    raise GitActionError("post_action_verification_failed", f"Restore-to-HEAD returned but {path} is still changed.", 503)
+                if state["head"] != prepared.state["head"]:
+                    raise GitActionError("post_action_verification_failed", "HEAD changed during restore-to-HEAD verification.", 503)
+        count = len(prepared.state["paths"])
+        result = {
+            "stage": f"{count} selected path(s) are now staged; other paths were not selected.",
+            "unstage": f"{count} selected path(s) are no longer staged; worktree content remains unchanged.",
+            "restore-unstaged": f"Unstaged changes are no longer present for all {count} selected path(s); index state is unchanged.",
+            "restore-head": f"All {count} selected path(s) now match HEAD in both index and worktree.",
+        }[prepared.action]
         return {
             "action": prepared.action,
             "message": result,
-            "path": path,
+            "paths": [item["path"] for item in prepared.state["paths"]],
             "head": state["head"],
             "branch": state["branch"]["name"],
         }
