@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block main_class %}main-wide{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Review and confirm: {{ preview.title }}</h2>
+  <p class="read-only-badge">PREPARED — NO GIT CHANGE HAS BEEN APPLIED</p>
+  {% if preview.warning %}
+    <p class="{% if destructive %}warning{% else %}muted{% endif %}"><strong>{{ preview.warning }}</strong></p>
+  {% endif %}
+  <dl class="spaced-top">
+    <dt>Repository</dt><dd>{{ preview.repository_root }}</dd>
+    <dt>Branch</dt><dd>{{ preview.branch }}</dd>
+    <dt>HEAD</dt><dd><code>{{ preview.head }}</code></dd>
+    {% if preview.path %}<dt>Selected path</dt><dd><code>{{ preview.path }}</code></dd>{% endif %}
+    {% if preview.layers %}<dt>Git layers affected</dt><dd>{{ preview.layers | join(', ') }}</dd>{% endif %}
+    {% if preview.message is defined %}<dt>Commit message</dt><dd>{{ preview.message }}</dd>{% endif %}
+  </dl>
+
+  {% if preview.summary %}<p>{{ preview.summary }}</p>{% endif %}
+
+  {% if preview.action == 'commit' %}
+    <h3>Staged content that will be committed ({{ preview.staged_paths | length }} paths)</h3>
+    <p><strong>Only these explicitly staged changes will be committed. No files will be staged automatically.</strong></p>
+    <ul>{% for item in preview.staged_paths %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+    {% if preview.remaining_paths %}
+      <h3>Separate changes that will remain outside the commit</h3>
+      <ul>{% for item in preview.remaining_paths %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+    {% else %}
+      <p class="muted">No other unstaged or untracked paths were reported at preparation time.</p>
+    {% endif %}
+    <h3>Staged diff</h3>
+    <pre class="git-diff">{{ preview.diff }}</pre>
+  {% elif preview.details.preview %}
+    <p><strong>Would change:</strong> {{ preview.details.preview.affected_layers | join(', ') }}</p>
+    {% if preview.details.preview.would_discard %}
+      <h3>State/content that would be replaced</h3>
+      <ul>{% for item in preview.details.preview.would_discard %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% for evidence in preview.details.preview.evidence %}
+      <h3>{{ evidence.side }}</h3>
+      {% if evidence.available and evidence.text %}
+        <pre class="git-diff">{{ evidence.text }}</pre>
+      {% elif evidence.available %}
+        <p class="muted">No difference is present for this comparison.</p>
+      {% else %}
+        <p class="warning">{{ evidence.reason }}</p>
+      {% endif %}
+    {% endfor %}
+  {% elif preview.details.diffs %}
+    <h3>Selected path diff evidence</h3>
+    {% for evidence in preview.details.diffs %}
+      <h4>{{ evidence.side }}</h4>
+      {% if evidence.available and evidence.text %}
+        <pre class="git-diff">{{ evidence.text }}</pre>
+      {% elif evidence.available %}
+        <p class="muted">No text difference is present for this comparison.</p>
+      {% else %}
+        <p class="warning">{{ evidence.reason }}</p>
+      {% endif %}
+    {% endfor %}
+  {% elif preview.details.evidence %}
+    <h3>Untracked file preview</h3>
+    {% if preview.details.evidence.available and preview.details.evidence.text %}
+      <pre class="git-diff">{{ preview.details.evidence.text }}</pre>
+      {% if not preview.details.evidence.complete %}<p class="warning">Preview is incomplete; the full file may contain additional content.</p>{% endif %}
+    {% elif preview.details.evidence.available %}
+      <p class="muted">The selected file is empty.</p>
+    {% else %}
+      <p class="warning">{{ preview.details.evidence.reason }} The explicit stage action remains limited to this selected path.</p>
+    {% endif %}
+  {% endif %}
+
+  <div class="confirmation-actions">
+    <form method="post" action="{{ url_for('git_action_confirm') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="token" value="{{ token }}">
+      <input type="hidden" name="action" value="{{ preview.action }}">
+      <button type="submit" class="{% if destructive %}danger{% else %}primary{% endif %}">Confirm and execute {{ preview.title }}</button>
+    </form>
+    <form method="post" action="{{ url_for('git_action_cancel') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="token" value="{{ token }}">
+      <button type="submit" class="secondary">Cancel / Return to Git Review</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

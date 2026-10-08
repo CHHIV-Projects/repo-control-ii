@@ -23,6 +23,7 @@ def _run_git_bounded(
     try:
         env = os.environ.copy()
         env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["GIT_TERMINAL_PROMPT"] = "0"
         proc = subprocess.Popen(
             ["git", "-C", str(repo_root), *args],
             stdout=subprocess.PIPE,

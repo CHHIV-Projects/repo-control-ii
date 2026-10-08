@@ -80,19 +80,18 @@ Default browser URL:
 http://127.0.0.1:8765
 ```
 
-Current pages and capabilities:
+Current primary pages and capabilities:
 
 - Dashboard (deterministic workflow status)
-- Context (deterministic context generation and rendering)
-- Snapshots (list/create immutable snapshots)
-- Comparisons (list/create structural comparisons)
-- AI Review (run/read local GPT-OSS comparison analysis)
-- Workflow (read-only stage/commit plan and execution visibility)
+- Git Review (current changes, diagnosis/recovery previews, history, and branches)
+- Git Review provides explicitly selected stage, unstage, restore, and local commit actions through preview, confirmation, fresh-state revalidation, and post-action verification.
+- Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
 
-Milestone 009 explicit boundary:
+Browser Git mutation boundary:
 
-- Browser routes do not stage, commit, push, fetch, or pull.
-- M007/M008 mutation execution remains CLI-only in this milestone.
+- GET requests are read-only. Mutations require a CSRF-protected POST, a short-lived single-use confirmation token, and fresh Git-state validation.
+- Stage/unstage/restore are limited to one explicitly selected changed path at a time. Commit includes only the reviewed staged content and never stages implicitly.
+- Branch/remote mutation, push, fetch, pull, conflict resolution, and unsupported/incomplete cases remain out of scope.
 
 Windows access from a remote workstation can use SSH port forwarding, for example:
 

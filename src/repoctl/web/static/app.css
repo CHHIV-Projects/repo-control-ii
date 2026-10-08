@@ -99,6 +99,16 @@ button {
   cursor: pointer;
 }
 
+button.danger {
+  background: #8f321f;
+}
+
+button.secondary {
+  background: #eceae3;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
 input, select {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -224,6 +234,36 @@ ul {
 
 .table-scroll {
   overflow-x: auto;
+}
+
+.local-action-buttons, .confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.git-local-actions {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 0.7rem;
+}
+
+.commit-message-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.commit-message-form input {
+  flex: 1 1 280px;
+}
+
+.confirmation-actions {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 0.8rem;
 }
 
 .branch-table {

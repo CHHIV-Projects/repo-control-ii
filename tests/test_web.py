@@ -536,7 +536,8 @@ class WebTests(unittest.TestCase):
             resp = client.get("/workflow")
             self.assertEqual(resp.status_code, 200)
             self.assertIn("unstaged_only", resp.get_data(as_text=True))
-            self.assertIn("Prepare Stage", resp.get_data(as_text=True))
+            self.assertIn("READ ONLY", resp.get_data(as_text=True))
+            self.assertNotIn("Prepare Stage", resp.get_data(as_text=True))
 
             _git(repo, "add", "module_c.py")
             staged_resp = client.get("/workflow")
@@ -544,9 +545,8 @@ class WebTests(unittest.TestCase):
             self.assertEqual(staged_resp.status_code, 200)
             self.assertIn("staged_only", staged_text)
             self.assertNotIn('action="/workflow/stage/prepare"', staged_text)
-            self.assertNotIn('<button type="submit" class="primary">Prepare Stage</button>', staged_text)
-            self.assertIn("Matching Snapshot required", staged_text)
-            self.assertIn('action="/workflow/snapshot/create"', staged_text)
+            self.assertNotIn("Create Matching Snapshot", staged_text)
+            self.assertNotIn("Prepare Commit", staged_text)
 
     def test_workflow_page_commit_eligibility_follows_canonical_state(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -560,129 +560,76 @@ class WebTests(unittest.TestCase):
             clean_text = resp_clean.get_data(as_text=True)
             self.assertIn("clean", clean_text)
             self.assertNotIn('action="/workflow/commit/prepare"', clean_text)
-            self.assertNotIn('<button type="submit" class="primary">Prepare Commit</button>', clean_text)
+            self.assertNotIn("Prepare Commit", clean_text)
 
             (repo / "module_c.py").write_text("def helper_two():\n    return 2\n", encoding="utf-8")
             resp_unstaged = client.get("/workflow")
             unstaged_text = resp_unstaged.get_data(as_text=True)
             self.assertIn("unstaged_only", unstaged_text)
             self.assertNotIn('action="/workflow/commit/prepare"', unstaged_text)
-            self.assertNotIn('<button type="submit" class="primary">Prepare Commit</button>', unstaged_text)
+            self.assertNotIn("Prepare Commit", unstaged_text)
 
             _git(repo, "add", "module_c.py")
             resp_staged = client.get("/workflow")
             staged_text = resp_staged.get_data(as_text=True)
             self.assertIn("staged_only", staged_text)
-            self.assertIn("Matching Snapshot required", staged_text)
             self.assertNotIn('action="/workflow/commit/prepare"', staged_text)
+            self.assertNotIn("Prepare Commit", staged_text)
 
-    def test_workflow_can_create_matching_snapshot_explicitly(self) -> None:
+    def test_legacy_workflow_snapshot_and_mutation_posts_are_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             repo = _init_repo(root)
             state_root = root / "state"
-            (repo / "module_c.py").write_text("def helper_two():\n    return 2\n", encoding="utf-8")
-            _git(repo, "add", "module_c.py")
             app = create_web_app(repository_path=str(repo), state_root=state_root)
             client = app.test_client()
             client.get("/workflow")
             csrf = _extract_csrf_token(client)
-
-            before = client.get("/workflow")
-            self.assertIn("Matching Snapshot required", before.get_data(as_text=True))
-            created = client.post(
+            for path in (
                 "/workflow/snapshot/create",
-                data={"csrf_token": csrf},
-                follow_redirects=True,
-            )
-            created_text = created.get_data(as_text=True)
-            self.assertEqual(created.status_code, 200)
-            self.assertIn("Matching Snapshot available", created_text)
-            self.assertIn('action="/workflow/commit/prepare"', created_text)
-
-    def test_workflow_stage_review_and_approve_flow(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            repo = _init_repo(root)
-            state_root = root / "state"
-            (repo / "module_c.py").write_text("def helper_two():\n    return 2\n", encoding="utf-8")
-
-            app = create_web_app(repository_path=str(repo), state_root=state_root)
-            client = app.test_client()
-            client.get("/workflow")
-            csrf = _extract_csrf_token(client)
-
-            prepare_resp = client.post("/workflow/stage/prepare", data={"csrf_token": csrf}, follow_redirects=False)
-            self.assertEqual(prepare_resp.status_code, 302)
-            self.assertIn("/workflow/stage/plan?plan_id=", prepare_resp.headers["Location"])
-            plan_id = prepare_resp.headers["Location"].split("plan_id=")[1]
-
-            review_resp = client.get(f"/workflow/stage/plan?plan_id={plan_id}")
-            review_text = review_resp.get_data(as_text=True)
-            self.assertEqual(review_resp.status_code, 200)
-            self.assertIn("Action:", review_text)
-            self.assertIn("Stage", review_text)
-            self.assertIn("Exact Stage Plan ID", review_text)
-            self.assertIn(plan_id, review_text)
-            self.assertIn("Approve Stage", review_text)
-
-            approve_resp = client.post(
+                "/workflow/stage/prepare",
                 "/workflow/stage/approve",
-                data={"csrf_token": csrf, "plan_id": plan_id},
-                follow_redirects=True,
-            )
-            self.assertEqual(approve_resp.status_code, 200)
-            self.assertIn("Stage execution succeeded", approve_resp.get_data(as_text=True))
-            self.assertIn(plan_id, approve_resp.get_data(as_text=True))
-
-    def test_workflow_commit_review_and_approve_flow(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            repo = _init_repo(root)
-            state_root = root / "state"
-            app = create_web_app(repository_path=str(repo), state_root=state_root)
-            client = app.test_client()
-            client.get("/workflow")
-            csrf = _extract_csrf_token(client)
-
-            (repo / "module_c.py").write_text("def helper_two():\n    return 2\n", encoding="utf-8")
-            prepare_stage_resp = client.post("/workflow/stage/prepare", data={"csrf_token": csrf}, follow_redirects=False)
-            self.assertEqual(prepare_stage_resp.status_code, 302)
-            stage_plan_id = prepare_stage_resp.headers["Location"].split("plan_id=")[1]
-            stage_approve_resp = client.post(
-                "/workflow/stage/approve",
-                data={"csrf_token": csrf, "plan_id": stage_plan_id},
-                follow_redirects=True,
-            )
-            self.assertEqual(stage_approve_resp.status_code, 200)
-            create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
-
-            prepare_resp = client.post(
                 "/workflow/commit/prepare",
-                data={"csrf_token": csrf, "commit_message": "commit via browser flow"},
-                follow_redirects=False,
-            )
-            self.assertEqual(prepare_resp.status_code, 302)
-            self.assertIn("/workflow/commit/plan?plan_id=", prepare_resp.headers["Location"])
-            commit_plan_id = prepare_resp.headers["Location"].split("plan_id=")[1]
-
-            review_resp = client.get(f"/workflow/commit/plan?plan_id={commit_plan_id}")
-            review_text = review_resp.get_data(as_text=True)
-            self.assertEqual(review_resp.status_code, 200)
-            self.assertIn("Action:", review_text)
-            self.assertIn("Commit", review_text)
-            self.assertIn("Exact Commit Plan ID", review_text)
-            self.assertIn(commit_plan_id, review_text)
-            self.assertIn("Approve Commit", review_text)
-
-            approve_resp = client.post(
                 "/workflow/commit/approve",
-                data={"csrf_token": csrf, "plan_id": commit_plan_id},
-                follow_redirects=True,
+            ):
+                response = client.post(path, data={"csrf_token": csrf})
+                self.assertEqual(response.status_code, 410, path)
+                self.assertIn("disabled", response.get_data(as_text=True))
+
+    def test_legacy_workflow_stage_routes_cannot_mutate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+            client.get("/workflow")
+            csrf = _extract_csrf_token(client)
+            before = (_git_text(repo, "rev-parse", "HEAD"), _git(repo, "status", "--porcelain=v2", "-z"))
+            prepared = client.post("/workflow/stage/prepare", data={"csrf_token": csrf})
+            approved = client.post("/workflow/stage/approve", data={"csrf_token": csrf, "plan_id": "old-plan"})
+            self.assertEqual(prepared.status_code, 410)
+            self.assertEqual(approved.status_code, 410)
+            self.assertEqual(before, (_git_text(repo, "rev-parse", "HEAD"), _git(repo, "status", "--porcelain=v2", "-z")))
+
+    def test_legacy_workflow_commit_routes_cannot_mutate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+            client.get("/workflow")
+            csrf = _extract_csrf_token(client)
+            before = (_git_text(repo, "rev-parse", "HEAD"), _git(repo, "status", "--porcelain=v2", "-z"))
+            prepared = client.post(
+                "/workflow/commit/prepare",
+                data={"csrf_token": csrf, "commit_message": "legacy"},
             )
-            self.assertEqual(approve_resp.status_code, 200)
-            self.assertIn("Commit execution succeeded", approve_resp.get_data(as_text=True))
-            self.assertIn(commit_plan_id, approve_resp.get_data(as_text=True))
+            approved = client.post("/workflow/commit/approve", data={"csrf_token": csrf, "plan_id": "old-plan"})
+            self.assertEqual(prepared.status_code, 410)
+            self.assertEqual(approved.status_code, 410)
+            self.assertEqual(before, (_git_text(repo, "rev-parse", "HEAD"), _git(repo, "status", "--porcelain=v2", "-z")))
 
     def test_workflow_history_interleaves_stage_and_commit_with_scope_details(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -775,10 +722,7 @@ class WebTests(unittest.TestCase):
                 mock.patch("repoctl.web.app.generate_milestone_status") as status_mock,
                 mock.patch("repoctl.web.app.run_scan_with_artifacts") as scan_mock,
                 mock.patch("repoctl.web.app.create_snapshot") as snapshot_mock,
-                mock.patch("repoctl.web.app.prepare_stage") as stage_plan_mock,
-                mock.patch("repoctl.web.app.execute_prepared_stage") as stage_execute_mock,
-                mock.patch("repoctl.web.app.prepare_commit") as commit_plan_mock,
-                mock.patch("repoctl.web.app.execute_prepared_commit") as commit_execute_mock,
+                mock.patch("repoctl.workflow.git_actions.PreparedGitActions.confirm") as confirm_mock,
             ):
                 listing = client.get("/git-review")
                 listing_text = listing.get_data(as_text=True)
@@ -792,8 +736,9 @@ class WebTests(unittest.TestCase):
                 self.assertIn("&lt;script&gt;.txt", listing_text)
                 self.assertNotIn("<script>alert(1)</script>", listing_text)
                 nav = listing_text.split('<nav class="nav">', 1)[1].split("</nav>", 1)[0]
-                for label in ("Dashboard", "Git Review", "Workflow"):
+                for label in ("Dashboard", "Git Review"):
                     self.assertIn(f">{label}</a>", nav)
+                self.assertNotIn(">Workflow</a>", nav)
                 for legacy_label in ("Context", "Snapshots", "Comparisons", "AI Review"):
                     self.assertNotIn(f">{legacy_label}</a>", nav)
                 route_paths = {rule.rule for rule in app.url_map.iter_rules()}
@@ -847,10 +792,7 @@ class WebTests(unittest.TestCase):
                 status_mock.assert_not_called()
                 scan_mock.assert_not_called()
                 snapshot_mock.assert_not_called()
-                stage_plan_mock.assert_not_called()
-                stage_execute_mock.assert_not_called()
-                commit_plan_mock.assert_not_called()
-                commit_execute_mock.assert_not_called()
+                confirm_mock.assert_not_called()
 
             self.assertEqual(repository_before, snapshot_tree(repo))
             self.assertEqual(state_before, snapshot_tree(state_root))

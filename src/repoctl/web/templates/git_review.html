@@ -208,6 +208,33 @@
       </dl>
     </article>
 
+    <article class="card spaced-top commit-review">
+      <h3>Commit explicitly staged content</h3>
+      <p>Commit will include only the staged paths and diff shown below. Unstaged and untracked changes remain outside the commit; no automatic staging occurs.</p>
+      {% if commit_options.available %}
+        <dl>
+          <dt>Branch</dt><dd>{{ commit_options.branch }}</dd>
+          <dt>HEAD</dt><dd><code>{{ commit_options.head }}</code></dd>
+          <dt>Staged paths</dt><dd>{{ commit_options.staged_paths | length }}</dd>
+        </dl>
+        <ul>{% for item in commit_options.staged_paths %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+        {% if commit_options.remaining_paths %}
+          <h4>Unstaged / untracked paths that will remain outside the commit</h4>
+          <ul>{% for item in commit_options.remaining_paths %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+        {% endif %}
+        <details><summary>Review complete staged diff</summary><pre class="git-diff">{{ commit_options.diff }}</pre></details>
+        <form method="post" action="{{ url_for('git_action_prepare') }}" class="commit-message-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="action" value="commit">
+          <label for="git-commit-message">Commit message</label>
+          <input id="git-commit-message" name="commit_message" type="text" maxlength="500" required placeholder="Describe the staged change">
+          <button type="submit" class="primary">Review commit confirmation</button>
+        </form>
+      {% else %}
+        <p class="muted">{{ commit_options.reason }}</p>
+      {% endif %}
+    </article>
+
     <div class="git-review-layout spaced-top">
       <section class="card git-review-files">
         <h3>Changed files ({{ review.files | length }})</h3>
@@ -300,6 +327,32 @@
             {% if review.selected.conflict_note %}
               <p class="warning">{{ review.selected.conflict_note }}</p>
             {% endif %}
+          </section>
+
+          <section class="git-local-actions">
+            <h4>Local actions for this selected path</h4>
+            {% if action_options.actions %}
+              <div class="local-action-buttons">
+                {% for action in action_options.actions %}
+                  <form method="post" action="{{ url_for('git_action_prepare') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="action" value="{{ action }}">
+                    <input type="hidden" name="path_token" value="{{ review.selected.token }}">
+                    <button type="submit" class="{% if action in ['restore-unstaged', 'restore-head'] %}danger{% else %}primary{% endif %}">
+                      {% if action == 'stage' %}Review Stage{% elif action == 'unstage' %}Review Unstage{% elif action == 'restore-unstaged' %}Review Restore Unstaged{% else %}Review Restore to HEAD{% endif %}
+                    </button>
+                  </form>
+                {% endfor %}
+              </div>
+              <p class="muted">Each action opens a separate confirmation. No mutation occurs from this page or from a GET request.</p>
+            {% elif action_options.blocked_reason %}
+              <p class="muted">{{ action_options.blocked_reason }}</p>
+            {% else %}
+              <p class="muted">No supported local action is available for this path state.</p>
+            {% endif %}
+            {% for unavailable in action_options.unavailable_actions %}
+              <p class="muted">{{ unavailable.action }} unavailable: {{ unavailable.reason }}</p>
+            {% endfor %}
           </section>
 
           {% if review.selected.action_preview %}

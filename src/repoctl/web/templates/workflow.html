@@ -2,45 +2,16 @@
 {% block content %}
 <section class="panel">
   <h2>Workflow Visibility</h2>
+  <p class="read-only-badge">READ ONLY — legacy stage / commit actions are disabled</p>
   <p>Current workflow state: <strong>{{ workflow_state }}</strong></p>
   <p class="muted">Workflow history - newest to oldest.</p>
 
-  <div class="grid two spaced-top">
-    {% if workflow_state in ['unstaged_only', 'staged_and_unstaged'] %}
-      <form method="post" action="{{ url_for('workflow_prepare_stage_action') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="primary">Prepare Stage</button>
-      </form>
-    {% else %}
-      <div class="muted">Prepare Stage is not available for the current workflow state: {{ workflow_state }}</div>
-    {% endif %}
-
-    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
-      <form method="post" action="{{ url_for('workflow_prepare_commit_action') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label for="commit_message">Commit message</label>
-        <input id="commit_message" name="commit_message" type="text" required placeholder="Describe the staged change">
-        <button type="submit" class="primary">Prepare Commit</button>
-      </form>
-    {% else %}
-      {% if workflow_state == 'staged_only' and not matching_snapshot_exists %}
-        <div>
-          <p class="muted">Matching Snapshot required before Prepare Commit.</p>
-          <p class="muted">Snapshot: none</p>
-          <form method="post" action="{{ url_for('workflow_create_snapshot_action') }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="primary">Create Matching Snapshot</button>
-          </form>
-        </div>
-      {% else %}
-        <div class="muted">Prepare Commit is not available for the current workflow state: {{ workflow_state }}</div>
-      {% endif %}
-    {% endif %}
-
-    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
-      <div class="muted">Matching Snapshot available: {{ matching_snapshot_id }}</div>
-    {% endif %}
-  </div>
+  {% if matching_snapshot_exists %}
+    <p class="muted">Matching Snapshot recorded: {{ matching_snapshot_id }}</p>
+  {% else %}
+    <p class="muted">No matching Snapshot is recorded for the current repository state.</p>
+  {% endif %}
+  <p>Use Git Review for current, explicitly selected and confirmed local Git actions.</p>
 
   <details class="spaced-top">
     <summary>Stage vs Commit help</summary>

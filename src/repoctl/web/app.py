@@ -4,8 +4,10 @@ import json
 import secrets
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException
 
 from ..analysis.manager import AnalysisError, analyze_comparison
 from ..compare.manager import compare_snapshots
@@ -16,11 +18,8 @@ from ..scanner.util import make_repository_id
 from ..snapshot.manager import create_snapshot
 from ..workflow.errors import WorkflowReasonError
 from ..workflow.git_state import inspect_git_state
-from ..workflow.stage_execution import execute_prepared_stage
-from ..workflow.stage_plan import prepare_stage
-from ..workflow.commit_execution import execute_prepared_commit
-from ..workflow.commit_plan import prepare_commit
 from ..workflow.diff import GitReviewError, inspect_git_review
+from ..workflow.git_actions import GitActionError, PreparedGitActions
 from ..workflow.git_history import (
     GitHistoryError,
     inspect_branches,
@@ -112,6 +111,7 @@ def create_web_app(
     repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
     repo_id = make_repository_id(repo_root)
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
+    git_actions = PreparedGitActions()
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = secrets.token_hex(32)
@@ -171,6 +171,26 @@ def create_web_app(
             mutation_note="NO TARGET GIT MUTATION",
         ), 400
 
+    @app.errorhandler(GitActionError)
+    def _handle_git_action_error(err: GitActionError):
+        uncertain = err.code in {
+            "git_action_execution_failed",
+            "git_commit_failed",
+            "post_action_verification_failed",
+            "post_commit_verification_failed",
+        }
+        note = (
+            "Git action outcome is not verified; inspect Git Review before retrying."
+            if uncertain
+            else "No Git action was executed."
+        )
+        return render_template(
+            "error.html",
+            error_code=err.code,
+            error_message=str(err),
+            mutation_note=note,
+        ), err.status_code
+
     @app.errorhandler(ScanError)
     @app.errorhandler(WorkflowError)
     @app.errorhandler(AnalysisError)
@@ -184,6 +204,13 @@ def create_web_app(
 
     @app.errorhandler(Exception)
     def _handle_unexpected_error(err: Exception):
+        if isinstance(err, HTTPException):
+            return render_template(
+                "error.html",
+                error_code=err.name,
+                error_message=err.description,
+                mutation_note="NO TARGET GIT MUTATION",
+            ), err.code
         return render_template(
             "error.html",
             error_code="unexpected_error",
@@ -411,6 +438,8 @@ def create_web_app(
         file_history = None
         branches = None
         status_code = 200
+        action_options = {"actions": [], "blocked_reason": None, "unavailable_actions": []}
+        commit_options = {"available": False, "reason": "Commit is available when supported changes are staged."}
         try:
             if review_view == "changes":
                 review = inspect_git_review(
@@ -418,6 +447,9 @@ def create_web_app(
                     selected_file=selected_file,
                     preview_action=preview_action,
                 )
+                if review["selected"]:
+                    action_options = git_actions.options(str(repo_root), review["selected"]["token"])
+                commit_options = git_actions.can_commit(str(repo_root))
             elif review_view == "history":
                 history = inspect_history(
                     str(repo_root),
@@ -437,7 +469,7 @@ def create_web_app(
             raise WebUIError("git_selection_not_found", str(exc), status_code=404) from exc
         except ValueError as exc:
             raise WebUIError("invalid_git_selection", str(exc), status_code=400) from exc
-        except (GitReviewError, GitHistoryError) as exc:
+        except (GitReviewError, GitHistoryError, GitActionError) as exc:
             error_message = str(exc)
             status_code = 503
         return render_template(
@@ -450,9 +482,57 @@ def create_web_app(
             selected_commit=request.args.get("commit"),
             selected_file_history=request.args.get("file_history"),
             selected_branch=request.args.get("branch"),
+            action_options=action_options,
+            commit_options=commit_options,
             error_message=error_message,
             selected_file=selected_file,
         ), status_code
+
+    def require_mutation_request() -> None:
+        _require_csrf()
+        if request.headers.get("Sec-Fetch-Site", "").casefold() == "cross-site":
+            raise WebUIError("cross_origin_request", "Cross-origin Git action requests are blocked.", status_code=403)
+        origin = request.headers.get("Origin")
+        referer = request.headers.get("Referer")
+        supplied = origin or referer
+        if supplied:
+            parsed = urlsplit(supplied)
+            if parsed.scheme != request.scheme or parsed.netloc != request.host:
+                raise WebUIError("cross_origin_request", "Cross-origin Git action requests are blocked.", status_code=403)
+
+    @app.post("/git-review/action/prepare")
+    def git_action_prepare():
+        require_mutation_request()
+        action = request.form.get("action", "")
+        token, preview = git_actions.prepare(
+            str(repo_root),
+            action,
+            path_token=request.form.get("path_token"),
+            message=request.form.get("commit_message"),
+        )
+        return render_template(
+            "git_action_confirm.html",
+            token=token,
+            preview=preview,
+            csrf_token=_ensure_csrf_token(),
+            destructive=action in {"restore-unstaged", "restore-head"},
+        )
+
+    @app.post("/git-review/action/confirm")
+    def git_action_confirm():
+        require_mutation_request()
+        action = request.form.get("action", "")
+        token = request.form.get("token", "")
+        result = git_actions.confirm(str(repo_root), action, token)
+        flash(result["message"], "success")
+        return redirect(url_for("git_review_page"))
+
+    @app.post("/git-review/action/cancel")
+    def git_action_cancel():
+        require_mutation_request()
+        git_actions.cancel(request.form.get("token", ""))
+        flash("Prepared action canceled; no Git change was made.", "success")
+        return redirect(url_for("git_review_page"))
 
     @app.get("/workflow")
     def workflow_page():
@@ -472,17 +552,12 @@ def create_web_app(
     @app.post("/workflow/snapshot/create")
     def workflow_create_snapshot_action():
         _require_csrf()
-        scan_result = run_scan_with_artifacts(str(repo_root), state_root=effective_state_root)
-        result = create_snapshot(scan_result=scan_result, state_root=effective_state_root)
-        flash(f"Matching Snapshot ready: {result['snapshot_id']}.", "success")
-        return redirect(url_for("workflow_page"))
+        raise WebUIError("legacy_workflow_disabled", "Workflow artifact creation is no longer available from the legacy Workflow surface.", status_code=410)
 
     @app.post("/workflow/stage/prepare")
     def workflow_prepare_stage_action():
         _require_csrf()
-        result = prepare_stage(str(repo_root), include_all=True, state_root=effective_state_root)
-        flash("Stage plan prepared.", "success")
-        return redirect(url_for("workflow_stage_review_page", plan_id=result["plan_id"]))
+        raise WebUIError("legacy_workflow_disabled", "Legacy stage actions are disabled; use Git Review to select and confirm a path.", status_code=410)
 
     @app.get("/workflow/stage/plan")
     def workflow_stage_review_page():
@@ -514,27 +589,12 @@ def create_web_app(
     @app.post("/workflow/stage/approve")
     def workflow_stage_approve_action():
         _require_csrf()
-        plan_id = request.form.get("plan_id", "")
-        if not plan_id:
-            raise WebUIError("invalid_input", "Stage plan ID is required.", status_code=400)
-        result = execute_prepared_stage(str(repo_root), plan_id, approve=True, state_root=effective_state_root)
-        flash(f"Stage execution succeeded for plan {plan_id}.", "success")
-        return redirect(url_for("workflow_page"))
+        raise WebUIError("legacy_workflow_disabled", "Legacy stage approvals are disabled; use Git Review.", status_code=410)
 
     @app.post("/workflow/commit/prepare")
     def workflow_prepare_commit_action():
         _require_csrf()
-        status_json_path, _ = status_paths()
-        generate_milestone_status(str(repo_root), state_root=effective_state_root)
-        status_payload = _read_status(status_json_path)
-        if not status_payload["matching_snapshot_exists"]:
-            raise WebUIError("matching_snapshot_required", "Create the matching Snapshot before preparing Commit.")
-        message = request.form.get("commit_message", "").strip()
-        if not message:
-            raise WebUIError("invalid_input", "Commit message is required.", status_code=400)
-        result = prepare_commit(str(repo_root), message, state_root=effective_state_root)
-        flash("Commit plan prepared.", "success")
-        return redirect(url_for("workflow_commit_review_page", plan_id=result["plan_id"]))
+        raise WebUIError("legacy_workflow_disabled", "Legacy commit preparation is disabled; use Git Review to review staged content.", status_code=410)
 
     @app.get("/workflow/commit/plan")
     def workflow_commit_review_page():
@@ -562,12 +622,7 @@ def create_web_app(
     @app.post("/workflow/commit/approve")
     def workflow_commit_approve_action():
         _require_csrf()
-        plan_id = request.form.get("plan_id", "")
-        if not plan_id:
-            raise WebUIError("invalid_input", "Commit plan ID is required.", status_code=400)
-        result = execute_prepared_commit(str(repo_root), plan_id, approve=True, state_root=effective_state_root)
-        flash(f"Commit execution succeeded for plan {plan_id}.", "success")
-        return redirect(url_for("workflow_page"))
+        raise WebUIError("legacy_workflow_disabled", "Legacy commit approvals are disabled; use Git Review.", status_code=410)
 
     return app
 
