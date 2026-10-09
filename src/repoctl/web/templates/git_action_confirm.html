@@ -81,6 +81,30 @@
         {% endif %}
       </details>
     {% endfor %}
+  {% else %}
+    <h3>Reviewed operation</h3>
+    <dl class="spaced-top">
+      {% if preview.branch_name is defined %}<dt>Local branch</dt><dd>{{ preview.branch_name }}</dd>{% endif %}
+      {% if preview.source is defined %}<dt>Source HEAD</dt><dd><code>{{ preview.source }}</code></dd>{% endif %}
+      {% if preview.source_branch is defined %}<dt>Current branch</dt><dd>{{ preview.source_branch }}</dd>{% endif %}
+      {% if preview.target_branch is defined %}<dt>Target branch</dt><dd>{{ preview.target_branch }}</dd>{% endif %}
+      {% if preview.target_head is defined %}<dt>Target tip</dt><dd><code>{{ preview.target_head }}</code></dd>{% endif %}
+      {% if preview.main_head is defined %}<dt>Local main tip</dt><dd><code>{{ preview.main_head }}</code></dd>{% endif %}
+      {% if preview.fully_merged is defined %}<dt>Relationship to main</dt><dd>{% if preview.fully_merged %}Git proves fully merged into local main{% else %}Not proven merged{% endif %}</dd>{% endif %}
+      {% if preview.upstream is defined %}<dt>Configured upstream</dt><dd>{{ preview.upstream }}</dd>{% endif %}
+      {% if preview.remote is defined %}<dt>Configured remote</dt><dd>{{ preview.remote }}</dd>{% endif %}
+      {% if preview.remote_branch is defined %}<dt>Remote branch</dt><dd>{{ preview.remote_branch }}</dd>{% endif %}
+      {% if preview.remote_urls is defined %}<dt>Sanitized remote URL</dt><dd>{% for url in preview.remote_urls %}{{ url }}{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>{% endif %}
+      {% if preview.remote_tip is defined %}<dt>Remote branch preflight</dt><dd>{{ preview.remote_tip }}</dd>{% endif %}
+      {% if preview.tracking_oid is defined %}<dt>Local tracking-ref tip</dt><dd><code>{{ preview.tracking_oid }}</code></dd>{% endif %}
+      {% if preview.ahead is defined %}<dt>Local tracking-ref comparison</dt><dd>{{ preview.ahead }} ahead / {{ preview.behind }} behind</dd>{% endif %}
+      {% if preview.upstream_oid is defined %}<dt>Fast-forward target tip</dt><dd><code>{{ preview.upstream_oid }}</code></dd>{% endif %}
+      {% if preview.worktree is defined %}<dt>Working tree</dt><dd>{{ preview.worktree }}</dd>{% endif %}
+      {% if preview.remote_effect is defined %}<dt>Remote / local effect</dt><dd>{{ preview.remote_effect }}</dd>{% endif %}
+      {% if preview.remote_impact is defined %}<dt>Remote impact</dt><dd>{{ preview.remote_impact }}</dd>{% endif %}
+      {% if preview.committed_only is defined %}<dt>Push scope</dt><dd>{{ preview.committed_only }}</dd>{% endif %}
+      {% if preview.remote_freshness is defined %}<dt>Freshness / safety</dt><dd>{{ preview.remote_freshness }}</dd>{% endif %}
+    </dl>
   {% endif %}
 
   <div class="confirmation-actions">
@@ -93,6 +117,7 @@
     <form method="post" action="{{ url_for('git_action_cancel') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="token" value="{{ token }}">
+      <input type="hidden" name="action" value="{{ preview.action }}">
       <button type="submit" class="secondary">Cancel / Return to Git Review</button>
     </form>
   </div>

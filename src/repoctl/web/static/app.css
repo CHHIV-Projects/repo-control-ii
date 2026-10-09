@@ -218,6 +218,32 @@ ul {
   gap: 0.8rem;
 }
 
+.branch-action-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 0.8rem;
+}
+
+.branch-create-form, .branch-remote-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0.7rem 0;
+}
+
+.branch-create-form input {
+  flex: 1 1 220px;
+}
+
+.branch-remote-form select {
+  min-width: 150px;
+}
+
+.branch-action-availability {
+  margin-top: 0.65rem;
+}
+
 .history-list {
   list-style: none;
   padding: 0;
@@ -474,7 +500,7 @@ ul {
     grid-template-columns: 1fr;
   }
 
-  .history-layout, .branch-layout {
+  .history-layout, .branch-layout, .branch-action-layout {
     grid-template-columns: 1fr;
   }
 }

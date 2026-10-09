@@ -175,9 +175,12 @@ def create_web_app(
     def _handle_git_action_error(err: GitActionError):
         uncertain = err.code in {
             "git_action_execution_failed",
+            "git_action_output_incomplete",
             "git_commit_failed",
             "post_action_verification_failed",
             "post_commit_verification_failed",
+            "remote_action_execution_failed",
+            "remote_verification_failed",
         }
         note = (
             "Git action outcome is not verified; inspect Git Review before retrying."
@@ -437,6 +440,8 @@ def create_web_app(
         history = None
         file_history = None
         branches = None
+        branch_controls = None
+        remote_controls = None
         status_code = 200
         file_action_options = {}
         commit_options = {"available": False, "reason": "Commit is available when supported changes are staged."}
@@ -465,6 +470,11 @@ def create_web_app(
                     str(repo_root),
                     selected_branch=request.args.get("branch"),
                 )
+                branch_controls = git_actions.branch_controls(
+                    str(repo_root),
+                    request.args.get("branch"),
+                )
+                remote_controls = git_actions.remote_controls(str(repo_root))
             else:
                 raise ValueError("Git Review view must be changes, history, or branches.")
         except FileNotFoundError as exc:
@@ -481,6 +491,8 @@ def create_web_app(
             history=history,
             file_history=file_history,
             branches=branches,
+            branch_controls=branch_controls,
+            remote_controls=remote_controls,
             selected_commit=request.args.get("commit"),
             selected_file_history=request.args.get("file_history"),
             selected_branch=request.args.get("branch"),
@@ -502,6 +514,19 @@ def create_web_app(
             if parsed.scheme != request.scheme or parsed.netloc != request.host:
                 raise WebUIError("cross_origin_request", "Cross-origin Git action requests are blocked.", status_code=403)
 
+    def redirect_after_git_action(action: str):
+        branch_actions = {
+            "create-branch",
+            "switch-branch",
+            "delete-branch",
+            "fetch",
+            "push",
+            "publish-branch",
+            "fast-forward",
+        }
+        view = "branches" if action in branch_actions else "changes"
+        return redirect(url_for("git_review_page", view=view))
+
     @app.post("/git-review/action/prepare")
     def git_action_prepare():
         require_mutation_request()
@@ -511,13 +536,16 @@ def create_web_app(
             action,
             path_tokens=request.form.getlist("path_token"),
             message=request.form.get("commit_message"),
+            branch_token=request.form.get("branch_token"),
+            branch_name=request.form.get("branch_name"),
+            remote_token=request.form.get("remote_token"),
         )
         return render_template(
             "git_action_confirm.html",
             token=token,
             preview=preview,
             csrf_token=_ensure_csrf_token(),
-            destructive=action in {"restore-unstaged", "restore-head"},
+            destructive=action in {"restore-unstaged", "restore-head", "delete-branch"},
         )
 
     @app.post("/git-review/action/confirm")
@@ -527,14 +555,15 @@ def create_web_app(
         token = request.form.get("token", "")
         result = git_actions.confirm(str(repo_root), action, token)
         flash(result["message"], "success")
-        return redirect(url_for("git_review_page"))
+        return redirect_after_git_action(result["action"])
 
     @app.post("/git-review/action/cancel")
     def git_action_cancel():
         require_mutation_request()
+        action = request.form.get("action", "")
         git_actions.cancel(request.form.get("token", ""))
         flash("Prepared action canceled; no Git change was made.", "success")
-        return redirect(url_for("git_review_page"))
+        return redirect_after_git_action(action)
 
     @app.get("/workflow")
     def workflow_page():

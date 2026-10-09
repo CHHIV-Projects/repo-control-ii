@@ -85,13 +85,16 @@ Current primary pages and capabilities:
 - Dashboard (deterministic workflow status)
 - Git Review (current changes, diagnosis/recovery previews, history, and branches)
 - Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
+- The Branches view provides confirmed local branch create/switch/safe-delete, configured-remote fetch/push, first-push upstream setup, and fast-forward-only update. Remote operations are bounded, non-interactive, and use configured remotes only; Push is non-force and verifies the actual remote branch tip after success.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
 
 Browser Git mutation boundary:
 
 - GET requests are read-only. Mutations require a CSRF-protected POST, a short-lived single-use confirmation token, and fresh Git-state validation.
 - Batch stage/unstage/restore use only the explicit selected path set; an action is unavailable unless every selected path supports it. Commit includes the complete reviewed staged set and never stages implicitly.
-- Branch/remote mutation, push, fetch, pull, conflict resolution, and unsupported/incomplete cases remain out of scope.
+- Branch and remote actions are explicitly prepared and confirmed, then revalidated. Switch and fast-forward require a clean worktree and no in-progress Git operation; local deletion requires a non-current, non-main branch proven merged into local `main`. Fetch does not move the current branch. Push publishes committed history only, never uses force, and distinguishes command success from remote-tip verification.
+- Fetch/publish remote selection prefers `origin`; without `origin`, a sole configured remote is selected automatically, while multiple remotes require explicit selection from the server-observed inventory. Remote URLs are sanitized for display.
+- Merge/rebase workflows, reset/stash/clean, force push, remote branch deletion, remote configuration editing, conflict resolution, and arbitrary refs/refspecs remain out of scope.
 
 Windows access from a remote workstation can use SSH port forwarding, for example:
 

@@ -5,9 +5,9 @@
   <div class="git-review-heading">
     <div>
       <h2>Git Review</h2>
-      <p class="muted">Read-only inspection. Selecting a file does not change Git or workflow state.</p>
+    <p class="muted">{% if review_view == 'branches' %}Inspect branches and remotes. Branch or remote actions require explicit review and confirmation.{% elif review_view == 'changes' %}Inspect changes. Selecting a file does not change Git or workflow state; actions require explicit confirmation.{% else %}Read-only inspection of local history. No Git mutation or remote refresh occurs.{% endif %}</p>
     </div>
-    <span class="read-only-badge">{% if review_view == 'changes' %}REVIEW · CONFIRM TO ACT{% else %}READ ONLY{% endif %}</span>
+  <span class="read-only-badge">{% if review_view in ['changes', 'branches'] %}REVIEW · CONFIRM TO ACT{% else %}READ ONLY{% endif %}</span>
   </div>
 
   <nav class="git-review-tabs" aria-label="Git Review views">
@@ -98,6 +98,83 @@
   {% elif review_view == 'branches' and branches %}
     <p class="muted">Branch-vs-main counts use current local ancestry. Upstream comparisons use local remote-tracking refs and may be stale; no fetch was performed.</p>
     {% if branches.head_state == 'detached' %}<p class="warning">HEAD is detached; no local branch is currently checked out.</p>{% endif %}
+    <div class="branch-action-layout spaced-top">
+      <section class="card">
+        <h3>Create local branch</h3>
+        <p class="muted">Create from current HEAD. Creation does not switch branches or configure an upstream.</p>
+        {% if branch_controls.create_available %}
+          <form method="post" action="{{ url_for('git_action_prepare') }}" class="branch-create-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action" value="create-branch">
+            <label for="new-branch-name">New branch name</label>
+            <input id="new-branch-name" name="branch_name" type="text" maxlength="255" autocomplete="off" required>
+            <button type="submit" class="primary">Review branch creation</button>
+          </form>
+        {% else %}
+          <p class="warning">{{ branch_controls.create_reason }}</p>
+        {% endif %}
+      </section>
+      <section class="card">
+        <h3>Current branch remote operations</h3>
+        <p class="muted">Current branch: {{ remote_controls.current_branch or 'Unavailable' }}{% if remote_controls.head %} · HEAD <code>{{ remote_controls.head[:12] }}</code>{% endif %}</p>
+        {% if remote_controls.error %}<p class="warning">{{ remote_controls.error }}</p>{% endif %}
+        {% if remote_controls.remotes %}
+          <p class="muted">Configured remotes (sanitized URLs):</p>
+          <ul>{% for remote in remote_controls.remotes %}<li><strong>{{ remote.name }}</strong> — {{ remote.fetch_urls | join(', ') }}{% if remote.push_urls != remote.fetch_urls %}<div>Push URL: {{ remote.push_urls | join(', ') }}</div>{% endif %}</li>{% endfor %}</ul>
+          <form method="post" action="{{ url_for('git_action_prepare') }}" class="branch-remote-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="action" value="fetch">
+            <label for="fetch-remote">Fetch remote</label>
+            <select id="fetch-remote" name="remote_token" required>
+              <option value="">Select a configured remote</option>
+              {% for remote in remote_controls.remotes %}<option value="{{ remote.token }}"{% if remote.token == remote_controls.default_fetch_remote_token %} selected{% endif %}{% if not remote.fetch_eligible %} disabled{% endif %}>{{ remote.name }}{% if remote.fetch_reason %} — unavailable{% endif %}</option>{% endfor %}
+            </select>
+            <button type="submit" class="secondary" {% if not remote_controls.fetch_available %}disabled{% endif %}>Review Fetch</button>
+          </form>
+          {% if remote_controls.push_available %}
+            <form method="post" action="{{ url_for('git_action_prepare') }}" class="branch-remote-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action" value="push">
+              <button type="submit" class="primary">Review Push</button>
+              <span class="muted">Push current branch's committed history to its configured upstream; no force.</span>
+            </form>
+          {% endif %}
+          {% if remote_controls.publish_available %}
+            <form method="post" action="{{ url_for('git_action_prepare') }}" class="branch-remote-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action" value="publish-branch">
+              <label for="publish-remote">First push / set upstream</label>
+              <select id="publish-remote" name="remote_token" required>
+                <option value="">Select a configured remote</option>
+                {% for remote in remote_controls.remotes %}<option value="{{ remote.token }}"{% if remote.token == remote_controls.default_publish_remote_token %} selected{% endif %}{% if not remote.publish_eligible %} disabled{% endif %}>{{ remote.name }}{% if remote.publish_reason %} — unavailable{% endif %}</option>{% endfor %}
+              </select>
+              <button type="submit" class="primary">Review Publish</button>
+            </form>
+          {% endif %}
+          {% if remote_controls.fast_forward_available %}
+            <form method="post" action="{{ url_for('git_action_prepare') }}" class="branch-remote-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action" value="fast-forward">
+              <button type="submit" class="secondary">Review Fast-forward update</button>
+            </form>
+          {% endif %}
+          <details class="branch-action-availability">
+            <summary>Why other current-branch actions may be unavailable</summary>
+            {% if remote_controls.fetch_reason %}<p>Fetch: {{ remote_controls.fetch_reason }}</p>{% endif %}
+            {% if remote_controls.push_reason %}<p>Push: {{ remote_controls.push_reason }}</p>{% endif %}
+            {% if remote_controls.publish_reason %}<p>First push: {{ remote_controls.publish_reason }}</p>{% endif %}
+            {% if remote_controls.fast_forward_reason %}<p>Fast-forward: {{ remote_controls.fast_forward_reason }}</p>{% endif %}
+            {% if remote_controls.selection_required %}<p>Select the intended configured remote. No remote is guessed when several non-origin remotes exist.</p>{% endif %}
+            {% for remote in remote_controls.remotes %}
+              {% if remote.fetch_reason %}<p>{{ remote.name }} Fetch: {{ remote.fetch_reason }}</p>{% endif %}
+              {% if remote.publish_reason %}<p>{{ remote.name }} Publish: {{ remote.publish_reason }}</p>{% endif %}
+            {% endfor %}
+          </details>
+        {% else %}
+          <p class="muted">No configured remote is available. Branch creation and local branch actions remain available.</p>
+        {% endif %}
+      </section>
+    </div>
     <div class="branch-layout spaced-top">
       <section class="card">
         <h3>Local branches ({{ branches.branches | length }})</h3>
@@ -141,6 +218,33 @@
         <section class="card">
           <h3>Branch detail: {{ branches.selected.name }}</h3>
           <p><code>{{ branches.selected.oid }}</code>{% if branches.selected.current %} · Current branch{% endif %}</p>
+          {% if branch_controls.selected %}
+            <div class="local-action-buttons spaced-top">
+              {% if branch_controls.selected.switch_available %}
+                <form method="post" action="{{ url_for('git_action_prepare') }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="action" value="switch-branch">
+                  <input type="hidden" name="branch_token" value="{{ selected_branch }}">
+                  <button type="submit" class="secondary">Review switch to {{ branches.selected.name }}</button>
+                </form>
+              {% endif %}
+              {% if branch_controls.selected.delete_available %}
+                <form method="post" action="{{ url_for('git_action_prepare') }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="action" value="delete-branch">
+                  <input type="hidden" name="branch_token" value="{{ selected_branch }}">
+                  <button type="submit" class="danger">Review local branch deletion</button>
+                </form>
+              {% endif %}
+            </div>
+            {% if branch_controls.selected.switch_reason or branch_controls.selected.delete_reason %}
+              <details class="branch-action-availability">
+                <summary>Branch action eligibility</summary>
+                {% if branch_controls.selected.switch_reason %}<p>Switch: {{ branch_controls.selected.switch_reason }}</p>{% endif %}
+                {% if branch_controls.selected.delete_reason %}<p>Delete: {{ branch_controls.selected.delete_reason }}</p>{% endif %}
+              </details>
+            {% endif %}
+          {% endif %}
           <p>{{ branches.selected.main_relation.label if branches.selected.main_relation.state != 'available' else (branches.selected.main_relation.ahead ~ ' ahead / ' ~ branches.selected.main_relation.behind ~ ' behind main') }}</p>
           {% if branches.selected.main_relation.state == 'available' %}
             <p>{% if branches.selected.main_relation.fully_merged %}Fully merged into main{% else %}Not fully merged into main{% endif %}</p>

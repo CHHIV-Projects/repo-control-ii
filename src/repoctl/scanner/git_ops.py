@@ -19,13 +19,17 @@ def _run_git_bounded(
     stdout_limit: int,
     stderr_limit: int = 16 * 1024,
     timeout_seconds: float = 10,
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[bytes, bytes, int, bool]:
     try:
         env = os.environ.copy()
         env["GIT_OPTIONAL_LOCKS"] = "0"
         env["GIT_TERMINAL_PROMPT"] = "0"
+        if env_overrides:
+            env.update(env_overrides)
         proc = subprocess.Popen(
             ["git", "-C", str(repo_root), *args],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
