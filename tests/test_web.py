@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import re
 import os
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -91,6 +92,102 @@ class WebTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 create_web_app(repository_path=str(repo), host="0.0.0.0", state_root=root / "state")
+
+    def test_registry_selection_is_server_controlled_and_invalidates_prepared_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _init_repo(root, "first-repo")
+            second = _init_repo(root, "second-repo")
+            (first / "app.py").write_text("def run():\n    return 2\n", encoding="utf-8")
+            _git(first, "add", "app.py")
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "first"',
+                        "",
+                        "[repositories.first]",
+                        'name = "First Repository"',
+                        f"path = {json.dumps(str(first))}",
+                        "",
+                        "[repositories.second]",
+                        'name = "Second Repository"',
+                        f"path = {json.dumps(str(second))}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            app = create_web_app(
+                repository_registry_path=registry_path,
+                state_root=root / "state",
+            )
+            client = app.test_client()
+            landing = client.get("/")
+            self.assertIn("First Repository", landing.get_data(as_text=True))
+            self.assertIn("Second Repository", landing.get_data(as_text=True))
+            self.assertIn(str(first), landing.get_data(as_text=True))
+
+            csrf = _extract_csrf_token(client)
+            prepared = client.post(
+                "/git-review/action/prepare",
+                data={
+                    "csrf_token": csrf,
+                    "action": "commit",
+                    "commit_message": "Prepared in first repository",
+                },
+            )
+            self.assertEqual(prepared.status_code, 200)
+            token_match = re.search(r'name="token" value="([^"]+)"', prepared.get_data(as_text=True))
+            self.assertIsNotNone(token_match)
+            prepared_token = token_match.group(1)
+
+            first_head = _git_text(first, "rev-parse", "HEAD")
+            first_status = _git_status_porcelain(first)
+            second_head = _git_text(second, "rev-parse", "HEAD")
+            second_status = _git_status_porcelain(second)
+
+            switched = client.post(
+                "/repositories/select",
+                data={"csrf_token": csrf, "repository_key": "second"},
+            )
+            self.assertEqual(switched.status_code, 302)
+            second_page = client.get("/")
+            self.assertIn("Active Repository", second_page.get_data(as_text=True))
+            self.assertIn("Second Repository", second_page.get_data(as_text=True))
+            self.assertEqual(
+                client.get("/healthz").get_json(),
+                {"service": "repo-control", "active_repository": "second"},
+            )
+            self.assertEqual(first_head, _git_text(first, "rev-parse", "HEAD"))
+            self.assertEqual(first_status, _git_status_porcelain(first))
+            self.assertEqual(second_head, _git_text(second, "rev-parse", "HEAD"))
+            self.assertEqual(second_status, _git_status_porcelain(second))
+
+            switched_back = client.post(
+                "/repositories/select",
+                data={"csrf_token": csrf, "repository_key": "first"},
+            )
+            self.assertEqual(switched_back.status_code, 302)
+            stale_confirmation = client.post(
+                "/git-review/action/confirm",
+                data={
+                    "csrf_token": csrf,
+                    "action": "commit",
+                    "token": prepared_token,
+                },
+            )
+            self.assertEqual(stale_confirmation.status_code, 409)
+            self.assertEqual(first_head, _git_text(first, "rev-parse", "HEAD"))
+            self.assertEqual(first_status, _git_status_porcelain(first))
+
+            rejected = client.post(
+                "/repositories/select",
+                data={"csrf_token": csrf, "repository_key": str(second)},
+            )
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual(first_head, _git_text(first, "rev-parse", "HEAD"))
+            self.assertEqual(first_status, _git_status_porcelain(first))
 
     def test_dashboard_renders_clean_state_and_upstream_caveat(self) -> None:
         with tempfile.TemporaryDirectory() as td:

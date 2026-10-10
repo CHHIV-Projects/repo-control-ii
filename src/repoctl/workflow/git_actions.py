@@ -1153,6 +1153,10 @@ class PreparedGitActions:
         self._actions: dict[str, PreparedAction] = {}
         self._lock = threading.RLock()
 
+    def invalidate_all(self) -> None:
+        with self._lock:
+            self._actions.clear()
+
     def _expire(self, now: float) -> None:
         expired = [token for token, item in self._actions.items() if item.expires_at <= now]
         for token in expired:

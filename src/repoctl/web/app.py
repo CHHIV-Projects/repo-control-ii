@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
 from ..analysis.manager import AnalysisError, analyze_comparison
 from ..compare.manager import compare_snapshots
 from ..context.generator import build_and_publish_context
 from ..scanner.core import DEFAULT_STATE_ROOT, run_scan_with_artifacts
-from ..scanner.git_ops import ScanError, validate_git_worktree
-from ..scanner.util import make_repository_id
+from ..scanner.git_ops import ScanError
 from ..snapshot.manager import create_snapshot
 from ..workflow.errors import WorkflowReasonError
 from ..workflow.git_state import inspect_git_state
@@ -27,6 +27,7 @@ from ..workflow.git_history import (
     inspect_history,
 )
 from ..workflow.status import WorkflowError, generate_milestone_status
+from .repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .views import (
     comparison_id_choices,
     file_reason,
@@ -99,7 +100,8 @@ def _read_status(status_json_path: Path) -> dict[str, Any]:
 
 def create_web_app(
     *,
-    repository_path: str,
+    repository_path: str | None = None,
+    repository_registry_path: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
@@ -108,50 +110,84 @@ def create_web_app(
     if port < 1 or port > 65535:
         raise ValueError("port must be between 1 and 65535")
 
-    repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
-    repo_id = make_repository_id(repo_root)
+    if (repository_path is None) == (repository_registry_path is None):
+        raise ValueError("Provide exactly one of repository_path or repository_registry_path.")
+    registry = (
+        RepositoryRegistry.from_toml(repository_registry_path)
+        if repository_registry_path is not None
+        else RepositoryRegistry.single(repository_path)
+    )
+    initial_repository = registry.active()
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
     git_actions = PreparedGitActions()
+    repository_action_lock = threading.RLock()
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = secrets.token_hex(32)
-    app.config["REPO_ROOT"] = repo_root
-    app.config["REPO_ID"] = repo_id
+    app.config["REPO_ROOT"] = initial_repository.path
+    app.config["REPO_ID"] = initial_repository.repository_id
+    app.config["REPOSITORY_REGISTRY_PATH"] = (
+        str(Path(repository_registry_path).expanduser().resolve())
+        if repository_registry_path is not None
+        else None
+    )
     app.config["STATE_ROOT"] = effective_state_root
     app.config["BOUND_HOST"] = bound_host
     app.config["BOUND_PORT"] = port
 
+    @app.before_request
+    def _bind_active_repository() -> None:
+        g.active_repository, g.repository_registry_generation = registry.snapshot()
+
+    def current_repository() -> RepositoryEntry:
+        return g.active_repository
+
+    def require_current_repository_selection() -> None:
+        active_repository, generation = registry.snapshot()
+        if (
+            generation != g.repository_registry_generation
+            or active_repository.key != current_repository().key
+        ):
+            raise WebUIError(
+                "stale_repository_selection",
+                "The active repository changed during this request. Review the current repository and retry.",
+                status_code=409,
+            )
+
     @app.context_processor
     def _template_context() -> dict[str, Any]:
+        active_repository = g.active_repository
         return {
             "csrf_token": _ensure_csrf_token(),
-            "repository_name": repo_root.name,
-            "repository_root": str(repo_root),
+            "repository_name": active_repository.name,
+            "repository_root": str(active_repository.path),
+            "repository_choices": registry.entries,
+            "active_repository_key": active_repository.key,
             "bound_host": bound_host,
             "bound_port": port,
         }
 
     def status_paths() -> tuple[Path, Path]:
-        workflow_root = effective_state_root / repo_id / "workflow"
+        workflow_root = effective_state_root / current_repository().repository_id / "workflow"
         return workflow_root / "status.json", workflow_root
 
     def contexts_root() -> Path:
-        return effective_state_root / repo_id / "contexts"
+        return effective_state_root / current_repository().repository_id / "contexts"
 
     def snapshots_root() -> Path:
-        return effective_state_root / repo_id / "snapshots"
+        return effective_state_root / current_repository().repository_id / "snapshots"
 
     def comparisons_root() -> Path:
-        return effective_state_root / repo_id / "comparisons"
+        return effective_state_root / current_repository().repository_id / "comparisons"
 
     def analyses_root() -> Path:
-        return effective_state_root / repo_id / "analyses"
+        return effective_state_root / current_repository().repository_id / "analyses"
 
     def workflow_root() -> Path:
-        return effective_state_root / repo_id / "workflow"
+        return effective_state_root / current_repository().repository_id / "workflow"
 
     # Prime deterministic status on startup so dashboard can render immediately.
-    generate_milestone_status(str(repo_root), state_root=effective_state_root)
+    generate_milestone_status(str(initial_repository.path), state_root=effective_state_root)
 
     @app.errorhandler(WebUIError)
     def _handle_web_error(err: WebUIError):
@@ -221,19 +257,50 @@ def create_web_app(
             mutation_note="NO TARGET GIT MUTATION",
         ), 500
 
+    @app.get("/healthz")
+    def health_check():
+        active_repository = registry.active()
+        return jsonify(
+            {
+                "service": "repo-control",
+                "active_repository": active_repository.key,
+            }
+        )
+
+    @app.post("/repositories/select")
+    def select_repository():
+        _require_csrf()
+        requested_key = request.form.get("repository_key", "")
+        with repository_action_lock:
+            try:
+                selected_repository, changed = registry.select(requested_key)
+            except RepositoryRegistryError as exc:
+                raise WebUIError("invalid_repository_selection", str(exc), 400) from exc
+            if changed:
+                git_actions.invalidate_all()
+                app.config["REPO_ROOT"] = selected_repository.path
+                app.config["REPO_ID"] = selected_repository.repository_id
+                flash(
+                    f"Active repository changed to {selected_repository.name}. Pending prepared Git actions were invalidated.",
+                    "success",
+                )
+            else:
+                flash(f"{selected_repository.name} is already the active repository.", "success")
+        return redirect(url_for("dashboard"))
+
     @app.get("/")
     def dashboard():
         status_json_path, _ = status_paths()
         if not status_json_path.exists():
-            generate_milestone_status(str(repo_root), state_root=effective_state_root)
+            generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
-        dashboard_view = load_dashboard_view(status_payload, repo_root)
+        dashboard_view = load_dashboard_view(status_payload, current_repository().path)
         return render_template("dashboard.html", dashboard=dashboard_view)
 
     @app.post("/status/refresh")
     def refresh_status():
         _require_csrf()
-        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
         flash("Status refreshed.", "success")
         return redirect(url_for("dashboard"))
 
@@ -245,12 +312,12 @@ def create_web_app(
         if selected_context_id:
             if selected_context_id not in context_ids:
                 raise WebUIError("context_not_found", "Context result was not found.", status_code=404)
-            current_git_state = inspect_git_state(str(repo_root))
+            current_git_state = inspect_git_state(str(current_repository().path))
             context_view = load_context_view(
                 load_context_payload(contexts_root(), selected_context_id),
                 current_git_state,
-                repo_id,
-                repo_root,
+                current_repository().repository_id,
+                current_repository().path,
             )
 
         return render_template(
@@ -268,7 +335,7 @@ def create_web_app(
     def generate_context():
         _require_csrf()
         query = _validate_context_query(request.form.get("query", ""))
-        scan_result = run_scan_with_artifacts(str(repo_root), state_root=effective_state_root)
+        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_state_root)
         result = build_and_publish_context(scan_result=scan_result, query=query)
         flash("Context generated.", "success")
         return redirect(url_for("context_page", context_id=result["context_id"]))
@@ -278,11 +345,11 @@ def create_web_app(
         selected_snapshot_id = request.args.get("snapshot_id")
         status_json_path, wf_root = status_paths()
         # Keep current-match cue aligned with the repository's current state.
-        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
         rows = list_snapshots(
             snapshots_root(),
-            repo_id,
+            current_repository().repository_id,
             status_payload["current_snapshot_id_candidate"],
             workflow_root=wf_root,
         )
@@ -297,7 +364,7 @@ def create_web_app(
     @app.post("/snapshots/create")
     def create_snapshot_action():
         _require_csrf()
-        scan_result = run_scan_with_artifacts(str(repo_root), state_root=effective_state_root)
+        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_state_root)
         result = create_snapshot(scan_result=scan_result, state_root=effective_state_root)
         if result["reused_existing"]:
             flash("Snapshot already exists for this exact repository state; reused existing snapshot.", "success")
@@ -312,16 +379,16 @@ def create_web_app(
         selected_after_snapshot_id = request.args.get("after_snapshot_id")
 
         status_json_path, _ = status_paths()
-        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
 
         snapshot_rows = list_snapshots(
             snapshots_root(),
-            repo_id,
+            current_repository().repository_id,
             status_payload["current_snapshot_id_candidate"],
         )
         snapshots_by_id = {row.snapshot_id: row for row in snapshot_rows}
-        comparisons = list_comparisons(comparisons_root(), repo_id)
+        comparisons = list_comparisons(comparisons_root(), current_repository().repository_id)
         comparisons_by_id = {row.comparison_id: row for row in comparisons}
         selected_payload = None
         if selected_comparison_id:
@@ -378,7 +445,12 @@ def create_web_app(
         valid_snapshot_ids = set(snapshot_id_choices(snapshots_root()))
         if before_snapshot_id not in valid_snapshot_ids or after_snapshot_id not in valid_snapshot_ids:
             raise WebUIError("invalid_input", "Snapshot selection must reference known snapshot IDs.")
-        result = compare_snapshots(before_snapshot_id, after_snapshot_id, str(repo_root), state_root=effective_state_root)
+        result = compare_snapshots(
+            before_snapshot_id,
+            after_snapshot_id,
+            str(current_repository().path),
+            state_root=effective_state_root,
+        )
         if result["reused_existing"]:
             flash("Comparison already exists for this exact before/after snapshot pair; reused existing comparison.", "success")
         else:
@@ -394,7 +466,7 @@ def create_web_app(
 
     @app.get("/analysis")
     def analysis_page():
-        comparisons = list_comparisons(comparisons_root(), repo_id)
+        comparisons = list_comparisons(comparisons_root(), current_repository().repository_id)
         comparison_lookup = {row.comparison_id: row for row in comparisons}
         selected_comparison_id = request.args.get("comparison_id")
         selected_analysis_id = request.args.get("analysis_id")
@@ -426,7 +498,7 @@ def create_web_app(
         valid_ids = set(comparison_id_choices(comparisons_root()))
         if comparison_id not in valid_ids:
             raise WebUIError("invalid_input", "Comparison selection must reference a known comparison ID.")
-        result = analyze_comparison(comparison_id, str(repo_root), state_root=effective_state_root)
+        result = analyze_comparison(comparison_id, str(current_repository().path), state_root=effective_state_root)
         flash("Local GPT-OSS analysis completed.", "success")
         return redirect(url_for("analysis_page", comparison_id=comparison_id, analysis_id=result["analysis_id"]))
 
@@ -448,33 +520,33 @@ def create_web_app(
         try:
             if review_view == "changes":
                 review = inspect_git_review(
-                    str(repo_root),
+                    str(current_repository().path),
                     selected_file=selected_file,
                     preview_action=preview_action,
                 )
                 file_action_options = git_actions.options_for_tokens(
-                    str(repo_root),
+                    str(current_repository().path),
                     [item["token"] for item in review["files"]],
                 )
-                commit_options = git_actions.can_commit(str(repo_root))
+                commit_options = git_actions.can_commit(str(current_repository().path))
             elif review_view == "history":
                 history = inspect_history(
-                    str(repo_root),
+                    str(current_repository().path),
                     selected_commit=request.args.get("commit"),
                 )
                 file_token = request.args.get("file_history")
                 if file_token:
-                    file_history = inspect_file_history(str(repo_root), file_token)
+                    file_history = inspect_file_history(str(current_repository().path), file_token)
             elif review_view == "branches":
                 branches = inspect_branches(
-                    str(repo_root),
+                    str(current_repository().path),
                     selected_branch=request.args.get("branch"),
                 )
                 branch_controls = git_actions.branch_controls(
-                    str(repo_root),
+                    str(current_repository().path),
                     request.args.get("branch"),
                 )
-                remote_controls = git_actions.remote_controls(str(repo_root))
+                remote_controls = git_actions.remote_controls(str(current_repository().path))
             else:
                 raise ValueError("Git Review view must be changes, history, or branches.")
         except FileNotFoundError as exc:
@@ -531,15 +603,17 @@ def create_web_app(
     def git_action_prepare():
         require_mutation_request()
         action = request.form.get("action", "")
-        token, preview = git_actions.prepare(
-            str(repo_root),
-            action,
-            path_tokens=request.form.getlist("path_token"),
-            message=request.form.get("commit_message"),
-            branch_token=request.form.get("branch_token"),
-            branch_name=request.form.get("branch_name"),
-            remote_token=request.form.get("remote_token"),
-        )
+        with repository_action_lock:
+            require_current_repository_selection()
+            token, preview = git_actions.prepare(
+                str(current_repository().path),
+                action,
+                path_tokens=request.form.getlist("path_token"),
+                message=request.form.get("commit_message"),
+                branch_token=request.form.get("branch_token"),
+                branch_name=request.form.get("branch_name"),
+                remote_token=request.form.get("remote_token"),
+            )
         return render_template(
             "git_action_confirm.html",
             token=token,
@@ -553,7 +627,9 @@ def create_web_app(
         require_mutation_request()
         action = request.form.get("action", "")
         token = request.form.get("token", "")
-        result = git_actions.confirm(str(repo_root), action, token)
+        with repository_action_lock:
+            require_current_repository_selection()
+            result = git_actions.confirm(str(current_repository().path), action, token)
         flash(result["message"], "success")
         return redirect_after_git_action(result["action"])
 
@@ -568,9 +644,9 @@ def create_web_app(
     @app.get("/workflow")
     def workflow_page():
         status_json_path, wf_root = status_paths()
-        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
-        git_state = inspect_git_state(str(repo_root))
+        git_state = inspect_git_state(str(current_repository().path))
         workflow_rows = summarize_workflow_artifacts(wf_root, git_state)
         return render_template(
             "workflow.html",
@@ -595,7 +671,7 @@ def create_web_app(
         plan_id = request.args.get("plan_id", "")
         if not plan_id:
             raise WebUIError("invalid_input", "Stage plan ID is required.", status_code=400)
-        plan_root = effective_state_root / repo_id / "workflow" / "stage_plans" / plan_id
+        plan_root = effective_state_root / current_repository().repository_id / "workflow" / "stage_plans" / plan_id
         if not plan_root.exists():
             raise WebUIError("stage_plan_not_found", "Stage plan was not found.", status_code=404)
         plan = json.loads((plan_root / "plan.json").read_text(encoding="utf-8"))
@@ -632,7 +708,7 @@ def create_web_app(
         plan_id = request.args.get("plan_id", "")
         if not plan_id:
             raise WebUIError("invalid_input", "Commit plan ID is required.", status_code=400)
-        plan_root = effective_state_root / repo_id / "workflow" / "commit_plans" / plan_id
+        plan_root = effective_state_root / current_repository().repository_id / "workflow" / "commit_plans" / plan_id
         if not plan_root.exists():
             raise WebUIError("commit_plan_not_found", "Commit plan was not found.", status_code=404)
         plan = json.loads((plan_root / "plan.json").read_text(encoding="utf-8"))
@@ -660,10 +736,17 @@ def create_web_app(
 
 def run_web_server(
     *,
-    repository_path: str,
+    repository_path: str | None = None,
+    repository_registry_path: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
 ) -> None:
-    app = create_web_app(repository_path=repository_path, host=host, port=port, state_root=state_root)
+    app = create_web_app(
+        repository_path=repository_path,
+        repository_registry_path=repository_registry_path,
+        host=host,
+        port=port,
+        state_root=state_root,
+    )
     app.run(host=host, port=port, debug=False, use_reloader=False)

@@ -94,12 +94,12 @@ Browser Git mutation boundary:
 - Batch stage/unstage/restore use only the explicit selected path set; an action is unavailable unless every selected path supports it. Commit includes the complete reviewed staged set and never stages implicitly.
 - Branch and remote actions are explicitly prepared and confirmed, then revalidated. Switch and fast-forward require a clean worktree and no in-progress Git operation; local deletion requires a non-current, non-main branch proven merged into local `main`. Fetch does not move the current branch. Push publishes committed history only, never uses force, and distinguishes command success from remote-tip verification.
 - Fetch/publish remote selection prefers `origin`; without `origin`, a sole configured remote is selected automatically, while multiple remotes require explicit selection from the server-observed inventory. Remote URLs are sanitized for display.
-- Merge/rebase workflows, reset/stash/clean, force push, remote branch deletion, remote configuration editing, conflict resolution, and arbitrary refs/refspecs remain out of scope.
+- Merge workflows and conflict resolution, rebase/interactive rebase, cherry-pick, reset, stash, reflog recovery, worktrees, submodules, force push/force-with-lease, remote branch deletion, tag management, arbitrary refs/refspecs, general pull, history rewriting, GitHub PR/CI control, and remote configuration editing remain out of scope; use manual Git for these cases.
 
 Windows access from a remote workstation can use SSH port forwarding, for example:
 
 ```bash
-ssh -N -L 8765:127.0.0.1:8765 chuck@192.168.1.173
+ssh -N -L 127.0.0.1:8765:127.0.0.1:8765 chuck@henderson-server1
 ```
 
 Then open:
@@ -109,6 +109,73 @@ http://127.0.0.1:8765
 ```
 
 Stop the server with Ctrl+C in the terminal running `repoctl web`.
+
+## Always-on service and repository selection
+
+The tracked systemd unit is `ops/systemd/repo-control.service`. It runs the
+project virtual-environment executable as user `chuck` and binds only to
+`127.0.0.1:8765`. The unit starts the web app in server-side registry mode:
+
+```bash
+repoctl web --repository-registry /home/chuck/projects/repo-control-ii/ops/repositories.toml
+```
+
+`ops/repositories.toml` is the server-controlled allowlist. Each
+`[repositories.<key>]` entry has a human-readable `name` and an absolute Git
+worktree `path`; `default` names the repository selected at service startup.
+Add repositories by editing this file and restarting the service. All entries
+are validated at startup; there is no filesystem discovery, and the browser can
+select only configured keys, never submit an arbitrary path. A repository
+selection change is service-wide, performs no Git mutation, and invalidates all
+pending confirmations. The configured `default` is selected again after a
+service restart.
+
+The service definition can be installed and started by the Product Owner with:
+
+```bash
+sudo install -m 0644 /home/chuck/projects/repo-control-ii/ops/systemd/repo-control.service /etc/systemd/system/repo-control.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now repo-control.service
+systemctl status repo-control.service
+journalctl -u repo-control.service --no-pager -n 100
+```
+
+From Windows, copy `ops/windows/RepoControlLauncher/` anywhere and double-click
+`RepoControl.cmd`. The launcher checks the local service health endpoint,
+reuses a working Repo Control tunnel, or starts an SSH loopback forward using
+the normal `chuck@henderson-server1` SSH configuration. It opens
+`http://127.0.0.1:8765/` and does not store credentials or disable host-key
+checking. If local port 8765 belongs to another service, it fails instead of
+creating a duplicate listener. The package README describes the optional
+per-user Task Scheduler logon task for tunnel-only startup.
+SSH runs without a visible console window; the logon task uses a small
+Windows Script Host wrapper to create PowerShell hidden from the outset.
+Optional logon startup requires Windows Script Host/VBScript enabled;
+on-demand use does not. Hidden startup requires normal non-interactive SSH authentication
+and an already verified host key. Failures return a nonzero exit code and
+write local diagnostics under `%LOCALAPPDATA%\RepoControlLauncher`; no
+authentication or host-key checks are disabled. Re-run the task installer
+after updating the package to apply the console-free entry point.
+
+For service operation:
+
+```bash
+sudo systemctl restart repo-control.service
+sudo systemctl stop repo-control.service
+sudo systemctl disable repo-control.service
+```
+
+To remove the installed unit during rollback:
+
+```bash
+sudo systemctl stop repo-control.service
+sudo systemctl disable repo-control.service
+sudo rm /etc/systemd/system/repo-control.service
+sudo systemctl daemon-reload
+```
+
+Restarting the service clears in-memory prepared actions. Avoid simultaneous
+Git mutations through Repo Control and another Git client or terminal.
 
 ## External state location
 

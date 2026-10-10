@@ -43,7 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--repository", help="Path inside target Git repository")
 
     web_parser = subparsers.add_parser("web", help="Start local browser UI")
-    web_parser.add_argument("--repository", required=True, help="Path to target Git repository")
+    web_repository = web_parser.add_mutually_exclusive_group(required=True)
+    web_repository.add_argument("--repository", help="Path to target Git repository")
+    web_repository.add_argument("--repository-registry", help="Server-side TOML registry of known repositories")
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (M009 loopback only)")
     web_parser.add_argument("--port", default=8765, type=int, help="Bind port")
 
@@ -200,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             run_web_server(
                 repository_path=args.repository,
+                repository_registry_path=args.repository_registry,
                 host=args.host,
                 port=args.port,
             )

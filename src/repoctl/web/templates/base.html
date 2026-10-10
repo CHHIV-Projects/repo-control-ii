@@ -16,6 +16,18 @@
         <div class="label">Active Repository</div>
         <div class="value">{{ repository_name }}</div>
         <div class="muted">{{ repository_root }}</div>
+        {% if repository_choices|length > 1 %}
+          <form class="repo-selector" method="post" action="{{ url_for('select_repository') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="repository-key">Switch active repository</label>
+            <select id="repository-key" name="repository_key">
+              {% for repository in repository_choices %}
+                <option value="{{ repository.key }}"{% if repository.key == active_repository_key %} selected{% endif %}>{{ repository.name }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">Use repository</button>
+          </form>
+        {% endif %}
       </div>
     </header>
 

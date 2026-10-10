@@ -44,6 +44,9 @@ body {
 .repo-pill .label { color: var(--muted); font-size: 0.85rem; }
 .repo-pill .value { font-weight: 700; }
 .repo-pill .muted { color: var(--muted); overflow-wrap: anywhere; }
+.repo-selector { display: flex; align-items: end; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.repo-selector label { width: 100%; color: var(--muted); font-size: 0.85rem; }
+.repo-selector select { max-width: 100%; }
 
 .nav {
   display: flex;

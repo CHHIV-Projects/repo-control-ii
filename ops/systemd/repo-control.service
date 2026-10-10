@@ -1,0 +1,16 @@
+[Unit]
+Description=Repo Control browser service
+After=network.target
+
+[Service]
+Type=simple
+User=chuck
+WorkingDirectory=/home/chuck/projects/repo-control-ii
+ExecStart=/home/chuck/projects/repo-control-ii/.venv/bin/repoctl web --repository-registry /home/chuck/projects/repo-control-ii/ops/repositories.toml --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+default = "repo-control-ii"
+
+[repositories.repo-control-ii]
+name = "Repo Control II"
+path = "/home/chuck/projects/repo-control-ii"
+
+[repositories.vocab-app]
+name = "Vocab App"
+path = "/home/chuck/projects/vocab-app"
