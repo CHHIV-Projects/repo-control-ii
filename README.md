@@ -84,7 +84,7 @@ Current primary pages and capabilities:
 
 - Dashboard (deterministic workflow status)
 - Git Review (current changes, diagnosis/recovery previews, history, and branches)
-- Milestone (recursively discover prompt artifacts beneath each repository's server-configured milestone root and explicitly select a repository-scoped active prompt; this selection does not imply approval, lifecycle phase, acceptance, or closure)
+- Milestone (recursively discover prompt artifacts beneath each repository's server-configured milestone root; explicitly select a prompt; and record lifecycle transitions and meaningful decisions in a tracked, human-readable per-milestone workflow sidecar)
 - Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
 - The Branches view provides confirmed local branch create/switch/safe-delete, configured-remote fetch/push, first-push upstream setup, and fast-forward-only update. Remote operations are bounded, non-interactive, and use configured remotes only; Push is non-force and verifies the actual remote branch tip after success.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
@@ -93,6 +93,13 @@ In repository-registry mode, each `[repositories.<key>]` entry may set a
 repository-relative `milestone_root` (for example, `docs/milestones` or
 `milestones`). If omitted, it defaults to `docs/milestones`. The browser cannot
 override this path. Discovery recurses only beneath that root.
+
+Milestone lifecycle phases are reconstructed from the chronological Markdown
+workflow sidecar beside the selected prompt. The sidecar is distinct from the
+prompt, closeout, and external active-selection pointer. Selection, artifact
+presence, Git cleanliness, and test results never automatically approve or
+close a milestone. Product Owner approvals require explicit UI confirmation;
+Repo Control does not authenticate the actor.
 
 Browser Git mutation boundary:
 

@@ -72,6 +72,126 @@ def _csrf(client) -> str:
 
 
 class MilestoneWebTests(unittest.TestCase):
+    def test_lifecycle_is_shown_and_product_owner_approval_is_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            registry = _registry(root, first, second)
+            state_root = root / "state"
+            client = create_web_app(repository_registry_path=registry, state_root=state_root).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+
+            selected = client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            )
+            self.assertEqual(selected.status_code, 302)
+            page = client.get("/milestones")
+            text = page.get_data(as_text=True)
+            self.assertIn("Lifecycle: PLANNING", text)
+            self.assertIn("Product Owner: review the prompt", text)
+            self.assertIn("not authenticated", text)
+            self.assertIn("MILESTONE WORKFLOW — EXPLICIT ACTIONS", text)
+
+            data = {
+                "csrf_token": csrf,
+                "repository_key": "first",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+                "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                "event_type": "prompt_approved",
+                "summary": "Prompt reviewed and approved.",
+                "actor_role": "product_owner",
+            }
+            refused = client.post("/milestones/workflow/event", data=data)
+            self.assertEqual(refused.status_code, 400)
+            data["po_approved"] = "yes"
+            accepted = client.post("/milestones/workflow/event", data=data)
+            self.assertEqual(accepted.status_code, 302)
+            self.assertIn("Lifecycle: READY", client.get("/milestones").get_data(as_text=True))
+
+    def test_stale_milestone_and_repository_workflow_posts_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            second_prompt = first / "docs" / "milestones" / "R003.02_second_prompt.md"
+            second_prompt.write_text("# Second prompt\n", encoding="utf-8")
+            registry = _registry(root, first, second)
+            state_root = root / "state"
+            client = create_web_app(repository_registry_path=registry, state_root=state_root).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+
+            client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            )
+            stale_page = client.get("/milestones").get_data(as_text=True)
+            self.assertIn('name="prompt_path" value="docs/milestones/R003.01_test_prompt.md"', stale_page)
+
+            client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.02",
+                },
+            )
+            stale_milestone = client.post(
+                "/milestones/workflow/event",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                    "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                    "event_type": "prompt_approved",
+                    "summary": "Stale form",
+                    "actor_role": "product_owner",
+                    "po_approved": "yes",
+                },
+            )
+            self.assertEqual(stale_milestone.status_code, 409)
+            self.assertFalse(
+                (first / "docs/milestones/R003.01_test_workflow.md").exists()
+            )
+
+            client.post(
+                "/repositories/select",
+                data={"csrf_token": csrf, "repository_key": "second"},
+            )
+            stale_repository = client.post(
+                "/milestones/workflow/event",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.02",
+                    "prompt_path": "docs/milestones/R003.02_second_prompt.md",
+                    "event_type": "prompt_approved",
+                    "summary": "Stale repository form",
+                    "actor_role": "product_owner",
+                    "po_approved": "yes",
+                },
+            )
+            self.assertEqual(stale_repository.status_code, 409)
+            self.assertFalse((first / "docs/milestones/R003.02_second_workflow.md").exists())
+            self.assertFalse((second / "docs/milestones/R004.01_test_workflow.md").exists())
+
     def test_configured_milestone_root_is_server_selected_and_used_for_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -122,7 +242,7 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIn("No milestone selected", first_text)
             self.assertIn("R003.01", first_text)
             self.assertIn("First Repository", first_text)
-            self.assertIn("does not establish approval", first_text)
+            self.assertIn("separate explicit workflow events", first_text)
             self.assertIn(">Milestone</a>", first_text)
 
             csrf = _csrf(client)

@@ -20,6 +20,10 @@ _ARTIFACT_LIKE_RE = re.compile(
     r"^(?:[A-Za-z][A-Za-z0-9.]*|[0-9][A-Za-z0-9.]*)_.+_[a-z]+\.md$",
     re.IGNORECASE,
 )
+_WORKFLOW_SIDECAR_RE = re.compile(
+    r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})_"
+    r"[a-z0-9]+(?:_[a-z0-9]+)*_workflow\.md$"
+)
 _POINTER_SCHEMA_VERSION = 1
 
 
@@ -132,6 +136,8 @@ def discover_milestones(
         directories[:] = retained_directories
 
         for filename in sorted(filenames, key=os.fsencode):
+            if _WORKFLOW_SIDECAR_RE.fullmatch(filename):
+                continue
             if not _ARTIFACT_LIKE_RE.fullmatch(filename):
                 continue
             path = current / filename

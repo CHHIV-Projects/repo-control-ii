@@ -32,6 +32,7 @@ from ..workflow.milestones import (
     load_milestone_selection,
     save_milestone_selection,
 )
+from ..workflow.lifecycle import WorkflowRecordError, load_milestone_workflow, record_milestone_event
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .views import (
@@ -675,12 +676,24 @@ def create_web_app(
             )
         except MilestoneArtifactError as exc:
             raise WebUIError("milestone_discovery_failed", str(exc), status_code=503) from exc
+        workflow = None
+        if selection["status"] == "selected":
+            try:
+                workflow = load_milestone_workflow(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                )
+            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                workflow = {"status": "invalid", "reason": str(exc)}
         return render_template(
             "milestones.html",
             candidates=inventory["candidates"],
             inventory_issues=inventory["issues"],
             selection=selection,
             milestone_root=repository.milestone_root,
+            workflow=workflow,
         )
 
     @app.post("/milestones/select")
@@ -716,6 +729,70 @@ def create_web_app(
             f"Selected {candidate['milestone_id']} for {current_repository().name}.",
             "success",
         )
+        return redirect(url_for("milestone_page"))
+
+    @app.post("/milestones/workflow/event")
+    def record_milestone_workflow_event():
+        require_mutation_request()
+        with repository_action_lock:
+            require_current_repository_selection()
+            submitted_repository = request.form.get("repository_key", "")
+            submitted_generation = request.form.get("repository_generation", "")
+            try:
+                generation = int(submitted_generation)
+            except ValueError as exc:
+                raise WebUIError(
+                    "stale_workflow_request",
+                    "Refresh the milestone page and retry the workflow action.",
+                    status_code=409,
+                ) from exc
+            if (
+                submitted_repository != current_repository().key
+                or generation != g.repository_registry_generation
+            ):
+                raise WebUIError(
+                    "stale_workflow_request",
+                    "The selected repository changed since this page was rendered. Refresh and retry.",
+                    status_code=409,
+                )
+            repository = current_repository()
+            selection = load_milestone_selection(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+            )
+            expected_id = request.form.get("milestone_id", "")
+            expected_prompt_path = request.form.get("prompt_path", "")
+            if (
+                selection["status"] != "selected"
+                or selection["selection"]["milestone_id"] != expected_id
+                or selection["selection"]["prompt_path"] != expected_prompt_path
+            ):
+                raise WebUIError(
+                    "stale_milestone_workflow_request",
+                    "The selected milestone changed or is invalid. Refresh the page and retry.",
+                    status_code=409,
+                )
+            try:
+                record_milestone_event(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                    event_type=request.form.get("event_type", ""),
+                    summary=request.form.get("summary", ""),
+                    actor_role=request.form.get("actor_role", ""),
+                    po_approved=request.form.get("po_approved") == "yes",
+                    waiting_category=request.form.get("waiting_category") or None,
+                    waiting_reason=request.form.get("waiting_reason") or None,
+                    related_event_id=request.form.get("related_event_id") or None,
+                    bug_scope=request.form.get("bug_scope") or None,
+                    evidence_source=request.form.get("evidence_source") or None,
+                    result=request.form.get("result") or None,
+                )
+            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                raise WebUIError("invalid_workflow_event", str(exc), status_code=400) from exc
+        flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
         return redirect(url_for("milestone_page"))
 
     @app.post("/workflow/snapshot/create")
