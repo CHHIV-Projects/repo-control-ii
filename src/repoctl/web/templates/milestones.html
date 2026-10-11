@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Milestone Selection</h2>
+  <p class="read-only-badge">MILESTONE ARTIFACTS — SELECTION ONLY</p>
+  <p><strong>Repository:</strong> {{ repository_name }}</p>
+  <p class="muted">{{ repository_root }}</p>
+  <p><strong>Configured milestone root:</strong> <code>{{ milestone_root }}/</code></p>
+  <p class="muted">Selection identifies a prompt only. It does not establish approval, lifecycle phase, acceptance, or closure.</p>
+
+  {% if selection.status == "selected" %}
+    <article class="card spaced-top">
+      <h3>Selected milestone: {{ selection.selection.milestone_id }}</h3>
+      <p><strong>Prompt:</strong> <code>{{ selection.selection.prompt_path }}</code></p>
+      <p>Prompt: Present and valid</p>
+      {% if selection.selection.closeout_exists %}
+        <p>Closeout: Present (<code>{{ selection.selection.closeout_path }}</code>)</p>
+      {% else %}
+        <p>Closeout: Not present</p>
+      {% endif %}
+    </article>
+  {% elif selection.status == "invalid" %}
+    <article class="card spaced-top">
+      <h3>Saved selection needs attention</h3>
+      <p role="alert">{{ selection.reason }}</p>
+    </article>
+  {% else %}
+    <article class="card spaced-top">
+      <h3>No milestone selected</h3>
+      <p>Select a valid milestone prompt explicitly. Repo Control will not choose one automatically.</p>
+    </article>
+  {% endif %}
+
+  {% if inventory_issues %}
+    <article class="card spaced-top">
+      <h3>Discovery warnings</h3>
+      <ul>
+        {% for issue in inventory_issues %}
+          <li>{{ issue }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+  {% endif %}
+
+  <article class="card spaced-top">
+    <h3>Discovered prompt candidates</h3>
+    {% if candidates %}
+      <ul>
+        {% for candidate in candidates %}
+          <li>
+            <strong>{{ candidate.milestone_id }}</strong> —
+            <code>{{ candidate.prompt_path }}</code>
+            {% if candidate.closeout_exists %}
+              <span> · Closeout present</span>
+            {% else %}
+              <span> · Closeout not present</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="{{ url_for('select_milestone') }}" class="spaced-top">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+        <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+        <label for="milestone-candidate">Select or reselect a milestone prompt</label>
+        <select id="milestone-candidate" name="milestone_id" required>
+          <option value="" disabled{% if selection.status != "selected" %} selected{% endif %}>Choose a milestone</option>
+          {% for candidate in candidates %}
+            <option value="{{ candidate.milestone_id }}"{% if selection.status == "selected" and selection.selection.prompt_path == candidate.prompt_path %} selected{% endif %}>
+              {{ candidate.milestone_id }} — {{ candidate.title_slug }}
+            </option>
+          {% endfor %}
+        </select>
+        <button type="submit">Select milestone</button>
+      </form>
+    {% else %}
+      <p>No valid milestone prompt candidates were found beneath the configured milestone root.</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

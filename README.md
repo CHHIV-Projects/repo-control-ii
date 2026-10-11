@@ -84,9 +84,15 @@ Current primary pages and capabilities:
 
 - Dashboard (deterministic workflow status)
 - Git Review (current changes, diagnosis/recovery previews, history, and branches)
+- Milestone (recursively discover prompt artifacts beneath each repository's server-configured milestone root and explicitly select a repository-scoped active prompt; this selection does not imply approval, lifecycle phase, acceptance, or closure)
 - Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
 - The Branches view provides confirmed local branch create/switch/safe-delete, configured-remote fetch/push, first-push upstream setup, and fast-forward-only update. Remote operations are bounded, non-interactive, and use configured remotes only; Push is non-force and verifies the actual remote branch tip after success.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
+
+In repository-registry mode, each `[repositories.<key>]` entry may set a
+repository-relative `milestone_root` (for example, `docs/milestones` or
+`milestones`). If omitted, it defaults to `docs/milestones`. The browser cannot
+override this path. Discovery recurses only beneath that root.
 
 Browser Git mutation boundary:
 
@@ -237,6 +243,14 @@ with:
 
 Workflow status artifacts are current-state projections and may be replaced by later status runs.
 Milestone 006 performs no Git mutation, no AI analysis, and no snapshot/comparison creation.
+
+The explicitly selected milestone prompt pointer is stored separately under:
+
+~/.local/share/repoctl/<repository_id>/milestones/selection.json
+
+It is an operational pointer only; the tracked prompt and related milestone
+artifacts remain authoritative. Milestone selection is repository-scoped and
+is preserved when scanner artifacts are refreshed.
 
 Milestone 007 commit plans are written under:
 

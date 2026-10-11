@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import threading
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Any
@@ -15,6 +16,7 @@ from .util import classify_file_type, count_lines_if_text, encode_path_order, ma
 
 SCHEMA_VERSION = 1
 DEFAULT_STATE_ROOT = Path("~/.local/share/repoctl").expanduser()
+STATE_ARTIFACT_LOCK = threading.RLock()
 
 
 def _extract_requirements(repo_root: Path, tracked_files: list[str]) -> list[dict[str, Any]]:
@@ -215,38 +217,39 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
 
     root = (state_root or DEFAULT_STATE_ROOT).expanduser()
     final_dir = root / repository_id
-    root.mkdir(parents=True, exist_ok=True)
+    with STATE_ARTIFACT_LOCK:
+        root.mkdir(parents=True, exist_ok=True)
 
-    temp_dir = Path(mkdtemp(prefix="scan-tmp-", dir=str(root)))
-    try:
-        write_json_deterministic(temp_dir / "repository.json", repository_payload)
-        write_json_deterministic(temp_dir / "files.json", files_payload)
-        write_json_deterministic(temp_dir / "symbols.json", symbols_payload)
-        write_json_deterministic(temp_dir / "tests.json", tests_payload)
-        write_json_deterministic(temp_dir / "dependencies.json", dependencies_payload)
-        (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
+        temp_dir = Path(mkdtemp(prefix="scan-tmp-", dir=str(root)))
+        try:
+            write_json_deterministic(temp_dir / "repository.json", repository_payload)
+            write_json_deterministic(temp_dir / "files.json", files_payload)
+            write_json_deterministic(temp_dir / "symbols.json", symbols_payload)
+            write_json_deterministic(temp_dir / "tests.json", tests_payload)
+            write_json_deterministic(temp_dir / "dependencies.json", dependencies_payload)
+            (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
 
-        # Keep previously generated higher-level state stable across scans.
-        for namespace in ("contexts", "snapshots", "comparisons", "analyses", "workflow"):
-            existing_dir = final_dir / namespace
-            if existing_dir.exists() and existing_dir.is_dir():
-                shutil.copytree(existing_dir, temp_dir / namespace)
+            # Keep previously generated higher-level state stable across scans.
+            for namespace in ("contexts", "snapshots", "comparisons", "analyses", "workflow", "milestones"):
+                existing_dir = final_dir / namespace
+                if existing_dir.exists() and existing_dir.is_dir():
+                    shutil.copytree(existing_dir, temp_dir / namespace)
 
-        backup_dir = None
-        if final_dir.exists():
-            backup_dir = root / f"{repository_id}.bak"
-            if backup_dir.exists():
+            backup_dir = None
+            if final_dir.exists():
+                backup_dir = root / f"{repository_id}.bak"
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir)
+                final_dir.rename(backup_dir)
+
+            temp_dir.rename(final_dir)
+
+            if backup_dir and backup_dir.exists():
                 shutil.rmtree(backup_dir)
-            final_dir.rename(backup_dir)
-
-        temp_dir.rename(final_dir)
-
-        if backup_dir and backup_dir.exists():
-            shutil.rmtree(backup_dir)
-    except Exception:
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-        raise
+        except Exception:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            raise
 
     parse_error_count = sum(1 for item in symbols_payload["python_files"] if not item["parse_success"])
 

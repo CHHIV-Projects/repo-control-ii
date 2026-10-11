@@ -26,6 +26,12 @@ from ..workflow.git_history import (
     inspect_file_history,
     inspect_history,
 )
+from ..workflow.milestones import (
+    MilestoneArtifactError,
+    discover_milestones,
+    load_milestone_selection,
+    save_milestone_selection,
+)
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .views import (
@@ -163,6 +169,7 @@ def create_web_app(
             "repository_root": str(active_repository.path),
             "repository_choices": registry.entries,
             "active_repository_key": active_repository.key,
+            "repository_registry_generation": g.repository_registry_generation,
             "bound_host": bound_host,
             "bound_port": port,
         }
@@ -655,6 +662,61 @@ def create_web_app(
             matching_snapshot_id=status_payload["matching_snapshot_id"],
             rows=workflow_rows,
         )
+
+    @app.get("/milestones")
+    def milestone_page():
+        repository = current_repository()
+        try:
+            inventory = discover_milestones(repository.path, repository.milestone_root)
+            selection = load_milestone_selection(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+            )
+        except MilestoneArtifactError as exc:
+            raise WebUIError("milestone_discovery_failed", str(exc), status_code=503) from exc
+        return render_template(
+            "milestones.html",
+            candidates=inventory["candidates"],
+            inventory_issues=inventory["issues"],
+            selection=selection,
+            milestone_root=repository.milestone_root,
+        )
+
+    @app.post("/milestones/select")
+    def select_milestone():
+        _require_csrf()
+        with repository_action_lock:
+            require_current_repository_selection()
+            submitted_repository = request.form.get("repository_key", "")
+            submitted_generation = request.form.get("repository_generation", "")
+            try:
+                generation = int(submitted_generation)
+            except ValueError as exc:
+                raise WebUIError("stale_milestone_selection", "Refresh the milestone page and select again.", 409) from exc
+            if (
+                submitted_repository != current_repository().key
+                or generation != g.repository_registry_generation
+            ):
+                raise WebUIError(
+                    "stale_milestone_selection",
+                    "The selected repository changed since this page was rendered. Refresh and select a milestone again.",
+                    status_code=409,
+                )
+            try:
+                candidate = save_milestone_selection(
+                    current_repository().path,
+                    effective_state_root,
+                    request.form.get("milestone_id", ""),
+                    current_repository().milestone_root,
+                )
+            except MilestoneArtifactError as exc:
+                raise WebUIError("invalid_milestone_selection", str(exc), status_code=400) from exc
+        flash(
+            f"Selected {candidate['milestone_id']} for {current_repository().name}.",
+            "success",
+        )
+        return redirect(url_for("milestone_page"))
 
     @app.post("/workflow/snapshot/create")
     def workflow_create_snapshot_action():

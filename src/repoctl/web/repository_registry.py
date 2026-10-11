@@ -5,6 +5,7 @@ import threading
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from ..scanner.git_ops import ScanError, validate_git_worktree
@@ -21,6 +22,7 @@ class RepositoryEntry:
     name: str
     path: Path
     repository_id: str
+    milestone_root: str
 
 
 class RepositoryRegistry:
@@ -72,6 +74,7 @@ class RepositoryRegistry:
             name=root.name,
             path=root,
             repository_id=make_repository_id(root),
+            milestone_root="docs/milestones",
         )
         return cls((entry,), default_key=entry.key)
 
@@ -101,10 +104,25 @@ class RepositoryRegistry:
                 raise RepositoryRegistryError(f"Repository registry entry {key!r} must be a table.")
             name = value.get("name")
             configured_path = value.get("path")
+            configured_milestone_root = value.get("milestone_root", "docs/milestones")
             if not isinstance(name, str) or not name.strip():
                 raise RepositoryRegistryError(f"Repository registry entry {key!r} requires a human-readable name.")
             if not isinstance(configured_path, str) or not Path(configured_path).is_absolute():
                 raise RepositoryRegistryError(f"Repository registry entry {key!r} requires an absolute path.")
+            if not isinstance(configured_milestone_root, str):
+                raise RepositoryRegistryError(
+                    f"Repository registry entry {key!r} milestone_root must be repository-relative."
+                )
+            milestone_relative = PurePosixPath(configured_milestone_root)
+            if (
+                not configured_milestone_root
+                or milestone_relative.is_absolute()
+                or "\\" in configured_milestone_root
+                or any(part in {"", ".", ".."} for part in configured_milestone_root.split("/"))
+            ):
+                raise RepositoryRegistryError(
+                    f"Repository registry entry {key!r} milestone_root must be a safe repository-relative path."
+                )
             path = Path(configured_path).resolve()
             try:
                 root = validate_git_worktree(path)
@@ -112,12 +130,25 @@ class RepositoryRegistry:
                 raise RepositoryRegistryError(
                     f"Repository registry entry {key!r} is not a usable Git worktree: {exc}"
                 ) from exc
+            milestone_path = root.joinpath(*milestone_relative.parts)
+            current = root
+            for part in milestone_relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    raise RepositoryRegistryError(
+                        f"Repository registry entry {key!r} milestone_root cannot contain symlinked path components."
+                    )
+            if not milestone_path.resolve(strict=False).is_relative_to(root):
+                raise RepositoryRegistryError(
+                    f"Repository registry entry {key!r} milestone_root resolves outside its repository."
+                )
             entries.append(
                 RepositoryEntry(
                     key=key,
                     name=name.strip(),
                     path=root,
                     repository_id=make_repository_id(root),
+                    milestone_root=configured_milestone_root,
                 )
             )
         return cls(tuple(entries), default_key=default_key)

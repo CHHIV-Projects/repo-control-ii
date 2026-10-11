@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from repoctl.cli import build_parser
 from repoctl.web.repository_registry import RepositoryRegistry, RepositoryRegistryError
+
+
+def _git_repo(path: Path) -> Path:
+    path.mkdir()
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+    return path
 
 
 class RepositoryRegistryTests(unittest.TestCase):
@@ -24,6 +32,51 @@ path = "relative/repository"
             )
             with self.assertRaisesRegex(RepositoryRegistryError, "absolute path"):
                 RepositoryRegistry.from_toml(registry_path)
+
+    def test_registry_accepts_repository_relative_milestone_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _git_repo(root / "repo")
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "main"',
+                        "",
+                        "[repositories.main]",
+                        'name = "Main"',
+                        f'path = "{repo}"',
+                        'milestone_root = "project/milestones"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            registry = RepositoryRegistry.from_toml(registry_path)
+
+            self.assertEqual(registry.active().milestone_root, "project/milestones")
+
+    def test_registry_rejects_unsafe_milestone_root(self) -> None:
+        for milestone_root in ("../outside", "/absolute/path", "milestones\\nested", "", ".", "a//b", "a/./b"):
+            with self.subTest(milestone_root=milestone_root), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                repo = _git_repo(root / "repo")
+                registry_path = root / "repositories.toml"
+                registry_path.write_text(
+                    "\n".join(
+                        [
+                            'default = "main"',
+                            "",
+                            "[repositories.main]",
+                            'name = "Main"',
+                            f'path = "{repo}"',
+                            f"milestone_root = {json.dumps(milestone_root)}",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(RepositoryRegistryError, "milestone_root"):
+                    RepositoryRegistry.from_toml(registry_path)
 
     def test_web_cli_accepts_registry_mode_without_a_browser_path_argument(self) -> None:
         args = build_parser().parse_args(
