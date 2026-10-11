@@ -4,11 +4,11 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Clean restart and architecture definition  
+**Project phase:** Git Control operationally accepted; Workflow Orchestration next  
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `https://github.com/CHHIV-Projects/repo-control-ii.git`  
-**Current architecture baseline:** The inherited Repo Control I code is present only as unassessed implementation material. Repo Control II architecture is defined by the new governing documents, not by legacy code.  
-**Current architectural emphasis:** establish a deterministic control plane for Git, agent procedure, repository intelligence, workflow orchestration, and later model routing while preserving Product Owner authority and minimizing unnecessary AI context transfer.
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
+**Current architecture baseline:** Repo Control II now has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, and noninteractive GitHub authentication. The next architecture focus is Workflow Orchestration.  
+**Current architectural emphasis:** preserve deterministic Git authority and Product Owner control while reducing manual transfer of milestone, review, test, and repository state between Product Owner, Architect, and Coder.
 
 ---
 
@@ -27,7 +27,7 @@ how Architect and Coder roles remain distinct
 how milestone state is represented
 how iterative milestone exchanges are preserved
 how Git state is surfaced and controlled
-how repository intelligence is produced and consumed
+how repositories are selected safely
 how external tools are integrated
 how AI receives bounded trusted context
 what Repo Control should own
@@ -36,20 +36,20 @@ what Repo Control should not reimplement
 
 `project_context.md` describes current project/product state and near-term direction.
 
-This document describes the intended system structure and the architectural boundaries that should remain stable even as implementations change.
+This document describes the intended system structure and architectural boundaries that should remain stable even as implementations change.
 
 ---
 
 # 2. Architecture North Star
 
-Repo Control II should become a deterministic project-control layer between the Product Owner, Architect, coding agents, repositories, Git, project documents, tests, and selected external tools.
+Repo Control II is a deterministic project-control layer between the Product Owner, Architect, coding agents, repositories, Git, project documents, tests, and selected external tools.
 
 Conceptually:
 
 ```text
                          Product Owner
                               │
-                    direction / approval
+                      direction / approval
                               │
                  ┌────────────┴────────────┐
                  │                         │
@@ -61,7 +61,7 @@ Conceptually:
                  │                         │
                  └────────────┬────────────┘
                               ▼
-                      Repo Control II
+                       Repo Control II
                               │
           ┌───────────────────┼────────────────────┐
           │                   │                    │
@@ -72,8 +72,8 @@ Conceptually:
           │          │        │                    │
           ▼          ▼        ▼                    ▼
       GitHub     Local Tree   Tests       Repository Intelligence
-                                              │
-                                              ▼
+                                             │
+                                             ▼
                                       Graphify / DevLens
 ```
 
@@ -99,9 +99,13 @@ Repo Control II architecture should optimize for three primary outcomes.
 
 Provide the Product Owner with understandable, graphical, trustworthy Git control without requiring memorization of exact command syntax.
 
+The initial Git Control arc is complete and operationally accepted.
+
 ## 3.2 Workflow Integration
 
 Reduce manual transfer of prompts, questions, clarifications, coder output, test evidence, and repository state between the Architect and Coder.
+
+This is the next major architectural focus.
 
 ## 3.3 Context Efficiency
 
@@ -148,7 +152,7 @@ file relationships
 test outcome
 → test runner
 
-milestone state
+workflow state
 → Repo Control workflow state
 
 project instructions
@@ -224,7 +228,7 @@ customize the workflow layer
 fork only when required
 ```
 
-The system should not rebuild a full Git GUI, repository graph engine, coding agent, or model router merely because those functions are technically possible to recreate.
+The system should not rebuild a repository graph engine, coding agent, or model router merely because those functions are technically possible to recreate.
 
 ## 4.6 Local and Remote Repository State Are Different Authorities
 
@@ -238,7 +242,7 @@ local Git repository
 → current branch / index / working tree
 
 repository-intelligence engine
-→ structural interpretation of the selected local or committed code state
+→ structural interpretation of selected code state
 ```
 
 GitHub alone cannot represent uncommitted local changes.
@@ -285,6 +289,16 @@ Material changes to:
 
 should trigger explicit re-scope, suspension, or a follow-up milestone.
 
+## 4.9 Operational Convenience Must Not Weaken Security Boundaries
+
+Always-on operation, browser access, startup automation, and remote authentication must not weaken:
+
+- mutation confirmation;
+- repository isolation;
+- SSH host-key verification;
+- credential separation;
+- Product Owner authority.
+
 ---
 
 # 5. System Boundary
@@ -293,13 +307,14 @@ Repo Control II is a **control plane**, not an IDE, coding model, or source-cont
 
 Repo Control II should own:
 
-- project selection;
+- project/repository selection;
 - repository registration;
 - workflow state;
 - milestone state;
 - artifact location and status;
 - Git-state presentation;
 - controlled Git action preparation;
+- accepted routine Git execution after Product Owner confirmation;
 - integration with Git/GitHub;
 - integration with repository-intelligence tools;
 - integration with Agent Skills;
@@ -324,105 +339,307 @@ Repo Control II should not own by default:
 
 ---
 
-# 6. Major Architectural Layers
+# 6. Runtime Architecture
 
-## 6.1 User / Product Owner Layer
+## 6.1 Linux Service
 
-Responsibilities:
+Repo Control II runs as an always-on systemd service on `henderson-server1`.
 
-- select project/repository;
-- inspect Git state;
-- review proposed operations;
-- approve workflow transitions;
-- approve architecture or scope changes;
-- review escalations;
-- accept implementation;
-- perform or authorize Git mutations;
-- initiate Architect or Coder work;
-- review milestone state.
-
-This layer expresses authority and intent.
-
-It should not require the Product Owner to act as the primary transport mechanism between Architect and Coder.
-
-## 6.2 Architect Integration Layer
-
-Current preferred Architect:
+The tracked unit is:
 
 ```text
-ChatGPT browser / ChatGPT Plus
+ops/systemd/repo-control.service
 ```
 
-Responsibilities:
-
-- retrieve bounded project facts;
-- retrieve active milestone;
-- inspect Git/repository evidence;
-- compose milestone artifacts;
-- answer coder questions;
-- resolve or frame escalations;
-- review closeouts;
-- recommend acceptance or follow-up;
-- propose Git actions without silently executing them.
-
-The preferred first architecture is:
+The service runs as:
 
 ```text
-ChatGPT
-→ controlled Repo Control tools
-→ local deterministic project evidence
+User=chuck
 ```
 
-rather than immediately replacing the ChatGPT interface with a custom API-backed chat client.
+and starts Repo Control from the project virtual environment.
 
-## 6.3 Coder Integration Layer
-
-Coder environments may include:
-
-- GitHub Copilot;
-- Codex;
-- Cline;
-- OpenCode;
-- Aider;
-- Goose;
-- OpenHands;
-- other approved agent environments.
-
-Repo Control should expose enough standardized state that the coding agent does not require product-specific custom integration where avoidable.
-
-Coder input should converge toward:
+The accepted network endpoint is:
 
 ```text
-active milestone
-+
-standing Agent Skills
-+
-approved addenda / lock-ins
-+
-targeted repository evidence
-+
-relevant tests
+127.0.0.1:8765
 ```
 
-Coder output should converge toward:
+The service starts automatically at Linux boot and restarts after failure.
+
+Repo Control is therefore not dependent on an interactive terminal, VS Code session, or manually started shell process.
+
+## 6.2 Loopback-Only Exposure
+
+Repo Control remains bound to Linux loopback only.
+
+It is not directly exposed to:
+
+- the home LAN;
+- arbitrary network clients;
+- the public Internet.
+
+This keeps the browser control plane behind the server's SSH access boundary.
+
+## 6.3 Windows Access
+
+Windows reaches Repo Control through an SSH local port forward.
+
+The accepted portable launcher package is:
 
 ```text
-code changes
-+
-test evidence
-+
-questions / escalation events as needed
-+
-one closeout
-+
-final read-only Git status
+ops/windows/RepoControlLauncher/
 ```
 
-## 6.4 Workflow Orchestration Layer
+The Windows operating model is:
 
-This is the central custom layer.
+```text
+Windows login
+→ per-user scheduled task
+→ hidden SSH tunnel
+→ Windows 127.0.0.1:8765
+→ server 127.0.0.1:8765
+→ Repo Control
+```
 
-Responsibilities:
+The Product Owner may then open:
+
+```text
+http://127.0.0.1:8765
+```
+
+directly in the browser.
+
+The launcher remains available as a fallback/on-demand entry point.
+
+## 6.4 Tunnel Safety
+
+The Windows helper must:
+
+- reuse an existing healthy Repo Control tunnel;
+- refuse an unrelated listener on local port `8765`;
+- avoid embedding credentials;
+- preserve normal SSH host-key verification;
+- avoid visible console windows during automatic logon startup;
+- not become a Windows service.
+
+---
+
+# 7. Project and Repository Model
+
+Repo Control II supports multiple explicitly registered repositories.
+
+The current server-controlled registry is:
+
+```text
+ops/repositories.toml
+```
+
+The browser selects repositories by configured key.
+
+The browser must not supply arbitrary filesystem paths.
+
+Current configured repositories include:
+
+```text
+Repo Control II
+Vocab App
+```
+
+For Repo Control II:
+
+```text
+Project:
+Repo Control II
+
+Repository:
+/home/chuck/projects/repo-control-ii
+
+Remote:
+git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git
+
+Default branch:
+main
+
+Context:
+docs/context/
+
+Milestones:
+docs/milestones/
+```
+
+The browser must never silently switch to or inspect an unregistered repository.
+
+---
+
+# 8. Multi-Repository Isolation
+
+Repository selection is a control-plane concern.
+
+The selected repository is service-wide operational state.
+
+A service restart returns selection to the configured default.
+
+Repository registry changes require service restart.
+
+Important invariants:
+
+- selection must not mutate Git state;
+- prepared Git actions must be invalidated when selection changes;
+- an action prepared for one repository must never execute against another repository;
+- browser clients must not bypass the allowlist;
+- repository identity must remain visible in the UI.
+
+---
+
+# 9. Git Control Architecture
+
+## 9.1 Git Is the Authority
+
+Repo Control derives repository state from Git.
+
+It does not maintain a competing model of:
+
+- current branch;
+- staged files;
+- unstaged files;
+- untracked files;
+- commit history;
+- remote-tracking state.
+
+Cached presentation data is acceptable, but Git remains authoritative.
+
+## 9.2 Accepted Initial Git Scope
+
+The accepted routine Git lifecycle includes:
+
+```text
+status / change review
+diff review
+stage selected paths
+unstage selected paths
+restore selected unstaged changes
+restore selected paths to HEAD
+commit explicitly staged content
+history / commit detail / file history
+local branch create
+clean-tree branch switch
+safe fully-merged local branch delete
+fetch
+non-force push
+first publish with upstream
+fast-forward-only update
+```
+
+The initial Git Control arc intentionally excludes:
+
+```text
+merge / merge-conflict resolution
+rebase / interactive rebase
+cherry-pick
+reset
+stash
+reflog recovery
+worktrees
+submodules
+force push / force-with-lease
+remote branch deletion
+tag management
+arbitrary refs or refspecs
+general pull
+history rewriting
+GitHub PR or CI control
+browser remote-configuration editing
+```
+
+Manual Git remains the fallback for advanced cases.
+
+## 9.3 Read Versus Mutation
+
+Read-only operations may be broadly available where appropriate.
+
+Mutation remains explicitly gated.
+
+Repo Control may prepare and explain a mutation, but Product Owner confirmation is required for execution.
+
+## 9.4 Prepared-Action Boundary
+
+Mutation operations use prepared-action semantics.
+
+A prepared action should be:
+
+- short-lived;
+- single-use;
+- repository-bound;
+- state-bound;
+- operation-bound;
+- revalidated before execution.
+
+Prepared actions must be invalidated by relevant state changes, including repository selection changes and service restart.
+
+## 9.5 Post-Action Verification
+
+Git command success alone is not sufficient for important remote operations.
+
+Where practical, Repo Control should verify the resulting authoritative Git state after execution.
+
+For Push, this includes verifying the actual remote tip relationship rather than trusting process exit alone.
+
+---
+
+# 10. GitHub Authentication Architecture
+
+Repo Control remote Git actions are intentionally noninteractive.
+
+The remote subprocess boundary preserves controls equivalent to:
+
+```text
+GIT_TERMINAL_PROMPT=0
+GIT_ASKPASS=/bin/false
+SSH_ASKPASS=/bin/false
+stdin=DEVNULL
+SSH BatchMode=yes
+```
+
+Repo Control II uses a dedicated repository-scoped GitHub Deploy Key.
+
+The private key is stored outside the repository:
+
+```text
+~/.ssh/id_ed25519_repo_control_github
+```
+
+The dedicated SSH alias is:
+
+```text
+github-repo-control-ii
+```
+
+The accepted remote is:
+
+```text
+git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git
+```
+
+Architectural requirements:
+
+- `StrictHostKeyChecking` remains enabled;
+- the deploy key is scoped only to Repo Control II;
+- other project SSH identities remain independent;
+- no private key enters repository content;
+- no token/password prompt is required;
+- no SSH agent is required for the accepted service path;
+- service operation must remain deterministic after boot.
+
+The passphrase-free private key is an accepted operational tradeoff of unattended systemd Push and must remain protected by filesystem permissions and repository-scoped authorization.
+
+---
+
+# 11. Workflow Orchestration Layer
+
+This is the next central custom layer.
+
+Responsibilities include:
 
 - active project state;
 - active milestone identity;
@@ -457,63 +674,179 @@ PLANNING
 → CLOSED
 ```
 
-This is conceptual, not yet a locked persistence schema.
+This remains conceptual.
 
-## 6.5 Git Control Layer
+R003 should determine the smallest useful state model rather than prematurely implementing a generalized workflow engine.
+
+---
+
+# 12. Workflow Event Architecture
+
+Repo Control II should distinguish **workflow state** from **workflow events**.
+
+Example:
+
+```text
+state:
+CODING
+
+events:
+- prompt approved
+- coder question submitted
+- architect answer recorded
+- Product Owner decision recorded
+- implementation resumed
+- test failed
+- bug classified
+- validation resumed
+```
+
+This separation preserves chronology without requiring a unique state for every event.
+
+The workflow engine should remain simple and explicit.
+
+Avoid a generalized workflow framework unless a concrete requirement justifies it.
+
+---
+
+# 13. Milestone Artifact Architecture
+
+## 13.1 Prompt
+
+The milestone prompt is the initial approved contract.
+
+It should remain human-readable.
+
+Small structured metadata may be added when useful.
+
+## 13.2 Addenda and Decision Trail
+
+The initial prompt is not necessarily the final authoritative state by itself.
+
+The milestone may accumulate:
+
+- coder questions;
+- Architect answers;
+- Product Owner decisions;
+- clarifications;
+- stop/resume decisions;
+- scope lock-ins;
+- bug classification;
+- validation clarifications;
+- final implementation lock-ins.
+
+Repo Control should preserve those events in chronological order.
+
+## 13.3 Closeout
+
+The closeout is the final implementation/validation evidence package for the milestone.
+
+It should contain:
+
+- scope completed;
+- operational behavior;
+- files changed;
+- tests and validation;
+- deviations;
+- known limitations;
+- unresolved items;
+- final Git status;
+- recommended next action.
+
+A closeout does not erase the intermediate decision trail.
+
+## 13.4 Artifact Authority
+
+Milestone artifacts are durable project evidence.
+
+They should not exist only inside chat history.
+
+---
+
+# 14. Architect Integration Layer
+
+Current preferred Architect:
+
+```text
+ChatGPT browser / ChatGPT Plus
+```
 
 Responsibilities:
 
-- current repository identity;
-- branch;
-- HEAD;
-- upstream;
-- ahead/behind;
-- working-tree state;
-- staged/unstaged/untracked files;
-- per-file diff;
-- commit history;
-- branch graph;
-- remote information;
-- tag information;
-- safe action preparation;
-- Product Owner confirmation;
-- GitHub relationship.
+- retrieve bounded project facts;
+- retrieve active milestone;
+- inspect Git/repository evidence;
+- compose milestone artifacts;
+- answer coder questions;
+- resolve or frame escalations;
+- review closeouts;
+- recommend acceptance or follow-up;
+- propose Git actions without silently executing them.
 
-Repo Control should use Git itself as the authority.
+The preferred architecture remains:
 
-Potential external support:
+```text
+ChatGPT
+→ controlled Repo Control tools
+→ local deterministic project evidence
+```
 
-- GitButler concepts or integration;
-- Git libraries;
-- Git CLI where appropriate.
+rather than immediately replacing ChatGPT with a custom hosted chat client.
 
-The UI must not invent Git state independently.
+The Architect should not require unrestricted shell access to obtain ordinary project facts.
 
-## 6.6 Repository Intelligence Layer
+---
 
-Responsibilities:
+# 15. Coder Integration Layer
 
-- symbol structure;
-- file/module relationships;
-- imports;
-- references;
-- call relationships;
-- inheritance;
-- tests associated with code;
-- local structural neighborhoods;
-- architectural deltas;
-- optional baseline/current comparison.
+Coder environments may include:
 
-Candidate engines:
+- GitHub Copilot;
+- Codex;
+- Cline;
+- OpenCode;
+- Aider;
+- Goose;
+- OpenHands;
+- other approved agent environments.
 
-- Graphify;
-- DevLens.
+Repo Control should expose enough standardized state that coding agents do not require product-specific custom integration where avoidable.
 
-Repo Control should expose **query-oriented repository intelligence**, not blindly inject whole graphs into AI context.
+Coder input should converge toward:
 
-## 6.7 Agent Procedure Layer
+```text
+active milestone
++
+standing Agent Skills
++
+approved addenda / lock-ins
++
+targeted repository evidence
++
+relevant tests
+```
 
-Primary mechanism:
+Coder output should converge toward:
+
+```text
+code changes
++
+test evidence
++
+questions / escalation events as needed
++
+one closeout
++
+final read-only Git status
+```
+
+Coding agents do not own the Git lifecycle.
+
+---
+
+# 16. Agent Procedure Layer
+
+Primary preferred mechanism:
 
 ```text
 Agent Skills
@@ -544,9 +877,50 @@ milestone-closeout
 git-readonly-inspection
 ```
 
-Ponytail may be evaluated as an optional coding-restraint skill, not as a core subsystem.
+Ponytail may be evaluated as optional coding-restraint guidance, not as a core subsystem.
 
-## 6.8 Test and Evidence Layer
+---
+
+# 17. Repository Intelligence Layer
+
+Repository intelligence should make code structure queryable without repeated broad file reading.
+
+Desired evidence may include:
+
+```text
+file
+module
+class
+function
+method
+import
+call
+reference
+inheritance
+test relationship
+dependency relationship
+```
+
+A valuable future model remains:
+
+```text
+Committed Baseline Graph
+        vs.
+Current Working-Tree Graph
+```
+
+Repo Control should expose query-oriented repository intelligence rather than dumping entire graphs into AI context.
+
+Candidate engines remain:
+
+- Graphify;
+- DevLens.
+
+The engine remains unselected.
+
+---
+
+# 18. Test and Evidence Layer
 
 Responsibilities:
 
@@ -558,11 +932,15 @@ Responsibilities:
 - optional screenshots/log references;
 - evidence association with milestone state.
 
-Repo Control should record test evidence but should not infer a passing result when the test runner did not produce one.
+Repo Control should record test evidence but must not infer a passing result when the test runner did not produce one.
 
-## 6.9 Model Gateway Layer
+Test results are evidence, not AI opinion.
 
-This is a later architecture layer.
+---
+
+# 19. Model Gateway Layer
+
+This remains a later architecture layer.
 
 Potential responsibilities:
 
@@ -579,507 +957,15 @@ Candidate engines:
 - LiteLLM;
 - OmniRoute.
 
-This layer must not become a prerequisite for earlier workflow or Git functionality.
+This layer must not become a prerequisite for Workflow Orchestration, Agent Skills, or Repository Intelligence.
 
 ---
 
-# 7. Project and Repository Model
-
-Repo Control II should support multiple projects/repositories over time.
-
-A project record should conceptually identify:
-
-```text
-project identity
-display name
-authoritative repository path
-remote repository
-default branch
-documentation roots
-milestone roots
-tool configuration
-repository-intelligence configuration
-agent-skill configuration
-optional test commands
-```
-
-For Repo Control II itself:
-
-```text
-Project:
-Repo Control II
-
-Repository:
-/home/chuck/projects/repo-control-ii
-
-Remote:
-https://github.com/CHHIV-Projects/repo-control-ii.git
-
-Default branch:
-main
-
-Context:
-docs/context/
-
-Milestones:
-docs/milestones/
-```
-
-The exact storage format remains to be designed.
-
----
-
-# 8. Milestone Artifact Architecture
-
-## 8.1 Prompt
-
-The milestone prompt is the initial approved contract.
-
-It should remain human-readable.
-
-Potential metadata:
-
-```yaml
----
-repo_control_artifact: milestone_prompt
-project: repo-control-ii
-milestone: "R001"
-status: ready_for_coder
-version: 1
----
-```
-
-The body should contain the actual milestone instructions.
-
-## 8.2 Addenda and Decision Trail
-
-The initial prompt is not necessarily the final authoritative state by itself.
-
-The milestone may accumulate:
-
-- coder questions;
-- Architect answers;
-- Product Owner decisions;
-- clarifications;
-- stop/resume decisions;
-- scope lock-ins;
-- bug classification;
-- validation clarifications;
-- final implementation lock-ins.
-
-Repo Control should preserve those events in chronological order.
-
-Possible representation:
-
-```text
-Initial Prompt
-
-Q&A Round 1
-
-Q&A Round 2
-
-Escalation 1
-
-Bug Discovery 1
-
-Final Lock-ins
-```
-
-The exact artifact/persistence strategy remains open.
-
-## 8.3 Closeout
-
-The closeout is the final implementation/validation evidence package for the milestone.
-
-It should contain:
-
-- scope completed;
-- operational behavior;
-- files changed;
-- tests and validation;
-- deviations;
-- known limitations;
-- unresolved items;
-- final Git status;
-- recommended next action.
-
-A closeout does not erase the intermediate decision trail.
-
-## 8.4 Artifact Authority
-
-Milestone artifacts should be treated as durable project evidence.
-
-They should not exist only inside chat history.
-
----
-
-# 9. Workflow Event Architecture
-
-Repo Control II should distinguish **workflow state** from **workflow events**.
-
-Example:
-
-```text
-state:
-CODING
-
-events:
-- prompt approved
-- coder question submitted
-- architect answer recorded
-- Product Owner decision recorded
-- implementation resumed
-- test failed
-- bug classified
-- validation resumed
-```
-
-This separation allows the system to retain chronology without requiring a unique state for every event.
-
-The workflow engine should be simple and explicit.
-
-Avoid introducing a generalized workflow framework unless a concrete requirement justifies it.
-
----
-
-# 10. Git Architecture
-
-## 10.1 Git Is the Authority
-
-Repo Control should derive repository state from Git.
-
-It should not maintain a competing model of:
-
-- current branch;
-- staged files;
-- unstaged files;
-- commit history;
-- tags;
-- remote-tracking state.
-
-Cached presentation data is acceptable, but Git remains authoritative.
-
-## 10.2 Read Versus Mutation
-
-Read-only operations should be broadly available to Repo Control, Architect tools, and coding agents where appropriate.
-
-Examples:
-
-```text
-status
-diff
-log
-branch listing
-remote listing
-rev-parse
-show
-tag listing
-ahead/behind
-```
-
-Mutation should remain explicitly gated.
-
-Examples:
-
-```text
-stage
-unstage
-commit
-push
-branch create/delete
-switch
-merge
-rebase
-reset
-tag create/delete
-stash
-clean
-remote mutation
-```
-
-## 10.3 Product Owner Git Boundary
-
-Coding agents do not perform normal Git mutations.
-
-Repo Control may prepare a mutation plan such as:
-
-```text
-files selected
-operation
-commit message
-target branch
-remote impact
-warnings
-```
-
-but execution requires Product Owner action.
-
-## 10.4 Graphical Git Direction
-
-Desired Git UI may include:
-
-- file change list;
-- staged/unstaged grouping;
-- visual diff;
-- branch graph;
-- commit graph;
-- upstream state;
-- ahead/behind;
-- local/remote distinction;
-- tags;
-- conflict indicators;
-- safe action controls.
-
-Before implementing advanced Git UI, evaluate whether GitButler or another mature open-source component can be integrated, adapted, or used as a reference.
-
----
-
-# 11. GitHub Integration Architecture
-
-GitHub provides committed/pushed repository state.
-
-Potential uses:
-
-- remote branch information;
-- remote commit history;
-- pull requests where relevant;
-- issue/PR linkage where relevant;
-- repository browsing by Architect;
-- comparison with local branch state.
-
-GitHub is not sufficient for:
-
-```text
-uncommitted local changes
-staged changes
-local-only branches
-live working-tree state
-local test results
-```
-
-Repo Control local integration is therefore required for complete current-state awareness.
-
----
-
-# 12. Repository Intelligence Architecture
-
-## 12.1 Purpose
-
-Repository intelligence should make code structure queryable without repeated broad file reading.
-
-## 12.2 Desired Evidence
-
-Potential data includes:
-
-```text
-file
-module
-class
-function
-method
-import
-call
-reference
-inheritance
-test relationship
-dependency relationship
-```
-
-## 12.3 Baseline and Working-Tree Views
-
-A valuable future model is:
-
-```text
-Committed Baseline Graph
-        vs.
-Current Working-Tree Graph
-```
-
-This could support questions such as:
-
-- what structural dependencies were added?
-- what symbols disappeared?
-- what tests now reference changed code?
-- did the change introduce new cross-layer coupling?
-- which modules are newly connected?
-- which architectural relationships changed?
-
-## 12.4 Query, Do Not Dump
-
-AI should receive targeted results such as:
-
-```text
-neighbors of SourceProfile
-callers of function X
-tests referencing module Y
-structural changes in files modified by current milestone
-```
-
-rather than an entire repository graph unless genuinely needed.
-
-## 12.5 Refresh Strategy
-
-Graph refresh should occur at meaningful lifecycle points rather than every keystroke.
-
-Potential triggers:
-
-```text
-milestone baseline
-coder start
-implementation complete
-post-test if files changed
-architect review
-```
-
-Exact behavior depends on the chosen engine.
-
----
-
-# 13. Agent Skills Architecture
-
-Agent Skills should become the standing procedure layer for coding agents.
-
-A skill should be:
-
-- bounded;
-- reusable;
-- easy to inspect;
-- loaded only when relevant;
-- independent from one particular milestone;
-- compatible with more than one agent where practical.
-
-A milestone prompt should contain the **delta**, not restate every project rule.
-
-Conceptual context stack:
-
-```text
-Agent Skill
-→ standing procedure
-
-Milestone Prompt
-→ current objective and constraints
-
-Approved Addenda
-→ decisions made during the active milestone
-
-Repository Intelligence
-→ targeted implementation facts
-
-Tests / Git
-→ objective evidence
-```
-
-This architecture directly supports context efficiency.
-
----
-
-# 14. Architect Tool Interface
-
-The preferred long-term Architect interface is a small set of controlled project tools exposed through Repo Control.
-
-Conceptual examples:
-
-```text
-get_project_state()
-get_repo_status()
-get_changed_files()
-get_diff_summary()
-get_branch_state()
-get_active_milestone()
-get_milestone_events()
-get_closeout()
-get_test_evidence()
-query_code_graph(...)
-get_structural_delta(...)
-create_milestone(...)
-append_milestone_decision(...)
-mark_ready_for_review(...)
-```
-
-These names are illustrative, not final API commitments.
-
-Tools should return compact structured evidence.
-
-The Architect should not need unrestricted shell access to obtain ordinary project facts.
-
----
-
-# 15. Coder Tool Interface
-
-Coder integration should be lighter than Architect integration where possible.
-
-The Coder should be able to determine:
-
-- active project;
-- active milestone;
-- current prompt;
-- standing skills;
-- current lock-ins;
-- repository path;
-- relevant evidence;
-- required tests;
-- escalation path.
-
-A coding agent should not need broad access to unrelated projects.
-
-Repo Control should support agent portability rather than lock the architecture to one proprietary agent.
-
----
-
-# 16. Security and Authority Boundaries
-
-Repo Control II may eventually become a bridge between cloud AI and local repositories.
-
-That boundary requires deliberate design.
-
-## 16.1 Local Repository Access
-
-Remote/cloud AI should access local repository evidence only through approved Repo Control tools.
-
-Avoid exposing arbitrary filesystem access when a bounded query interface is sufficient.
-
-## 16.2 Mutation Controls
-
-Tool access should distinguish:
-
-```text
-read
-prepare
-propose
-execute
-```
-
-For sensitive operations, these must not collapse into one implicit action.
-
-## 16.3 Secrets
-
-Repo Control must not expose:
-
-- credentials;
-- tokens;
-- API keys;
-- protected environment contents;
-- SSH private keys;
-- GitHub secrets;
-- service credentials;
-
-unless a future specifically approved feature has a justified secure mechanism.
-
-## 16.4 Project Isolation
-
-Multiple managed repositories must remain explicitly separated.
-
-A tool request for one project must not silently inspect or mutate another project.
-
----
-
-# 17. State Persistence Architecture
+# 20. State Persistence Architecture
 
 Repo Control II should avoid premature database complexity.
 
-Potential state classes:
-
-## 17.1 Durable Tracked State
+## 20.1 Durable Tracked State
 
 Best represented in Git-tracked Markdown or configuration:
 
@@ -1089,9 +975,10 @@ Best represented in Git-tracked Markdown or configuration:
 - coding-agent rules;
 - milestone prompts;
 - closeouts;
-- stable project configuration.
+- stable project configuration;
+- repository allowlist.
 
-## 17.2 Operational Workflow State
+## 20.2 Operational Workflow State
 
 May require lightweight structured storage:
 
@@ -1101,9 +988,10 @@ May require lightweight structured storage:
 - event timestamps;
 - UI preferences;
 - pending prepared operations;
-- cached intelligence status.
+- cached intelligence status;
+- active repository selection.
 
-Possible implementation options:
+Possible implementation options remain:
 
 ```text
 small local JSON files
@@ -1111,9 +999,9 @@ SQLite
 lightweight relational store
 ```
 
-The choice should be driven by actual requirements.
+The choice should be driven by actual R003 requirements.
 
-## 17.3 Derived State
+## 20.3 Derived State
 
 Should be recomputable where practical:
 
@@ -1123,21 +1011,23 @@ Should be recomputable where practical:
 - repository graph;
 - test summaries.
 
-Derived state should not become competing canonical truth.
+Derived state must not become competing canonical truth.
 
 ---
 
-# 18. UI Architecture Direction
+# 21. UI Architecture Direction
 
-The current implementation is Flask-based.
+The current implementation is Flask-based and has proven sufficient for the accepted Git Control baseline.
 
-That is an inherited implementation fact, not a locked architectural requirement.
+Flask remains the current implementation framework, but it is not an immutable architectural requirement.
 
-The Repo Control II UI should eventually provide clear views for:
+The UI should provide clear views for:
 
 ```text
-Projects
-Git
+Repository / Project Selection
+Git Review
+History
+Branches
 Milestones
 Current Workflow
 Repository Intelligence
@@ -1152,65 +1042,98 @@ The UI should emphasize:
 - clear authority;
 - minimal ambiguity;
 - safe confirmation;
-- practical daily use.
+- practical daily use;
+- wide desktop usability;
+- browser-first operation from Windows.
 
-Framework choice should remain open until reconnaissance determines whether the inherited UI is worth retaining.
-
----
-
-# 19. External Tool Evaluation Boundaries
-
-## 19.1 GitButler
-
-Evaluate for:
-
-- branch/commit visualization;
-- working-tree management concepts;
-- Git UX patterns;
-- integration feasibility;
-- licensing;
-- Linux support;
-- whether Repo Control should integrate or only borrow design ideas.
-
-## 19.2 Graphify
-
-Evaluate for:
-
-- local repo graph generation;
-- live working-tree support;
-- query interface;
-- incremental refresh;
-- MCP/tool exposure;
-- language support;
-- performance;
-- licensing;
-- usefulness to Architect and Coder.
-
-## 19.3 DevLens
-
-Evaluate against the same criteria.
-
-Do not select Graphify or DevLens solely from feature claims.
-
-## 19.4 Agent Skills
-
-Treat as the preferred open procedure standard unless evaluation reveals a blocking mismatch.
-
-## 19.5 Ponytail
-
-Treat as optional behavior guidance.
-
-It should not become a foundational dependency.
-
-## 19.6 LiteLLM and OmniRoute
-
-Evaluate later as model-gateway candidates.
-
-Model routing should remain downstream of workflow and repository-context improvements.
+Framework replacement should require a demonstrated product or maintenance benefit.
 
 ---
 
-# 20. Local AI Architecture Position
+# 22. Security and Authority Boundaries
+
+Repo Control II may become a bridge between cloud AI and local repositories.
+
+That boundary requires deliberate design.
+
+## 22.1 Local Repository Access
+
+Remote/cloud AI should access local repository evidence only through approved Repo Control tools.
+
+Avoid exposing arbitrary filesystem access when a bounded query interface is sufficient.
+
+## 22.2 Mutation Controls
+
+Tool access should distinguish:
+
+```text
+read
+prepare
+propose
+execute
+```
+
+For sensitive operations, these must not collapse into one implicit action.
+
+## 22.3 Secrets
+
+Repo Control must not expose:
+
+- credentials;
+- tokens;
+- API keys;
+- protected environment contents;
+- SSH private keys;
+- GitHub secrets;
+- service credentials;
+
+unless a future specifically approved feature has a justified secure mechanism.
+
+## 22.4 Project Isolation
+
+Multiple managed repositories must remain explicitly separated.
+
+A tool request for one project must not silently inspect or mutate another project.
+
+## 22.5 Browser Mutation Boundary
+
+Browser-based Git mutation is allowed only through the accepted bounded Repo Control action model.
+
+The browser must not expose a general shell or arbitrary Git command facility.
+
+---
+
+# 23. External Tool Strategy
+
+Repo Control II should prefer mature external tools where they solve a specialized problem well.
+
+Current positions:
+
+## 23.1 Git Control
+
+The initial decision is to keep Git Control inside the browser-based Linux Repo Control service rather than adopt a desktop Git client as the primary architecture.
+
+GitButler and other Git tools may remain references for UX concepts or future advanced needs.
+
+## 23.2 Repository Intelligence
+
+Graphify and DevLens remain evaluation candidates.
+
+## 23.3 Agent Skills
+
+Agent Skills remain the preferred direction for reusable coding-agent procedure.
+
+## 23.4 Ponytail
+
+Optional coding-restraint guidance only.
+
+## 23.5 LiteLLM / OmniRoute
+
+Deferred model-gateway candidates.
+
+---
+
+# 24. Local AI Architecture Position
 
 Local AI is an optional execution resource, not architectural truth.
 
@@ -1235,147 +1158,125 @@ If local models are introduced, their quality should be benchmarked against actu
 
 ---
 
-# 21. Inherited Code Architecture Boundary
+# 25. Architectural Invariants
 
-The current inherited codebase must be treated as implementation evidence, not as architecture.
+The following are durable rules unless explicitly revised by an approved architecture milestone.
 
-The first reconnaissance milestone should classify major subsystems:
-
-```text
-KEEP
-REFACTOR
-RETIRE
-```
-
-Likely candidates for review include:
-
-- Git services;
-- Git UI;
-- repository scanner;
-- relationship analysis;
-- context generation;
-- snapshots;
-- comparison engine;
-- local-AI analysis;
-- milestone status logic;
-- staging/commit planning;
-- browser UI;
-- CLI structure;
-- tests.
-
-A legacy subsystem should survive only if it supports the new architecture at reasonable maintenance cost.
-
----
-
-# 22. Architectural Invariants
-
-The following should be treated as durable rules unless explicitly revised by an approved architecture milestone.
-
-## 22.1 Repo Control Is the Integration Layer
+## 25.1 Repo Control Is the Integration Layer
 
 Repo Control coordinates state and tools.
 
 It should not absorb specialized engines without need.
 
-## 22.2 Git Remains Git Authority
+## 25.2 Git Remains Git Authority
 
 Repo Control presents and controls Git.
 
 It does not maintain a competing repository history model.
 
-## 22.3 Product Owner Owns Important Mutations
+## 25.3 Product Owner Owns Important Mutations
 
-Automation may prepare.
+Automation may prepare and execute only through explicit Product Owner-confirmed controls.
 
-The Product Owner approves.
-
-## 22.4 Coding Agents Do Not Own Git Lifecycle
+## 25.4 Coding Agents Do Not Own Git Lifecycle
 
 Coder workflow ends at implementation, validation, closeout, and read-only status reporting.
 
-## 22.5 Architect and Coder Remain Separate Roles
+## 25.5 Architect and Coder Remain Separate Roles
 
-One may inform the other through Repo Control.
+They inform each other through controlled artifacts and Repo Control evidence.
 
 They do not silently collapse into one autonomous actor.
 
-## 22.6 Milestone Decisions Must Be Durable
+## 25.6 Milestone Decisions Must Be Durable
 
 Important clarifications and lock-ins must not exist only in transient chat.
 
-## 22.7 Iteration Inside a Milestone Is Normal
+## 25.7 Iteration Inside a Milestone Is Normal
 
 Questions, stops, bug discoveries, and corrections do not automatically create a new milestone.
 
-## 22.8 Material Scope Change Must Be Explicit
+## 25.8 Material Scope Change Must Be Explicit
 
 A milestone must not silently expand into a different objective.
 
-## 22.9 Repository Intelligence Is Evidence
+## 25.9 Repository Intelligence Is Evidence
 
 Graph/parser output informs AI.
 
 It is not itself project authority.
 
-## 22.10 Test Results Come From Test Execution
+## 25.10 Test Results Come From Test Execution
 
 AI summaries may explain results but must not fabricate or infer passing status.
 
-## 22.11 Human-Readable Artifacts Are Primary
+## 25.11 Human-Readable Artifacts Are Primary
 
 Metadata supports automation.
 
 It does not replace understandable project documentation.
 
-## 22.12 Context Should Be Targeted
+## 25.12 Context Should Be Targeted
 
 Repo Control should provide the smallest sufficient evidence set.
 
-## 22.13 External Tools Should Be Replaceable
+## 25.13 External Tools Should Be Replaceable
 
 Integrations should avoid unnecessary coupling to one vendor or engine where practical.
 
-## 22.14 Local and Remote State Must Remain Distinct
+## 25.14 Local and Remote State Must Remain Distinct
 
 GitHub remote state and local working-tree state must not be conflated.
 
-## 22.15 Secrets Must Remain Outside Ordinary AI Context
+## 25.15 Secrets Must Remain Outside Ordinary AI Context
 
 Repo Control should expose status, not sensitive values, wherever possible.
 
+## 25.16 Repository Selection Must Be Explicitly Bounded
+
+Only server-configured repositories may be selected.
+
+Browser clients may not supply arbitrary paths.
+
+## 25.17 Prepared Actions Must Be Repository- and State-Bound
+
+A prepared action may not survive relevant repository/state changes.
+
+## 25.18 Always-On Operation Must Remain Noninteractive
+
+Service startup, remote authentication, and browser access must not depend on transient interactive sessions.
+
 ---
 
-# 23. Initial Architecture Sequence
+# 26. Architecture Sequence
 
-The recommended architecture sequence is:
+The current preferred architecture sequence is:
 
 ```text
-1. Establish governing documents.
+1. Governing documents                              COMPLETE
 
-2. Reconnaissance of inherited Repo Control code.
+2. Inherited-code reconnaissance                    COMPLETE
 
-3. Preserve or improve proven Git functionality.
+3. Git Control                                      COMPLETE / CLOSED
 
-4. Establish Agent Skills.
+4. Workflow Orchestration architecture              NEXT
 
-5. Evaluate repository-intelligence engines.
+5. Workflow Orchestration implementation            AFTER RECONNAISSANCE
 
-6. Integrate selected repository intelligence.
+6. Agent Skills / standing procedure                PLANNED
 
-7. Implement milestone/workflow orchestration.
+7. Repository Intelligence evaluation/integration   PLANNED
 
-8. Expose controlled Architect tools.
+8. Controlled Architect / Coder integration         LATER
 
-9. Improve Coder handoff integration.
-
-10. Evaluate model gateway only after context/workflow flow is working.
+9. Model Gateway                                    LATER
 ```
 
-This order intentionally prioritizes proven workflow pain points over speculative AI infrastructure.
+This sequence prioritizes the current proven workflow pain point: manual state and artifact transport.
 
 ---
 
-# 24. Architecture Decision Criteria
+# 27. Architecture Decision Criteria
 
 When choosing between implementation options, prefer the option that:
 
@@ -1390,88 +1291,87 @@ When choosing between implementation options, prefer the option that:
 - remains recoverable;
 - supports more than one coding agent;
 - does not unnecessarily bind the project to one AI provider;
-- can be validated incrementally.
+- can be validated incrementally;
+- preserves the accepted always-on service/security model.
 
 Avoid choosing an option merely because it is more sophisticated.
 
 ---
 
-# 25. First Reconnaissance Requirements
+# 28. R003 Workflow Orchestration Reconnaissance Requirements
 
-The first Repo Control II implementation-oriented milestone should inspect the inherited code and answer:
-
-```text
-What Git functionality already exists and works?
-
-What UI components support the new control-plane direction?
-
-What repository-scanning functionality overlaps with Graphify/DevLens?
-
-What snapshot/comparison behavior is still useful?
-
-What local-AI interpretation code should be retired?
-
-What workflow/milestone code is reusable?
-
-What coupling would make selective reuse expensive?
-
-What tests prove current behavior?
-
-What is the smallest viable Repo Control II foundation?
-```
-
-The closeout should classify major components:
+The next architecture milestone should answer:
 
 ```text
-KEEP
-REFACTOR
-RETIRE
+What is the minimum useful workflow state model?
+
+How should Repo Control identify the active milestone?
+
+What state can be inferred directly from tracked artifacts and Git?
+
+What state must be stored operationally?
+
+How should prompt, addenda, questions, decisions, and closeout be related?
+
+Can tracked Markdown remain the primary authority?
+
+What transitions must require Product Owner action?
+
+How should READY_FOR_CODER, READY_FOR_ARCHITECT_REVIEW,
+READY_FOR_GIT, and CLOSED be represented?
+
+How should coder questions and escalation events be preserved?
+
+How should Repo Control surface milestone state without becoming
+an autonomous project manager?
+
+How can the Product Owner stop acting as the manual transport layer
+without collapsing Architect and Coder roles?
+
+What is the smallest useful implementation slice after reconnaissance?
 ```
 
-and should become the roadmap for the next implementation milestone.
+The milestone should begin with reconnaissance, not workflow-engine implementation.
 
 ---
 
-# 26. Current Open Architecture Questions
+# 29. Current Open Architecture Questions
 
-The following remain intentionally unresolved.
+## 29.1 Workflow Persistence
 
-## 26.1 Git Control Implementation
+Tracked Markdown versus lightweight operational state remains open.
 
-Should advanced Git UI be:
+## 29.2 Active Milestone Identity
 
-- implemented directly;
-- integrated from an external component;
-- delegated to GitButler while Repo Control handles workflow;
-- hybrid?
+The mechanism for identifying the active milestone remains to be designed.
 
-## 26.2 Repository Intelligence Engine
-
-Graphify versus DevLens remains unselected.
-
-## 26.3 Workflow Persistence
-
-Tracked Markdown versus lightweight operational database remains open.
-
-## 26.4 Architect Integration Mechanism
+## 29.3 Architect Integration Mechanism
 
 The preferred direction is controlled tools from ChatGPT to Repo Control, but the exact mechanism remains open.
 
-## 26.5 Coder Integration Mechanism
+## 29.4 Coder Integration Mechanism
 
-Agent Skills are preferred for procedure, but the active-milestone handoff mechanism remains to be designed.
+Agent Skills are preferred for procedure, but the active-milestone handoff mechanism remains open.
 
-## 26.6 UI Framework
+## 29.5 Repository Intelligence Engine
 
-Flask is inherited, not locked.
+Graphify versus DevLens remains unselected.
 
-## 26.7 Model Gateway
+## 29.6 Agent Skills Packaging
 
-LiteLLM versus OmniRoute is deferred.
+The relationship between Repo Control workflow state and reusable Agent Skills remains to be designed.
+
+## 29.7 UI Framework
+
+Flask is the accepted current implementation framework, but replacement remains possible if a later requirement demonstrates material benefit.
+
+## 29.8 Model Gateway
+
+LiteLLM versus OmniRoute remains deferred.
 
 ---
 
-# 27. Definition of Architectural Success
+# 30. Definition of Architectural Success
 
 The architecture is successful when the normal project flow becomes:
 
@@ -1509,22 +1409,32 @@ The system should make this workflow easier, safer, and less repetitive without 
 
 ---
 
-# 28. Current Architecture Baseline Statement
+# 31. Current Architecture Baseline Statement
 
-Repo Control II currently has:
+Repo Control II now has an accepted operational architecture for its first major capability.
+
+The current baseline includes:
 
 ```text
-a fresh repository identity;
-a copied but unassessed legacy codebase;
-a clean documentation tree;
-a defined project mission;
-a defined five-arc capability model;
-a defined Product Owner / Architect / Coder role separation;
-a defined deterministic-evidence principle;
-an explicit iterative milestone-loop requirement;
-no accepted inherited application architecture yet.
+authoritative Linux-hosted repository
+always-on systemd service
+loopback-only browser service
+automatic Windows SSH tunnel access
+portable Windows launcher
+server-controlled multi-repository allowlist
+browser-based routine Git control
+prepared-action safeguards
+post-action verification
+safe local branch and remote operations
+noninteractive GitHub SSH authentication
+repository-scoped Deploy Key
+verified Repo Control Push
+Product Owner / Architect / Coder role separation
+deterministic-evidence principle
+human-readable milestone artifacts
+explicit iterative milestone-loop requirement
 ```
 
-The next architecture task is not to add more features.
+The next architecture task is not to add more Git features.
 
-It is to use this architecture as the standard against which the inherited code is evaluated.
+It is to define the smallest useful Workflow Orchestration model that can sit on top of this accepted foundation and reduce manual handoff without introducing unnecessary persistence, agent coupling, or autonomous behavior.
