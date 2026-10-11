@@ -84,7 +84,7 @@ Current primary pages and capabilities:
 
 - Dashboard (deterministic workflow status)
 - Git Review (current changes, diagnosis/recovery previews, history, and branches)
-- Milestone (recursively discover prompt artifacts beneath each repository's server-configured milestone root; explicitly select a prompt; and record lifecycle transitions and meaningful decisions in a tracked, human-readable per-milestone workflow sidecar)
+- Milestone (recursively discover prompt artifacts beneath each repository's server-configured milestone root; explicitly select a prompt; record lifecycle transitions and meaningful decisions in a tracked, human-readable per-milestone workflow sidecar; and generate bounded Coder and Architect Review handoff packets from configured project documents, milestone sources, workflow history, and current local Git evidence)
 - Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
 - The Branches view provides confirmed local branch create/switch/safe-delete, configured-remote fetch/push, first-push upstream setup, and fast-forward-only update. Remote operations are bounded, non-interactive, and use configured remotes only; Push is non-force and verifies the actual remote branch tip after success.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
@@ -94,12 +94,27 @@ repository-relative `milestone_root` (for example, `docs/milestones` or
 `milestones`). If omitted, it defaults to `docs/milestones`. The browser cannot
 override this path. Discovery recurses only beneath that root.
 
+Repositories may also configure repository-relative governing document roles
+under `[repositories.<key>.documents]`. Supported roles are `context`,
+`architecture`, `workflow`, `coding_agent_rules`, and `parking_lot`. Paths are
+validated at registry load and rechecked when used; the browser cannot supply
+document paths. Coder packets require configured workflow and coding-agent
+rules. Architect packets include configured context, architecture, and
+workflow documents where available. Missing required or unsafe sources are
+reported rather than substituted or silently truncated.
+
 Milestone lifecycle phases are reconstructed from the chronological Markdown
 workflow sidecar beside the selected prompt. The sidecar is distinct from the
 prompt, closeout, and external active-selection pointer. Selection, artifact
 presence, Git cleanliness, and test results never automatically approve or
 close a milestone. Product Owner approvals require explicit UI confirmation;
 Repo Control does not authenticate the actor.
+
+Handoff packets are generated on demand as read-only derived views. They
+include source references, lifecycle/authorization context, and bounded local
+Git evidence where appropriate; test outcomes remain labeled as reported
+unless independently verified. Packets are not saved as project artifacts and
+generation does not change milestone lifecycle, selection, or Git state.
 
 Browser Git mutation boundary:
 

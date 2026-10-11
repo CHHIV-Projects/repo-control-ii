@@ -19,6 +19,46 @@
         <p>Closeout: Not present</p>
       {% endif %}
     </article>
+    <article class="card spaced-top">
+      <h3>Handoff packets</h3>
+      <p class="muted">Packets are read-only derived views. Generation does not record a workflow event or change milestone, selection, or Git state.</p>
+      <div class="grid two">
+        <section>
+          <h4>Coder</h4>
+          <form method="post" action="{{ url_for('generate_milestone_handoff_packet') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+            <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+            <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
+            <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+            <input type="hidden" name="packet_type" value="coder">
+            <button type="submit">Generate Coder Packet</button>
+          </form>
+        </section>
+        <section>
+          <h4>Architect Review</h4>
+          <form method="post" action="{{ url_for('generate_milestone_handoff_packet') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+            <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+            <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
+            <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+            <input type="hidden" name="packet_type" value="architect">
+            <button type="submit">Generate Architect Review Packet</button>
+          </form>
+        </section>
+      </div>
+      {% if handoff_packet is defined %}
+        <section class="spaced-top">
+          <h4>{{ "Coder Packet" if handoff_packet_type == "coder" else "Architect Review Packet" }}</h4>
+          <p class="muted">Generated output only; source references in the packet identify authoritative material.</p>
+          <textarea id="handoff-packet" rows="24" readonly aria-label="Generated handoff packet">{{ handoff_packet }}</textarea>
+          <button type="button" class="secondary" id="copy-handoff-packet">Copy packet</button>
+          <span id="handoff-copy-status" class="muted" role="status">You can also select and copy the packet text manually.</span>
+        </section>
+        <script src="{{ url_for('static', filename='handoff.js') }}" defer></script>
+      {% endif %}
+    </article>
     {% if workflow and workflow.status == "invalid" %}
       <article class="card spaced-top">
         <h3>Workflow record needs attention</h3>

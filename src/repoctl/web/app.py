@@ -26,6 +26,7 @@ from ..workflow.git_history import (
     inspect_file_history,
     inspect_history,
 )
+from ..workflow.handoff_packets import HandoffPacketError, generate_handoff_packet
 from ..workflow.milestones import (
     MilestoneArtifactError,
     discover_milestones,
@@ -794,6 +795,84 @@ def create_web_app(
                 raise WebUIError("invalid_workflow_event", str(exc), status_code=400) from exc
         flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
         return redirect(url_for("milestone_page"))
+
+    @app.post("/milestones/handoff")
+    def generate_milestone_handoff_packet():
+        require_mutation_request()
+        with repository_action_lock:
+            require_current_repository_selection()
+            submitted_repository = request.form.get("repository_key", "")
+            submitted_generation = request.form.get("repository_generation", "")
+            try:
+                generation = int(submitted_generation)
+            except ValueError as exc:
+                raise WebUIError(
+                    "stale_handoff_request",
+                    "Refresh the milestone page and retry packet generation.",
+                    status_code=409,
+                ) from exc
+            repository = current_repository()
+            if (
+                submitted_repository != repository.key
+                or generation != g.repository_registry_generation
+            ):
+                raise WebUIError(
+                    "stale_handoff_request",
+                    "The selected repository changed since this page was rendered. Refresh and retry.",
+                    status_code=409,
+                )
+            selection = load_milestone_selection(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+            )
+            expected_id = request.form.get("milestone_id", "")
+            expected_prompt_path = request.form.get("prompt_path", "")
+            if (
+                selection["status"] != "selected"
+                or selection["selection"]["milestone_id"] != expected_id
+                or selection["selection"]["prompt_path"] != expected_prompt_path
+            ):
+                raise WebUIError(
+                    "stale_handoff_milestone",
+                    "The selected milestone changed or is invalid. Refresh the page and retry.",
+                    status_code=409,
+                )
+            packet_type = request.form.get("packet_type", "")
+            try:
+                packet = generate_handoff_packet(
+                    repository_root=repository.path,
+                    repository_name=repository.name,
+                    repository_id=repository.repository_id,
+                    state_root=effective_state_root,
+                    milestone_root=repository.milestone_root,
+                    documents=repository.documents,
+                    candidate=selection["selection"],
+                    packet_type=packet_type,
+                )
+            except (HandoffPacketError, MilestoneArtifactError, WorkflowRecordError) as exc:
+                raise WebUIError("handoff_packet_failed", str(exc), status_code=400) from exc
+            try:
+                inventory = discover_milestones(repository.path, repository.milestone_root)
+                workflow = load_milestone_workflow(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                )
+            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                workflow = {"status": "invalid", "reason": str(exc)}
+                inventory = discover_milestones(repository.path, repository.milestone_root)
+        return render_template(
+            "milestones.html",
+            candidates=inventory["candidates"],
+            inventory_issues=inventory["issues"],
+            selection=selection,
+            milestone_root=repository.milestone_root,
+            workflow=workflow,
+            handoff_packet=packet,
+            handoff_packet_type=packet_type,
+        )
 
     @app.post("/workflow/snapshot/create")
     def workflow_create_snapshot_action():

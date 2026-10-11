@@ -56,6 +56,89 @@ path = "relative/repository"
 
             self.assertEqual(registry.active().milestone_root, "project/milestones")
 
+    def test_registry_accepts_server_configured_document_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _git_repo(root / "repo")
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "main"',
+                        "",
+                        "[repositories.main]",
+                        'name = "Main"',
+                        f"path = {json.dumps(str(repo))}",
+                        "",
+                        "[repositories.main.documents]",
+                        'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                        'workflow = "docs/context/project_workflow.md"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            entry = RepositoryRegistry.from_toml(registry_path).active()
+
+            self.assertEqual(entry.documents["coding_agent_rules"], "docs/context/coding_agent_rules.md")
+            self.assertEqual(entry.documents["workflow"], "docs/context/project_workflow.md")
+
+    def test_registry_rejects_unsafe_governing_document_paths_and_roles(self) -> None:
+        cases = (
+            ("coding_agent_rules", "../outside.md"),
+            ("workflow", "/outside.md"),
+            ("context", "docs\\context.md"),
+            ("unknown_role", "docs/context.md"),
+        )
+        for role, document_path in cases:
+            with self.subTest(role=role, document_path=document_path), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                repo = _git_repo(root / "repo")
+                registry_path = root / "repositories.toml"
+                registry_path.write_text(
+                    "\n".join(
+                        [
+                            'default = "main"',
+                            "",
+                            "[repositories.main]",
+                            'name = "Main"',
+                            f"path = {json.dumps(str(repo))}",
+                            "",
+                            "[repositories.main.documents]",
+                            f"{role} = {json.dumps(document_path)}",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(RepositoryRegistryError, "document"):
+                    RepositoryRegistry.from_toml(registry_path)
+
+    def test_registry_rejects_symlinked_governing_document_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _git_repo(root / "repo")
+            external = root / "outside.md"
+            external.write_text("outside\n", encoding="utf-8")
+            (repo / "docs").symlink_to(root)
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "main"',
+                        "",
+                        "[repositories.main]",
+                        'name = "Main"',
+                        f"path = {json.dumps(str(repo))}",
+                        "",
+                        "[repositories.main.documents]",
+                        'workflow = "docs/outside.md"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RepositoryRegistryError, "symlinked"):
+                RepositoryRegistry.from_toml(registry_path)
+
     def test_registry_rejects_unsafe_milestone_root(self) -> None:
         for milestone_root in ("../outside", "/absolute/path", "milestones\\nested", "", ".", "a//b", "a/./b"):
             with self.subTest(milestone_root=milestone_root), tempfile.TemporaryDirectory() as td:

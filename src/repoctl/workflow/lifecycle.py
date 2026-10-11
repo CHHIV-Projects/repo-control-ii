@@ -583,6 +583,7 @@ def _load_milestone_workflow_locked(
     state["fixable_bugs"] = fixable_bugs
     state["open_blocker"] = state["phase"] == "WAITING"
     state["latest_events"] = ledger["events"][-8:][::-1]
+    state["event_history"] = ledger["events"]
     state["latest_authoritative_decision"] = last_authoritative
     state["next_action"] = _next_action(state, candidate, open_questions)
     state["sidecar_path"] = sidecar_relative_path

@@ -5,6 +5,13 @@ name = "Repo Control II"
 path = "/home/chuck/projects/repo-control-ii"
 milestone_root = "docs/milestones"
 
+[repositories.repo-control-ii.documents]
+context = "docs/context/project_context.md"
+architecture = "docs/context/project_architecture.md"
+workflow = "docs/context/project_workflow.md"
+coding_agent_rules = "docs/context/coding_agent_rules.md"
+parking_lot = "docs/context/canonical_parking_lot.md"
+
 [repositories.vocab-app]
 name = "Vocab App"
 path = "/home/chuck/projects/vocab-app"
