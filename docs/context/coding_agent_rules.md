@@ -4,9 +4,9 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Clean restart and architecture definition  
+**Project phase:** Git Control complete; Workflow Orchestration active and partially implemented  
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `https://github.com/CHHIV-Projects/repo-control-ii.git`  
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  
 **Current architecture baseline:** `docs/context/project_architecture.md`  
 **Current context baseline:** `docs/context/project_context.md`
@@ -30,16 +30,17 @@ Its purpose is to reduce repeated milestone-prompt boilerplate while preserving:
 - clear escalation;
 - reusable closeout standards;
 - portability across coding agents;
-- compatibility with future Agent Skills.
+- compatibility with future Agent Skills;
+- compatibility with Repo Control lifecycle and handoff-packet workflows.
 
 Milestone prompts should reference this document rather than repeat every standing rule.
 
 This document does not replace:
 
 - the active milestone prompt;
-- approved prompt addenda;
+- Product Owner-approved binding lock-ins;
 - current Product Owner direction;
-- current repository code;
+- current repository code and deterministic evidence;
 - approved reconnaissance;
 - validation evidence;
 - milestone closeouts;
@@ -57,7 +58,7 @@ Apply instructions in this order:
 
 ```text
 1. explicit current Product Owner direction
-2. active milestone prompt and approved addenda / lock-ins
+2. active milestone prompt and Product Owner-approved binding lock-ins
 3. this coding-agent-rules document
 4. current architecture, workflow, and context documents
 5. approved reconnaissance closeout
@@ -76,6 +77,8 @@ When instructions conflict:
 - do not silently change Git authority or workflow authority.
 
 The Product Owner Git-mutation boundary is a standing rule and is not a normal milestone-level override.
+
+A non-binding workflow decision must not be treated as a Product Owner-approved instruction.
 
 ---
 
@@ -99,55 +102,150 @@ Normal editing occurs through:
 VS Code Remote SSH from the Windows workstation
 ```
 
-Normal Git and repository commands run in:
-
-```text
-VS Code Remote SSH / Linux terminal
-```
+Normal repository and Git commands run in the Linux repository environment.
 
 GitHub remote:
 
 ```text
-https://github.com/CHHIV-Projects/repo-control-ii.git
+git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git
 ```
 
 Do not assume a Windows checkout is authoritative.
 
 Do not treat GitHub remote state as equivalent to the local working tree.
 
+Do not assume local tracking refs have been refreshed from the remote unless an authorized fetch occurred.
+
 ---
 
-# 4. Core Agent Workflow
+# 4. Repo Control Workflow Context
 
-For every milestone:
+Repo Control II now provides a workflow layer in addition to Git control.
+
+For canonical lifecycle-managed milestones, Repo Control may provide:
 
 ```text
-1. Read this file.
-2. Read the active milestone prompt and approved addenda.
-3. Read the approved reconnaissance closeout when referenced.
-4. Confirm the authoritative repository.
-5. Perform read-only Git preflight.
-6. Confirm current branch and working-tree state.
-7. Confirm milestone mode.
-8. Load only relevant broader context.
-9. Inspect the targeted implementation paths.
-10. Confirm the milestone boundary.
-11. Ask only genuinely blocking questions.
-12. Escalate when the approved roadmap is materially insufficient.
-13. Implement only approved scope.
-14. Run relevant validation.
-15. Create one closeout.
-16. Report final read-only Git status.
-17. Stop before Product Owner Git actions.
+explicit selected milestone
+current lifecycle phase
+authoritative milestone prompt
+workflow sidecar
+Product Owner-approved binding lock-ins
+open questions / blockers
+bug and test events
+closeout
+Coder Handoff Packet
+Architect Review Packet
+current deterministic Git evidence
+```
+
+The Coder should treat the Coder Handoff Packet as **derived transport output**, not as a new source of truth.
+
+Authority remains with:
+
+```text
+Product Owner direction
++
+active milestone prompt
++
+approved binding lock-ins
++
+governing project documents
++
+current deterministic repository evidence
+```
+
+If packet content conflicts with an authoritative source, stop and report the discrepancy.
+
+---
+
+# 5. Core Agent Workflow
+
+For every implementation milestone:
+
+```text
+1. Confirm the authoritative repository.
+2. Confirm the active milestone.
+3. Read this file or the current Coder Handoff Packet containing it.
+4. Read the active milestone prompt.
+5. Read Product Owner-approved binding lock-ins.
+6. Read approved reconnaissance when the milestone depends on it.
+7. Perform read-only Git preflight.
+8. Confirm current branch and working-tree state.
+9. Confirm lifecycle phase and milestone mode.
+10. Load only relevant broader context.
+11. Inspect targeted implementation paths.
+12. Confirm the milestone boundary.
+13. Ask only genuinely blocking questions.
+14. Escalate when approved scope or architecture is materially insufficient.
+15. Implement only approved scope.
+16. Run relevant validation.
+17. Create or update the required closeout.
+18. Report final read-only Git status.
+19. Stop before Product Owner Git actions.
 ```
 
 The agent must not infer live repository state solely from documentation.
 
-The agent must not infer project architecture solely from inherited code when governing documents explicitly define a new architecture.
+The agent must not infer project architecture solely from inherited code when governing documents define a newer architecture.
+
+The agent must not infer workflow authorization merely from the existence of a prompt or closeout.
 
 ---
 
-# 5. Milestone Modes
+# 6. Lifecycle Awareness
+
+The implemented lifecycle is:
+
+```text
+PLANNING
+READY
+IN_PROGRESS
+WAITING
+REVIEW
+CLOSED
+```
+
+Coding agents must respect lifecycle state.
+
+## PLANNING
+
+The milestone is not yet approved for implementation.
+
+Do not begin implementation.
+
+## READY
+
+The prompt is approved for Coder handoff.
+
+Implementation may begin when the workflow records `implementation_started`.
+
+## IN_PROGRESS
+
+Implementation or validation is active.
+
+## WAITING
+
+Implementation is paused.
+
+Do not resume until the blocking condition has been validly resolved and the workflow is explicitly resumed.
+
+## REVIEW
+
+Implementation is under review.
+
+Do not make further implementation changes unless a bounded correction is explicitly requested.
+
+## CLOSED
+
+The milestone is complete and terminal.
+
+Do not resume implementation under the closed milestone.
+
+Lifecycle state is reconstructed from workflow events and must not be inferred from Git state, closeout presence, or test results.
+
+---
+
+# 7. Milestone Modes
 
 The active prompt should identify the mode.
 
@@ -168,7 +266,7 @@ Do not silently change milestone mode.
 
 ---
 
-# 6. Reconnaissance-Only Mode
+# 8. Reconnaissance-Only Mode
 
 Reconnaissance is used when current implementation reality must be mapped before coding.
 
@@ -199,15 +297,15 @@ Reconnaissance should become the roadmap for subsequent implementation.
 
 ---
 
-# 7. Implementation-After-Reconnaissance Mode
+# 9. Implementation-After-Reconnaissance Mode
 
 When implementation follows approved reconnaissance:
 
 ```text
-1. read this file;
+1. read this file / applicable standing rules;
 2. read the implementation prompt;
 3. read the approved reconnaissance closeout;
-4. read approved addenda / lock-ins;
+4. read Product Owner-approved lock-ins;
 5. inspect named implementation files;
 6. inspect directly related tests;
 7. expand investigation only when evidence requires it.
@@ -225,7 +323,7 @@ When escalating, identify the reconnaissance assumption that failed.
 
 ---
 
-# 8. Direct Low-Risk Implementation Mode
+# 10. Direct Low-Risk Implementation Mode
 
 A separate reconnaissance milestone is not required for clearly bounded work such as:
 
@@ -249,15 +347,15 @@ Do not label work low-risk merely to reduce effort when architecture or authorit
 
 ---
 
-# 9. Validation-Only Mode
+# 11. Validation-Only Mode
 
 Validation-only milestones establish evidence without changing implementation.
 
 In validation-only mode:
 
 - confirm the approved target repository/environment;
-- run the approved checks;
-- collect the required evidence;
+- run approved checks;
+- collect required evidence;
 - document pass/fail results;
 - do not modify implementation code;
 - do not silently repair defects;
@@ -271,14 +369,14 @@ record evidence
 classify severity
 determine whether testing should continue
 do not repair unless explicitly authorized
-recommend the smallest separate fix when needed
+recommend the smallest bounded fix when needed
 ```
 
 Validation-only work must not silently become repair work.
 
 ---
 
-# 10. Documentation-Only Mode
+# 12. Documentation-Only Mode
 
 Documentation-only work may update:
 
@@ -301,7 +399,7 @@ In documentation-only mode:
 
 ---
 
-# 11. Bug-Fix Follow-Up Mode
+# 13. Bug-Fix Follow-Up Mode
 
 A bug-fix follow-up must remain limited to the documented defect.
 
@@ -320,7 +418,7 @@ A bug may remain inside the active milestone only when the fix remains within th
 
 ---
 
-# 12. Integration / Tool Evaluation Mode
+# 14. Integration / Tool Evaluation Mode
 
 For tool evaluation:
 
@@ -332,12 +430,11 @@ For tool evaluation:
 - compare licensing implications;
 - compare operational complexity;
 - recommend one direction;
-- do not adopt or deeply integrate a tool unless the milestone explicitly authorizes it.
+- do not adopt or deeply integrate a tool unless explicitly authorized.
 
-This applies to candidates such as:
+Potential candidates include:
 
 ```text
-GitButler
 Graphify
 DevLens
 Agent Skills
@@ -347,9 +444,11 @@ OmniRoute
 coding-agent alternatives
 ```
 
+Do not adopt a tool solely because it is available.
+
 ---
 
-# 13. Iterative Milestone Behavior
+# 15. Iterative Milestone Behavior
 
 A milestone is a bounded work container, not a single request-response exchange.
 
@@ -376,6 +475,12 @@ implementation
 → test failure
 → classify
 → fix / escalate / defer
+
+review
+→ bounded correction
+→ resumed implementation
+→ revalidation
+→ resubmission
 ```
 
 Questions, clarifications, stops, and bounded corrections may remain inside one milestone.
@@ -384,14 +489,14 @@ Material changes in objective, architecture, authority, risk, persistence, or im
 
 ---
 
-# 14. Question and Clarification Rules
+# 16. Question and Clarification Rules
 
 Ask questions when:
 
 - product behavior is ambiguous;
 - two materially different implementation paths remain;
 - repository evidence contradicts the prompt;
-- a decision would change scope or architecture;
+- a decision would materially change scope or architecture;
 - required authority is unclear;
 - validation requirements cannot be satisfied as written.
 
@@ -406,9 +511,31 @@ Smallest options:
 Recommended choice:
 ```
 
+If the question blocks work, it should be represented as a workflow event and may place the milestone in `WAITING`.
+
 ---
 
-# 15. Stop Conditions
+# 17. Decision and Lock-In Rules
+
+Repo Control distinguishes:
+
+```text
+decision_recorded
+→ non-binding decision/context
+
+lock_in_approved
+→ binding Product Owner-approved direction
+```
+
+The Coder must not promote a non-binding event into authoritative implementation instruction.
+
+When a binding lock-in exists, apply it with the active prompt according to rule priority.
+
+If a new lock-in appears to materially change objective, architecture, authority, risk, persistence, or scope, stop and escalate rather than assuming the current milestone remains valid.
+
+---
+
+# 18. Stop Conditions
 
 Stop when:
 
@@ -417,6 +544,8 @@ Stop when:
 - unexpected dirty files threaten change isolation;
 - required dependency or tool is missing;
 - current code materially contradicts approved architecture;
+- the workflow phase does not authorize implementation;
+- the milestone is `WAITING`;
 - the task requires unauthorized Git mutation;
 - the task requires material scope expansion;
 - validation cannot be completed as required;
@@ -428,7 +557,7 @@ Do not work around a stop condition silently.
 
 ---
 
-# 16. Escalation Protocol
+# 19. Escalation Protocol
 
 Use:
 
@@ -448,8 +577,8 @@ Incomplete changes, if any:
 Escalate when:
 
 - architecture no longer fits repository reality;
-- two or more materially different architectures remain unresolved;
-- new persistence is required unexpectedly;
+- materially different architectures remain unresolved;
+- new persistence is unexpectedly required;
 - an external tool would introduce major coupling;
 - security boundaries would change;
 - Product Owner authority would be bypassed;
@@ -461,7 +590,7 @@ Stop at the escalation point.
 
 ---
 
-# 17. Bug Discovery Rules
+# 20. Bug Discovery Rules
 
 When a defect is discovered:
 
@@ -470,17 +599,26 @@ When a defect is discovered:
 2. determine whether it is current-regression or pre-existing;
 3. classify whether it is in scope;
 4. determine whether it blocks validation;
-5. determine whether a fix changes architecture or risk;
+5. determine whether fixing it changes architecture or risk;
 6. either fix within approved scope or recommend follow-up.
 ```
 
-Do not hide unrelated bugs inside cleanup.
+For workflow-managed milestones, expected event sequence is:
 
-Do not silently rewrite the milestone around a newly discovered defect.
+```text
+bug_discovered
+→ bug_classified
+→ bug_fixed
+→ test_result_recorded
+```
+
+Out-of-scope bugs should not silently expand the milestone.
+
+Do not hide unrelated bugs inside cleanup.
 
 ---
 
-# 18. Test Failure Rules
+# 21. Test Failure Rules
 
 A failed test is evidence.
 
@@ -499,11 +637,18 @@ Do not report success while required tests remain unexplained.
 
 Do not automatically repair unknown failures without first understanding their relationship to the milestone.
 
+If test evidence is recorded in Repo Control, report it honestly as agent-reported evidence unless independently verified by Repo Control.
+
 ---
 
-# 19. Resume After Stop or Escalation
+# 22. Resume After Stop or Escalation
 
-After a stop/escalation, resume only when the decision is explicit enough to proceed safely.
+After a stop/escalation, resume only when:
+
+- the blocking condition has been resolved;
+- required decision or lock-in exists;
+- remaining scope is clear;
+- Repo Control lifecycle has been explicitly resumed when applicable.
 
 The milestone record should preserve:
 
@@ -513,9 +658,11 @@ The milestone record should preserve:
 - what remains out of scope;
 - what work is now authorized.
 
+Do not resume merely because an answer was discussed in chat if the workflow requires durable resolution.
+
 ---
 
-# 20. Simplicity and Restraint
+# 23. Simplicity and Restraint
 
 Prefer:
 
@@ -556,7 +703,7 @@ Prefer the simpler safe implementation.
 
 ---
 
-# 21. Inherited Code Rules
+# 24. Inherited Code Rules
 
 The inherited Repo Control I code is implementation evidence, not architecture authority.
 
@@ -570,23 +717,15 @@ REFACTOR
 RETIRE
 ```
 
-Keep when:
+Keep when it provides demonstrated value, aligns with Repo Control II architecture, is understandable/testable, and retaining it is safer or cheaper than replacement.
 
-- it provides demonstrated value;
-- it aligns with Repo Control II architecture;
-- it is testable;
-- it is understandable;
-- retaining it is safer or cheaper than replacement.
+Refactor when useful logic exists but coupling conflicts with the current architecture.
 
-Refactor when useful logic exists but current coupling conflicts with the new architecture.
-
-Retire when the capability no longer serves the product, creates unnecessary complexity, or is better provided by an external tool.
-
-Do not rewrite before reconnaissance establishes the correct path.
+Retire when capability no longer serves the product, creates unnecessary complexity, or is better provided by another authority/tool.
 
 ---
 
-# 22. Controlled Reset / Escape From Repair Loop
+# 25. Controlled Reset / Escape From Repair Loop
 
 If repeated patch/retry cycles increase uncertainty:
 
@@ -603,16 +742,16 @@ Do not continue speculative repairs indefinitely.
 
 ---
 
-# 23. Context Reading Rules
+# 26. Context Reading Rules
 
-## 23.1 Always Read
+## 26.1 Always Read
 
-- this file;
+- this file or the current Coder Packet containing it;
 - the active milestone prompt;
-- approved prompt addenda / lock-ins;
+- Product Owner-approved binding lock-ins;
 - approved reconnaissance closeout when the milestone depends on it.
 
-## 23.2 Read As Needed
+## 26.2 Read As Needed
 
 Use broader documents only when relevant:
 
@@ -624,15 +763,15 @@ docs/context/canonical_parking_lot.md
 prior milestone prompts / closeouts
 ```
 
-## 23.3 Targeted Implementation Reading
+## 26.3 Targeted Implementation Reading
 
 For implementation after reconnaissance:
 
 ```text
-1. this file
+1. this file / Coder Packet
 2. active implementation prompt
 3. approved reconnaissance closeout
-4. approved addenda
+4. approved binding lock-ins
 5. named files
 6. directly related tests
 7. broader context only if required
@@ -642,7 +781,41 @@ Do not reread the entire repository without a reason.
 
 ---
 
-# 24. Cost-Aware Investigation
+# 27. Handoff Packet Rules
+
+The Coder Handoff Packet may include:
+
+```text
+repository identity
+milestone ID
+lifecycle phase
+full prompt
+binding lock-ins
+current blockers / waiting reason
+coding-agent rules
+standing workflow rules
+validation guidance
+Git mutation prohibition
+source references
+```
+
+Rules:
+
+- treat packet as derived output;
+- do not edit the packet as project state;
+- prefer authoritative source artifacts when investigating a discrepancy;
+- do not assume packet generation authorizes implementation;
+- obey lifecycle warnings;
+- do not treat missing packet content as proof that no source exists;
+- do not turn packet timestamps into workflow authority.
+
+Current packets may be large because standing documents are included for completeness.
+
+Do not use packet size as justification to ignore authoritative rules.
+
+---
+
+# 28. Cost-Aware Investigation
 
 Milestone prompts should be as long as necessary, but no longer.
 
@@ -652,7 +825,7 @@ Use these principles:
 - Agent Skills should eventually carry reusable procedure;
 - milestone prompts describe the current delta;
 - reconnaissance carries architecture into implementation;
-- implementation prompts should not repeat the full reconnaissance;
+- implementation prompts should not repeat full reconnaissance;
 - start with likely relevant files;
 - use targeted repository intelligence where available;
 - stop broad investigation when the path is established;
@@ -668,7 +841,7 @@ Stop broad investigation when:
 
 ---
 
-# 25. Deterministic Evidence Rules
+# 29. Deterministic Evidence Rules
 
 Prefer deterministic facts over AI inference.
 
@@ -676,7 +849,7 @@ Use:
 
 ```text
 Git
-→ branch, status, diff, history, remote state
+→ branch, status, diff, history, remote-tracking state
 
 test runner
 → pass/fail evidence
@@ -685,10 +858,10 @@ repository-intelligence engine
 → code relationships
 
 Repo Control workflow state
-→ milestone status
+→ lifecycle / selected milestone / durable events
 
 tracked artifacts
-→ prompt, addenda, closeout, decisions
+→ prompt, workflow sidecar, closeout, governing documents
 ```
 
 AI may summarize or interpret this evidence.
@@ -697,7 +870,7 @@ AI must not replace it.
 
 ---
 
-# 26. Repository Intelligence Rules
+# 30. Repository Intelligence Rules
 
 When repository intelligence is available:
 
@@ -712,11 +885,11 @@ Repository intelligence is evidence that supports implementation and review.
 
 ---
 
-# 27. Agent Skills Rules
+# 31. Agent Skills Rules
 
 Repo Control II intends to use Agent Skills as the reusable procedure layer.
 
-Until skills are implemented, this document remains the standing rule source.
+Until skills are implemented and validated, this document remains the standing rule source.
 
 When skills are introduced:
 
@@ -731,7 +904,7 @@ A skill does not override Product Owner direction or the active milestone.
 
 ---
 
-# 28. Git Preflight
+# 32. Git Preflight
 
 Before editing, from the Linux repository:
 
@@ -756,13 +929,14 @@ correct repository
 correct branch
 known working-tree state
 active milestone identified
+lifecycle permits work
 ```
 
 Unexpected dirty files must be reported.
 
 ---
 
-# 29. Dirty-Tree Classification
+# 33. Dirty-Tree Classification
 
 Classify unexpected dirty files as:
 
@@ -784,7 +958,7 @@ Do not edit, revert, delete, stash, clean, stage, or commit unrelated dirty file
 
 ---
 
-# 30. Git Mutation Boundary
+# 34. Git Mutation Boundary
 
 Coding agents do not mutate repository history, branches, the index, or remotes.
 
@@ -815,11 +989,11 @@ closeout
 final read-only Git status
 ```
 
-The Product Owner performs Git mutations separately after review.
+The Product Owner performs Git mutations separately after review, usually through Repo Control or manual Git.
 
 ---
 
-# 31. Allowed Read-Only Git Operations
+# 35. Allowed Read-Only Git Operations
 
 Expected read-only Git commands include:
 
@@ -841,7 +1015,7 @@ If a branch must be created or switched, report the exact requirement to the Pro
 
 ---
 
-# 32. Exact-File Commit Guidance
+# 36. Exact-File Commit Guidance
 
 The Coder must report the exact files belonging to the logical change set.
 
@@ -859,58 +1033,87 @@ git diff --name-only
 git diff --stat
 ```
 
-The Product Owner then stages only the intended files.
-
 Do not recommend committing unexplained files.
 
 ---
 
-# 33. Prompt and Closeout Naming
+# 37. Canonical Prompt and Closeout Naming
 
-The active milestone prompt is authoritative for:
-
-- milestone ID;
-- title;
-- prompt filename;
-- closeout filename;
-- deliverables.
-
-Recommended pattern:
+For new Repo Control-managed milestones, the canonical forward-looking filename pattern is:
 
 ```text
-<milestone>_<exact_snake_case_name>_prompt.md
-<milestone>_<exact_snake_case_name>_closeout.md
+M<arc_id>.<sequence>[.<subsequence>...]_<snake_case_name>_prompt.md
+M<arc_id>.<sequence>[.<subsequence>...]_<snake_case_name>_closeout.md
 ```
 
-Prompt and closeout should use the same descriptive basename.
+Numeric components are exactly three digits.
 
-Do not invent an alternate closeout filename.
+Examples:
 
-Do not create extra human-authored report files unless requested.
+```text
+M003.004_architect_read_only_contract_prompt.md
+M003.004_architect_read_only_contract_closeout.md
+
+M003.004.001_bounded_followup_prompt.md
+```
+
+Prompt and closeout must share the same milestone ID and descriptive basename.
+
+Do not invent alternate closeout names.
+
+Historical milestone files are not renamed merely to fit the new grammar.
 
 ---
 
-# 34. Prompt Addenda and Q&A
+# 38. Workflow Sidecar Naming
 
-When questions or decisions occur, preserve them in the active milestone record.
-
-Recommended headings:
+A canonical milestone may have one tracked workflow sidecar:
 
 ```text
-## Coder Questions / Answers Round 1
-## Coder Questions / Answers Round 2
-## Escalation / Stop Decision 1
-## Bug Discovery / Classification 1
-## Final Lock-ins
+M003.004_architect_read_only_contract_workflow.md
 ```
 
-A clarification that preserves the original objective may remain inside the milestone.
+The sidecar is not a prompt, closeout, or selection anchor.
 
-A material scope or architecture change requires explicit re-scope.
+Do not create additional ad hoc workflow files unless explicitly authorized.
 
 ---
 
-# 35. Required Closeout Structure
+# 39. Questions, Decisions, and Workflow Events
+
+Do not append routine workflow chronology directly into the prompt unless specifically instructed.
+
+The implemented workflow sidecar is the durable event record.
+
+Supported event types include:
+
+```text
+prompt_approved
+implementation_started
+question_submitted
+answer_recorded
+decision_recorded
+lock_in_approved
+escalation_opened
+escalation_resolved
+bug_discovered
+bug_classified
+bug_fixed
+test_result_recorded
+implementation_resumed
+closeout_submitted
+review_requested
+correction_requested
+acceptance_recorded
+milestone_closed
+git_disposition_recorded
+```
+
+Use the workflow model rather than creating new artifact types silently.
+
+---
+
+# 40. Required Closeout Structure
 
 Use this structure unless the prompt says otherwise:
 
@@ -933,22 +1136,24 @@ Use this structure unless the prompt says otherwise:
 The closeout should distinguish:
 
 - confirmed facts;
+- reported evidence;
 - assumptions;
 - inferences;
 - failed tests;
 - untested behavior;
 - deferred work.
 
+Do not claim Product Owner acceptance unless it actually occurred.
+
 ---
 
-# 36. External Tool Boundaries
+# 41. External Tool Boundaries
 
 Do not integrate a major external tool without explicit milestone scope.
 
-When evaluating:
+When evaluating tools such as:
 
 ```text
-GitButler
 Graphify
 DevLens
 Agent Skills
@@ -973,7 +1178,7 @@ Do not adopt a tool solely because it is available.
 
 ---
 
-# 37. Security and Secrets
+# 42. Security and Secrets
 
 Do not read, print, expose, or commit:
 
@@ -991,27 +1196,28 @@ If a task appears to require secret disclosure, stop and escalate.
 
 ---
 
-# 38. Project Isolation
+# 43. Project Isolation
 
-Repo Control II may eventually manage multiple repositories.
+Repo Control II manages multiple configured repositories.
 
-Never assume one project's paths, state, or workflow may be reused for another.
+Never assume one project's paths, state, governing documents, milestone selection, workflow state, or Git state may be reused for another.
 
 Confirm project identity before:
 
 - code edits;
 - test execution;
-- repository intelligence queries;
+- repository-intelligence queries;
 - Git inspection;
-- milestone updates.
+- milestone updates;
+- interpreting a Coder Packet.
 
 Do not cross project boundaries silently.
 
 ---
 
-# 39. UI and Framework Restraint
+# 44. UI and Framework Restraint
 
-The inherited Flask implementation is not a locked framework choice.
+The current Flask implementation is not a permanently locked framework choice.
 
 Do not replace it merely because another framework is preferred.
 
@@ -1027,9 +1233,13 @@ Framework changes require reconnaissance and explicit approval because they affe
 - deployment;
 - integration surfaces.
 
+The current Milestone page/event form is known to be operationally clunky.
+
+Do not undertake broad UX redesign unless explicitly scoped.
+
 ---
 
-# 40. Model Gateway Restraint
+# 45. Model Gateway Restraint
 
 Repo Control II is not currently a model-routing project.
 
@@ -1039,7 +1249,7 @@ Workflow/context problems should not be disguised as model-selection problems.
 
 ---
 
-# 41. Validation Rules
+# 46. Validation Rules
 
 Validation should match milestone risk.
 
@@ -1058,9 +1268,36 @@ Do not claim a test was run when it was not.
 
 Do not claim success when required validation is incomplete.
 
+Reported test events are not automatically independently verified evidence.
+
 ---
 
-# 42. Final Agent Report
+# 47. Review / Correction Rules
+
+When a milestone is in `REVIEW`, normal implementation is not authorized.
+
+If the Architect/Product Owner requests a bounded correction:
+
+```text
+REVIEW
+→ correction_requested
+→ IN_PROGRESS
+```
+
+The Coder must:
+
+- address only the bounded correction;
+- preserve original milestone scope;
+- rerun relevant validation;
+- update the closeout;
+- stop before Git mutation;
+- return the milestone for review.
+
+If review reveals a material change, escalate or create a follow-up milestone instead.
+
+---
+
+# 48. Final Agent Report
 
 At the end of a milestone, report:
 
@@ -1077,13 +1314,13 @@ Git status:
 Recommended next step:
 ```
 
-The closeout document remains the durable record.
+The closeout document remains the durable implementation record.
 
 The final chat response should be concise and point to the closeout rather than repeat the entire closeout unless requested.
 
 ---
 
-# 43. Standing Product Owner Git Rule
+# 49. Standing Product Owner Git Rule
 
 This rule is intentionally repeated because it is central to the workflow:
 
@@ -1104,27 +1341,29 @@ or otherwise mutate Git state.
 
 The Product Owner performs these operations after implementation review.
 
-Repo Control II may eventually provide graphical controls that make those Product Owner actions easier and safer.
+Repo Control II provides browser controls for accepted routine Product Owner Git actions.
 
 That does not transfer Git authority to the coding agent.
 
 ---
 
-# 44. Definition of Good Agent Behavior
+# 50. Definition of Good Agent Behavior
 
 A good Repo Control II coding agent:
 
 ```text
 reads the right context
-understands the milestone
+understands the active milestone
+respects lifecycle authorization
 checks repository state
 inspects only what is needed
 reuses existing authority
 implements the smallest safe change
 asks when genuinely blocked
+records meaningful workflow evidence
 stops at real boundaries
 does not overengineer
-runs the required tests
+runs required tests
 reports evidence honestly
 creates one useful closeout
 leaves Git mutations to the Product Owner

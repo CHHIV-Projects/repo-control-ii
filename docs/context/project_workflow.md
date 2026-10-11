@@ -4,17 +4,17 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Clean restart and architecture definition  
+**Project phase:** Git Control complete; Workflow Orchestration active and partially implemented  
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `https://github.com/CHHIV-Projects/repo-control-ii.git`  
-**Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner, coding agents as implementers, and Product Owner ownership of Git mutations  
-**Current workflow emphasis:** preserve deliberate review and authority gates while reducing manual transport of prompts, questions, clarifications, closeouts, test evidence, and repository state between Architect and Coder.
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
+**Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner, coding agents as implementers, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals  
+**Current workflow emphasis:** use the implemented milestone-selection, lifecycle, decision/event, and handoff-packet capabilities to reduce manual transport among Product Owner, Architect, and Coder while preserving explicit authority boundaries.
 
 ---
 
 # 1. Purpose
 
-This document defines how Repo Control II is designed, implemented, reviewed, validated, and advanced.
+This document defines how Repo Control II is planned, implemented, reviewed, validated, accepted, committed, and advanced.
 
 It defines the working relationship among:
 
@@ -23,9 +23,10 @@ It defines the working relationship among:
 - **Coder / Implementation Agent**
 - **Repo Control II**
 - **Git / GitHub**
-- **Repository-intelligence tools**
-- **Agent Skills**
+- **governing project documents**
+- **milestone artifacts**
 - **test and validation tooling**
+- **future repository-intelligence and Agent Skills layers**
 
 The workflow exists to keep development milestone-driven, bounded, understandable, evidence-based, recoverable, resistant to scope drift and mixed commits, explicit about authority, efficient in AI context usage, portable across coding agents, durable across chat/tool transitions, and suitable for incremental automation.
 
@@ -35,7 +36,7 @@ Repo Control II should reduce clerical handoff work without removing Product Own
 
 # 2. Core Workflow Principle
 
-The core development loop is not:
+The project workflow is not:
 
 ```text
 prompt
@@ -46,8 +47,10 @@ prompt
 It is:
 
 ```text
-initial prompt
-→ coder work
+discussion / planning
+→ approved prompt
+→ explicit milestone selection
+→ Coder preflight
 ↔ questions
 ↔ clarifications
 ↔ stop conditions
@@ -56,45 +59,67 @@ initial prompt
 ↔ test failures
 ↔ Architect decisions
 ↔ Product Owner decisions
-↔ prompt addenda / lock-ins
+↔ binding lock-ins
 → resumed implementation
 → validation
 → closeout
 → Architect review
 → Product Owner acceptance
-→ Git action
+→ Product Owner Git action
 → milestone closure
 ```
 
 A milestone is a **bounded work container**, not a single prompt-response transaction.
 
-Multiple exchanges may occur inside one milestone as long as the approved objective, architecture, authority, and risk boundary remain intact.
+Multiple exchanges may occur inside one milestone so long as the approved objective, architecture, authority, and risk boundary remain intact.
 
-When a discovery materially changes those boundaries, the milestone should stop, suspend, or be re-scoped rather than silently expanding.
+When a discovery materially changes those boundaries, the milestone must stop, suspend, be re-scoped, or spawn a follow-up milestone rather than silently expanding.
 
 ---
 
-# 3. Working Principles
+# 3. Standing Workflow Principles
 
-Repo Control II uses the following standing workflow principles:
+Repo Control II uses these standing principles:
 
 ```text
 Product intent comes first.
+
 Architecture precedes implementation when uncertainty is material.
-Reconnaissance precedes implementation when code reality is unclear.
+
+Reconnaissance precedes implementation when repository reality is unclear.
+
 Implementation follows approved scope.
+
 Questions and clarification loops are normal.
+
 Stop conditions are useful signals, not failures.
+
 Validation establishes evidence.
+
 Closeout records actual outcome.
-Architect review determines whether evidence satisfies the milestone.
+
+Architect review interprets implementation evidence.
+
 Product Owner retains authority over consequential decisions.
+
 Git history preserves logical work units.
+
 Deterministic state should be consulted before asking AI to infer it.
-Standing procedure belongs in reusable rules/skills.
+
+Tracked Markdown remains the durable project evidence layer.
+
+Lifecycle state and event chronology are distinct.
+
+Standing instructions should not be repeated unnecessarily in every milestone.
+
 Milestone prompts should describe the current delta.
+
 Context should be targeted rather than repeatedly reloaded.
+
 Scope must not silently broaden.
+
+Automation should remove clerical transport, not authority.
+
 AI efficiency must not weaken safety or correctness.
 ```
 
@@ -109,22 +134,22 @@ The Product Owner:
 - defines product goals and priorities;
 - decides intended user behavior;
 - approves architecture and milestone sequencing;
-- reviews milestone prompts;
+- reviews and approves milestone prompts;
+- explicitly selects the active milestone in Repo Control;
+- approves binding lock-ins where required;
 - resolves product-level ambiguity;
 - approves material scope changes;
-- approves important workflow transitions;
-- reviews escalation decisions;
-- tests completed behavior where appropriate;
+- resolves or approves escalation outcomes;
+- performs user testing where appropriate;
 - accepts or rejects milestone completion;
 - owns Git mutations;
 - approves destructive or risky operations;
 - decides which external tools are adopted;
-- decides whether inherited subsystems are kept, refactored, or retired;
 - decides when to suspend, split, or close a milestone.
 
-The Product Owner should not be required to manually reconstruct repository state for the Architect, repeat standing rules to the Coder, carry every prompt or closeout between tools, translate product intent into low-level implementation instructions alone, or memorize Git command syntax for ordinary project operation.
+The Product Owner should progressively stop serving as the manual transport mechanism among Architect, Coder, repository state, tests, and Git.
 
-Repo Control II should progressively reduce these clerical burdens.
+Repo Control should reduce that clerical burden while leaving decision authority intact.
 
 ---
 
@@ -134,34 +159,43 @@ The Architect:
 
 - helps define product behavior;
 - designs system architecture;
-- identifies architectural invariants;
+- identifies invariants and authority boundaries;
 - decomposes work into milestones;
 - chooses milestone mode;
 - determines when reconnaissance is required;
 - writes implementation-ready milestone prompts;
 - defines scope and out-of-scope boundaries;
-- defines stopping and escalation conditions;
+- defines stop and escalation conditions;
 - defines expected validation;
-- answers coder questions;
-- interprets unexpected repository evidence;
+- answers Coder questions;
 - distinguishes clarification from scope change;
-- interprets coder closeouts;
-- reviews tests and Git evidence;
-- recommends acceptance or follow-up;
+- interprets unexpected repository evidence;
+- reviews closeouts;
+- reviews test and Git evidence;
+- recommends acceptance, correction, escalation, or follow-up;
 - proposes documentation changes;
-- recommends Git actions;
-- helps maintain project continuity across chats and tools.
+- recommends next milestones.
 
-The Architect should use deterministic project evidence where available:
+The Architect should use current deterministic project evidence where available.
+
+Current transport capability:
 
 ```text
-Product Owner asks Architect
-→ Architect queries Repo Control
-→ Repo Control returns project/repository evidence
-→ Architect reasons over bounded evidence
+Product Owner
+→ generates Architect Review Packet in Repo Control
+→ provides bounded packet to Architect
+→ Architect reviews current milestone evidence
 ```
 
-The Architect should not rely on chat memory when current project documents, Git state, test evidence, milestone artifacts, or repository-intelligence results are available.
+Future direction:
+
+```text
+Architect
+→ queries Repo Control directly through controlled read-only tools
+→ receives bounded current evidence
+```
+
+The Architect should not rely on chat memory when current project documents, milestone artifacts, Git facts, or test evidence are available.
 
 ---
 
@@ -170,7 +204,8 @@ The Architect should not rely on chat memory when current project documents, Git
 The Coder:
 
 - reads the active milestone;
-- loads applicable Agent Skills;
+- reads the current Coder Packet when provided;
+- follows standing coding-agent rules;
 - performs read-only Git/repository preflight;
 - confirms repository and branch;
 - performs reconnaissance when requested;
@@ -180,19 +215,17 @@ The Coder:
 - asks focused questions when genuinely blocked;
 - stops when a stop condition is reached;
 - escalates architecture, authority, safety, or scope conflicts;
-- reports bug discoveries;
-- resumes only when sufficient clarification or approval is provided;
+- records bug discoveries and test failures;
+- resumes only when sufficient clarification or approval is available;
 - prepares one closeout;
 - reports final read-only Git state.
 
-The Coder should not:
+The Coder does not:
 
 - redefine product behavior;
 - silently broaden scope;
 - silently change architecture;
 - create speculative abstractions;
-- preserve legacy implementation merely because it exists;
-- create parallel systems where a current authority can be reused;
 - perform Product Owner Git mutations;
 - ignore stop conditions;
 - conceal failed tests;
@@ -202,36 +235,36 @@ The Coder should not:
 
 # 7. Repo Control II
 
-Repo Control II should eventually act as the shared control plane.
+Repo Control II is the shared deterministic control plane.
 
-Responsibilities may include:
+It currently owns or exposes:
 
-- project identity;
-- repository location;
-- active milestone;
-- milestone state;
-- prompt location;
-- prompt addenda;
-- Q&A trail;
-- escalation records;
-- Product Owner decisions;
-- coder closeout location;
-- test evidence;
-- Git state;
-- repository-intelligence access;
-- Architect review state;
-- Git-ready state;
-- milestone closure.
+- configured project/repository identity;
+- explicit repository selection;
+- explicit active-milestone selection;
+- milestone artifact discovery;
+- lifecycle phase reconstruction;
+- durable workflow event history;
+- Product Owner-approved lock-ins;
+- waiting reasons;
+- bug/event chronology;
+- closeout discovery;
+- Coder handoff packet generation;
+- Architect review packet generation;
+- current Git evidence;
+- routine Product Owner Git controls.
 
-Repo Control should not make product or architecture decisions by itself. It should preserve and expose state so the appropriate human or AI role can make the decision.
+Repo Control should not make product or architecture decisions by itself.
+
+Its job is to preserve, validate, assemble, and expose trusted state so the appropriate role can decide.
 
 ---
 
-# Part II — Documentation and Project State
+# Part II — Governing Documents and Project State
 
 # 8. Governing Documents
 
-Repo Control II begins with:
+Repo Control II uses these project-level authorities:
 
 ```text
 docs/context/project_context.md
@@ -248,10 +281,10 @@ project_context.md
 → current project/product truth and near-term direction
 
 project_architecture.md
-→ durable architecture, authority, boundaries, and invariants
+→ durable architecture, authority boundaries, interfaces, and invariants
 
 project_workflow.md
-→ how project work moves between Product Owner, Architect, Coder, tools, and Git
+→ collaboration process among Product Owner, Architect, Coder, Repo Control, and Git
 
 coding_agent_rules.md
 → standing implementation-agent procedure and constraints
@@ -260,7 +293,9 @@ canonical_parking_lot.md
 → future, deferred, conditional, or not-yet-prioritized work
 ```
 
-Milestone prompts and closeouts preserve milestone-history truth. Git preserves repository-history truth.
+These are **standing project context**, not milestone artifacts.
+
+Repo Control may resolve them through server-controlled repository configuration.
 
 ---
 
@@ -270,49 +305,121 @@ When sources conflict, use this general priority:
 
 ```text
 1. explicit current Product Owner direction
-2. active milestone prompt and approved addenda
-3. current architecture/workflow/coding-agent rules
-4. current repository code and deterministic evidence
+2. active milestone prompt and Product Owner-approved binding lock-ins
+3. current architecture / workflow / coding-agent rules
+4. current deterministic repository evidence
 5. approved reconnaissance closeout
 6. prior milestone prompts and closeouts
 7. old chat recollection
 8. agent assumptions
 ```
 
-If a conflict is material, do not silently choose one interpretation. Stop and surface the conflict.
+If a conflict is material, stop and surface it.
+
+Do not silently choose one interpretation.
 
 ---
 
-# 10. Milestone Documentation Location
+# 10. Milestone Root and Canonical Naming
 
-Milestone artifacts belong under:
+For new Repo Control-managed work, the preferred milestone root is:
 
 ```text
 docs/milestones/
 ```
 
-The exact folder structure may evolve, but prompt and closeout files for the same milestone should remain easy to locate together.
+A repository may configure another server-controlled milestone root where needed for existing projects.
 
-A future structure may use:
+Repo Control recursively discovers milestone artifacts beneath that configured root.
+
+Subfolders are human organization only.
+
+Folder names do not define machine identity.
+
+The canonical forward-looking milestone filename grammar is:
 
 ```text
-docs/milestones/R001/
-docs/milestones/R002/
+M<arc_id>.<sequence>[.<subsequence>...]_<human_readable_name>_<artifact_type>.md
 ```
 
-or a more descriptive variation.
+Rules:
 
-The structure should optimize for discoverability, chronological use, machine parsing, human readability, and low naming ambiguity.
+```text
+M
+→ process type = Milestone
+
+arc_id
+→ exactly three digits
+
+sequence
+→ exactly three digits
+
+optional subsequence components
+→ each exactly three digits
+
+human-readable name
+→ lowercase snake_case
+
+artifact_type
+→ prompt or closeout
+```
+
+Examples:
+
+```text
+M003.001_workflow_orchestration_reconnaissance_prompt.md
+M003.001_workflow_orchestration_reconnaissance_closeout.md
+
+M003.002_minimal_lifecycle_and_durable_decisions_prompt.md
+M003.002_minimal_lifecycle_and_durable_decisions_closeout.md
+
+M003.010.001_bounded_followup_prompt.md
+```
+
+Historical artifacts are not renamed merely to conform to this standard.
+
+Narrow legacy compatibility may remain where useful, but the `M...` convention is the forward-looking SOP.
 
 ---
 
-# Part III — Milestone Model
+# 11. Workflow Sidecar
 
-# 11. Milestone Modes
+Canonical milestones may have one milestone-scoped workflow sidecar:
+
+```text
+<canonical_milestone_basename>_workflow.md
+```
+
+Example:
+
+```text
+M003.002_minimal_lifecycle_and_durable_decisions_workflow.md
+```
+
+The workflow sidecar is:
+
+- tracked;
+- human-readable;
+- chronological;
+- milestone-scoped;
+- durable;
+- not the prompt;
+- not the closeout;
+- not the active-milestone selection anchor.
+
+It preserves meaningful workflow events and machine-readable lifecycle history.
+
+Repo Control reconstructs lifecycle from this durable event history.
+
+---
+
+# Part III — Milestone Modes
+
+# 12. Supported Milestone Modes
 
 A milestone should identify its operating mode.
 
-Supported modes should include at least:
+Supported modes include:
 
 ```text
 reconnaissance-only
@@ -325,137 +432,97 @@ integration/tool evaluation
 workflow/operational validation
 ```
 
-Do not silently change modes.
+Do not silently change milestone mode.
 
 ---
 
-# 12. Reconnaissance-Only Mode
+# 13. Reconnaissance-Only Mode
 
-Use when inherited code is not understood, architecture may depend on implementation reality, multiple approaches appear plausible, external-tool fit is uncertain, persistence implications are unclear, integration boundaries are unclear, implementation could duplicate existing capability, or security/authority boundaries are unresolved.
+Use reconnaissance when current implementation is not sufficiently understood, architecture may depend on repository reality, multiple implementation paths remain plausible, persistence implications are unclear, external-tool fit is uncertain, or security/authority boundaries remain unresolved.
 
-Reconnaissance should produce:
+Reconnaissance should produce a bounded implementation roadmap.
 
-```text
-current implementation map
-relevant files and functions
-current behavior
-dependencies
-authority boundaries
-candidate reuse
-candidate retirement
-integration options
-risks
-tests
-recommended implementation shape
-exact likely files to change
-stop conditions
-```
-
-Reconnaissance is not implementation. The expected outcome is a usable implementation roadmap.
+It is not implementation.
 
 ---
 
-# 13. Implementation-After-Reconnaissance Mode
+# 14. Implementation-After-Reconnaissance Mode
 
-Use after an approved reconnaissance result.
-
-Coder reading order should normally be:
+When implementation follows approved reconnaissance, Coder reading should normally be targeted:
 
 ```text
-1. applicable Agent Skills / coding-agent rules
+1. coding-agent rules / applicable skill
 2. active implementation prompt
 3. approved reconnaissance closeout
-4. approved addenda / lock-ins
+4. approved lock-ins
 5. named implementation files
 6. directly related tests
 7. broader context only when needed
 ```
 
-The Coder should not repeat broad repository exploration without evidence that the reconnaissance is stale or incomplete.
+Do not repeat broad repository exploration without evidence that the roadmap is stale or incomplete.
 
 ---
 
-# 14. Direct Low-Risk Implementation Mode
+# 15. Direct Low-Risk Implementation Mode
 
-Use for bounded work such as text/copy changes, narrow UI corrections, isolated tests, simple mechanical updates, obvious local bug fixes, and documentation changes.
+Use for bounded changes such as narrow UI corrections, text/copy changes, focused tests, documentation-only edits, isolated mechanical changes, and obvious bounded bugs.
 
-Even small work must remain scoped, avoid unrelated cleanup, run relevant validation, preserve Git boundaries, and create the required closeout.
+Even low-risk work must remain scoped, validate appropriately, preserve Git boundaries, and create the required closeout.
 
 ---
 
-# 15. Validation-Only Mode
+# 16. Validation-Only Mode
 
-Use when the goal is to establish evidence without changing implementation.
-
-Examples:
-
-- inherited baseline testing;
-- Git behavior validation;
-- repository-intelligence benchmarking;
-- tool integration evaluation;
-- performance benchmarking;
-- workflow-state validation.
+Use when the goal is evidence rather than implementation.
 
 When validation finds a defect:
 
 ```text
 record evidence
-classify impact
-continue or stop according to prompt
-do not silently repair
-recommend separate repair if needed
+→ classify impact
+→ continue or stop according to prompt
+→ do not silently repair
+→ recommend bounded repair if needed
 ```
 
 Validation-only work must not silently become implementation work.
 
 ---
 
-# 16. Documentation-Only Mode
+# 17. Documentation-Only Mode
 
-Use for context updates, architecture updates, workflow updates, coding-agent rule updates, parking-lot updates, and roadmap/handoff documents.
+Use for context, architecture, workflow, coding-agent rules, parking-lot, and roadmap/handoff updates.
 
-Documentation should describe actual decisions and current truth. It should not invent implementation that has not occurred.
-
----
-
-# 17. Bug-Fix Follow-Up Mode
-
-A bug may remain inside the active milestone when it is directly caused by the current implementation, fixing it does not materially broaden scope, architecture and authority remain unchanged, and risk remains bounded.
-
-Create a separate follow-up when the fix materially changes architecture, objective, risk, persistence, tool choice, workflow contract, or validation burden.
+Documentation must describe current truth and approved future direction without inventing implementation that does not exist.
 
 ---
 
-# 18. Integration / Tool Evaluation Mode
+# 18. Bug-Fix Follow-Up Mode
 
-Use when comparing external capabilities such as GitButler, Graphify, DevLens, Agent Skills, Ponytail, LiteLLM, OmniRoute, or coding agents.
+A bug may remain inside the active milestone when it is directly related to current work, the fix is bounded, architecture/authority/risk/scope remain intact, and the bug, classification, fix, and validation are recorded.
 
-Evaluation should define:
-
-```text
-question being answered
-candidate tools
-test repository or workload
-acceptance criteria
-integration burden
-licensing
-performance
-fit with architecture
-risk
-recommendation
-```
-
-Do not adopt a tool solely because it appears feature-rich.
+Create a separate follow-up when the defect materially changes architecture, objective, risk, persistence, tool choice, workflow contract, or validation burden.
 
 ---
 
-# Part IV — Prompt and Closeout Standards
+# 19. Integration / Tool Evaluation Mode
 
-# 19. Prompt Purpose
+Use when evaluating external capabilities such as Agent Skills, Graphify, DevLens, Ponytail, LiteLLM, OmniRoute, or coding-agent alternatives.
 
-A milestone prompt is the initial approved contract for work.
+Evaluation should define the problem, realistic workload, acceptance criteria, integration burden, licensing, operational complexity, security implications, and recommendation.
 
-It should define:
+Do not adopt tools merely because they are available.
+
+---
+
+# Part IV — Prompt, Decisions, and Closeout
+
+# 20. Prompt Purpose
+
+A milestone prompt is the initial approved contract.
+
+It should define, as appropriate:
 
 - milestone identity;
 - mode;
@@ -476,92 +543,83 @@ It should define:
 - definition of done;
 - closeout expectations.
 
-The prompt should be complete enough to execute without restating the whole project.
+The prompt should describe the current delta rather than restate the whole project.
 
 ---
 
-# 20. Preferred Prompt Structure
+# 21. Prompt Handoff
+
+Current implemented transport:
 
 ```text
-# Milestone <ID> — <Title>
-
-## Required Files
-## Milestone Mode
-## Goal
-## Background
-## Authoritative Repository
-## Required Reading
-## Scope
-## Out of Scope
-## Architecture / Authority Boundaries
-## Implementation Requirements
-## Testing / Validation
-## Stop Conditions
-## Escalation Conditions
-## Deliverables
-## Definition of Done
-## Required Closeout Structure
+Architect creates prompt
+→ Product Owner saves/commits prompt
+→ Product Owner selects milestone in Repo Control
+→ Repo Control can generate a Coder Packet
+→ Product Owner can copy packet to Coder
 ```
 
-Not every milestone requires every heading. Risk-sensitive work should be more explicit.
+The packet is derived output, not project authority.
 
----
+The prompt remains authoritative.
 
-# 21. Prompt Handoff Format
-
-Prompts intended for coding agents should be self-contained, easy to copy or retrieve, preferably one coherent Markdown artifact, free from unnecessary conversational commentary, explicit about command environment, explicit about Git restrictions, and explicit about stop/escalation behavior.
-
-As Repo Control II matures, direct retrieval should replace manual copy/paste.
-
----
-
-# 22. Active Prompt Evolution
-
-The initial prompt may evolve during implementation.
-
-Normal additions include:
+Future direction:
 
 ```text
-## Coder Questions / Answers Round 1
-## Coder Questions / Answers Round 2
-## Escalation / Stop Decision 1
-## Bug Discovery / Classification 1
-## Final Lock-ins
+Coder
+→ queries Repo Control directly for active milestone and current instructions
 ```
 
-A clarification may remain inside the milestone when it explains how to satisfy the original objective.
-
-A material change should not be hidden in a casual Q&A answer.
-
-Repo Control II should preserve these additions durably.
+Direct Coder tool access is not yet implemented.
 
 ---
 
-# 23. Material Prompt Change
+# 22. Routine Clarification vs Binding Decision
 
-A prompt update is material when it changes:
+The workflow distinguishes three levels.
+
+## 22.1 Routine Conversation
+
+A transient explanation or small wording choice that does not affect future implementation does not require formal durable project evidence.
+
+## 22.2 Durable Decision/Event
+
+Record a meaningful question, answer, decision, blocker, bug, or test event when it changes Coder behavior, resolves a blocker, establishes an assumption, matters to future review, or must survive chat loss.
+
+## 22.3 Product Owner-Approved Lock-In
+
+A binding lock-in is required when guidance supersedes part of the prompt, materially refines an ambiguous requirement, or establishes binding implementation direction while preserving the same milestone objective.
+
+Binding lock-ins require Product Owner approval.
+
+A non-binding decision must not be promoted into authoritative Coder instruction.
+
+---
+
+# 23. Material Scope Change
+
+Stop and escalate when a discovery materially changes:
 
 - objective;
 - scope;
 - architecture;
 - authority;
-- Git boundary;
-- persistence;
-- destructive behavior;
 - security;
-- tool selection;
-- workflow model;
-- implementation direction;
-- closeout expectation;
-- validation burden.
+- risk;
+- persistence;
+- implementation strategy;
+- validation burden;
+- product behavior.
 
-Material changes require explicit Product Owner awareness and should be preserved as milestone evidence.
+Do not hide material change inside casual Q&A.
+
+Re-scope or create a separate milestone.
 
 ---
 
 # 24. Closeout Standard
 
-Each milestone should normally produce one human-authored closeout.
+Each milestone normally produces one human-authored closeout.
 
 Preferred structure:
 
@@ -581,296 +639,388 @@ Preferred structure:
 ## 11. Git Status
 ```
 
-The closeout must distinguish confirmed facts, assumptions, inferences, untested behavior, deferred work, failed validation, and Product Owner decisions.
-
-A closeout should not claim completion merely because code was written.
+A closeout does not become accepted merely because it exists.
 
 ---
 
-# Part V — Iterative Milestone Loop
+# Part V — Implemented Lifecycle
 
-# 25. Normal Iteration Inside a Milestone
+# 25. Current Lifecycle
+
+The implemented Repo Control lifecycle is:
 
 ```text
-Coder begins work
-        ↓
-New issue or question?
-        │
-        ├── No → continue
-        │
-        └── Yes
-             ↓
-        classify event
-             ↓
-        question / clarification / stop / escalation / bug / test failure
-             ↓
-        Architect review
-             ↓
-        Product Owner decision if required
-             ↓
-        durable answer / addendum / lock-in
-             ↓
-        resume or remain blocked
+PLANNING
+READY
+IN_PROGRESS
+WAITING
+REVIEW
+CLOSED
 ```
 
-This loop may repeat several times. That is expected behavior.
+This six-state model supersedes earlier conceptual state names such as `READY_FOR_CODER`, `CODING`, `READY_FOR_ARCHITECT_REVIEW`, `APPROVED`, and `READY_FOR_GIT`.
 
 ---
 
-# 26. Question / Clarification Event
+# 26. Lifecycle Meanings
 
-Use when requirement wording is ambiguous, the Coder needs a bounded implementation choice, product behavior needs clarification, or repository reality exposes a small unanswered detail.
+## PLANNING
+The selected milestone is not yet approved for Coder implementation.
 
-The Architect should answer directly when the decision is technical and already within approved Product Owner intent.
+## READY
+The prompt has been explicitly approved for Coder handoff.
 
-The Product Owner should be involved when the answer changes product behavior, priority, risk, or authority.
+## IN_PROGRESS
+Implementation or validation is actively underway.
 
----
+## WAITING
+Work is paused for a recorded clarification, decision, blocker, escalation, or other valid reason.
 
-# 27. Stop Condition Event
+## REVIEW
+Closeout/evidence is available for Architect/Product Owner review.
 
-A stop condition is a deliberate guardrail.
+## CLOSED
+The milestone has been explicitly accepted and closed by Product Owner action.
 
-Examples:
-
-- wrong branch;
-- unexpected dirty files;
-- missing required dependency;
-- repository state contradicts prompt;
-- test environment unavailable;
-- external integration not installed;
-- required evidence cannot be established.
-
-The Coder should stop and report rather than work around the condition silently.
+`CLOSED` is terminal.
 
 ---
 
-# 28. Escalation Event
+# 27. Lifecycle Transition Rules
 
-Use when architecture no longer fits reality, two materially different designs remain, required work is significantly broader than prompt, data/persistence model must change, security boundary must change, tool adoption creates major coupling, required Git/runtime mutation is not authorized, validation cannot establish required safety, or the only solution appears speculative.
-
-Recommended format:
+Normal transitions are explicit:
 
 ```text
-STATUS: ESCALATION REQUIRED
+PLANNING → READY
+→ Product Owner-approved prompt approval event
 
-Observed conflict:
-Approved assumption that failed:
-Evidence:
-Files / systems involved:
-Why proceeding would broaden or increase risk:
-Smallest safe options:
-Recommended decision:
-Incomplete changes, if any:
+READY → IN_PROGRESS
+→ explicit implementation-start event
+
+IN_PROGRESS → WAITING
+→ blocking question / escalation / out-of-scope bug / valid waiting reason
+
+WAITING → IN_PROGRESS
+→ resolution recorded
+→ explicit implementation-resumed event
+
+IN_PROGRESS → REVIEW
+→ closeout exists and is explicitly submitted
+
+REVIEW → IN_PROGRESS
+→ bounded correction requested
+
+REVIEW → CLOSED
+→ explicit Product Owner acceptance
+→ explicit closure
 ```
 
-Stop at the escalation point.
+Do not infer transitions from prompt existence, closeout existence, Git cleanliness, commits, pushes, or passing tests.
 
 ---
 
-# 29. Bug Discovery Event
+# 28. Workflow Event Model
 
-When a defect is found during implementation:
-
-1. record the defect;
-2. determine whether it was introduced by current work or pre-existing;
-3. classify whether it is in scope;
-4. determine whether it blocks validation;
-5. determine whether fixing it changes architecture or risk;
-6. either fix within scope or defer to a follow-up.
-
-Do not hide defects inside unrelated cleanup.
-
----
-
-# 30. Test Failure Event
-
-A failed test is evidence.
-
-Classify it as:
+The implemented event vocabulary includes:
 
 ```text
-current regression
-pre-existing failure
-environment/setup failure
-incorrect test assumption
-unrelated failure
-unknown
+prompt_approved
+implementation_started
+question_submitted
+answer_recorded
+decision_recorded
+lock_in_approved
+escalation_opened
+escalation_resolved
+bug_discovered
+bug_classified
+bug_fixed
+test_result_recorded
+implementation_resumed
+closeout_submitted
+review_requested
+correction_requested
+acceptance_recorded
+milestone_closed
+git_disposition_recorded
 ```
 
-Unknown failures should not automatically be ignored or repaired. Material uncertainty may require escalation.
+Events preserve chronology and are not automatically lifecycle states.
 
 ---
 
-# 31. Resume Decision
+# 29. Waiting and Resume
 
-After a stop or escalation, implementation resumes only when the necessary decision is sufficiently explicit.
+`WAITING` requires a reason.
 
-The milestone record should preserve:
+A valid resolution event must occur before a separate `implementation_resumed` event returns the milestone to `IN_PROGRESS`.
 
-- what stopped work;
-- who decided;
-- what changed;
-- what remains prohibited;
-- what the Coder may now do.
+The milestone record should preserve what stopped work, what resolution occurred, what remains out of scope, and what implementation is now authorized.
 
 ---
 
-# 32. When to Split the Milestone
+# 30. Bug Handling
 
-Split or suspend when the objective changed, work now spans unrelated systems, architecture must be redesigned, a major external tool decision is required, implementation risk increased materially, Product Owner testing should precede further work, validation and repair should remain separate, a new persistence model is required, or the discovered issue deserves independent acceptance.
-
-Do not split mechanically when a bounded clarification is enough.
-
----
-
-# Part VI — Standard Development Cycle
-
-# 33. Step 1 — Define Milestone
-
-The Product Owner and Architect define objective, reason for work, milestone mode, acceptance criteria, scope, out of scope, and expected evidence.
-
-Architect drafts the milestone prompt. Product Owner reviews and approves.
-
----
-
-# 34. Step 2 — Establish Git / Repository Baseline
-
-The Product Owner ensures the intended branch exists and is selected.
-
-The Coder performs read-only preflight:
-
-```bash
-cd /home/chuck/projects/repo-control-ii
-git branch --show-current
-git status --short
-git log --oneline --decorate -5
-git rev-parse HEAD
-```
-
-When upstream exists and matters:
-
-```bash
-git rev-parse '@{upstream}'
-```
-
-The Coder does not create or switch branches.
-
----
-
-# 35. Step 3 — Save Milestone Prompt
-
-Current/manual state:
+Supported bounded flow:
 
 ```text
-Architect creates prompt
-→ Product Owner saves it into repository
+bug_discovered
+→ bug_classified
+→ bug_fixed
+→ test_result_recorded
 ```
 
-Target state:
+Classification distinguishes `in_scope` from `needs_escalation`.
 
-```text
-Architect creates approved prompt
-→ Repo Control stores it in the correct project/milestone location
-```
+An out-of-scope bug can place the milestone into `WAITING`.
 
-Repo Control II should eventually remove the manual transport step.
+The system must not silently expand the milestone.
 
 ---
 
-# 36. Step 4 — Coder Handoff
+# 31. Product Owner Approval Boundaries
 
-Current/manual state:
+Explicit Product Owner action is required for at least:
 
-```text
-Product Owner tells Coder where prompt is
-```
+- selecting the active milestone;
+- approving the prompt into `READY`;
+- approving a binding lock-in;
+- approving material re-scope;
+- accepting implementation;
+- closing the milestone;
+- staging;
+- committing;
+- pushing;
+- other consequential Git mutations.
 
-Target state:
-
-```text
-Coder asks Repo Control for active milestone
-→ receives prompt + relevant Agent Skills + lock-ins
-```
-
-The transition should be incremental.
+Repo Control currently records actor role as reported context. It does not claim cryptographic role authentication.
 
 ---
 
-# 37. Step 5 — Coder Preflight
+# Part VI — Handoff Packets
 
-Before editing, the Coder confirms correct repository, correct branch, expected working-tree state, milestone mode, required Agent Skills, required reconnaissance, relevant files, and test strategy.
+# 32. Coder Packet
+
+Repo Control can generate a derived, read-only Coder Packet containing:
+
+```text
+repository / milestone identity
+current lifecycle phase
+authoritative prompt
+Product Owner-approved binding lock-ins
+current blockers / waiting reason
+coding-agent rules
+standing workflow rules
+repository guidance
+explicit Git mutation prohibition
+source references
+```
+
+The packet does not replace the prompt or governing documents.
+
+Packet generation does not change lifecycle or Git state.
+
+---
+
+# 33. Architect Review Packet
+
+Repo Control can generate a derived, read-only Architect Review Packet containing, as appropriate:
+
+```text
+repository / milestone identity
+current lifecycle phase
+authoritative prompt/objective
+binding lock-ins
+relevant workflow events
+open blockers / escalations / bugs
+closeout
+deterministic local Git state
+reported test evidence
+configured context / architecture / workflow documents
+source references
+```
+
+Reported test-result events are labeled as reported unless independently verified.
+
+---
+
+# 34. Packet Authority and Freshness
+
+Before generation Repo Control revalidates repository identity, repository generation, selected milestone, prompt, workflow sidecar, closeout if used, configured governing documents, and current local Git state.
+
+Stale repository or milestone requests are rejected.
+
+Packet generation must not append workflow events, alter lifecycle, alter selection state, modify milestone artifacts, or mutate Git.
+
+---
+
+# 35. Packet Context Discipline
+
+The current packet implementation intentionally favors completeness over aggressive summarization.
+
+The long-term goal is:
+
+```text
+smallest sufficient context
++
+current milestone delta
++
+binding decisions
++
+only relevant standing rules
++
+current deterministic evidence
+```
+
+Future packet refinement should be driven by real usage rather than speculative trimming.
+
+---
+
+# Part VII — Standard Development Cycle
+
+# 36. Step 1 — Discuss and Define Milestone
+
+Product Owner and Architect define objective, milestone mode, acceptance criteria, scope, out of scope, and expected evidence.
+
+Architect drafts the milestone prompt.
+
+Product Owner reviews and approves it.
+
+---
+
+# 37. Step 2 — Save and Commit Prompt
+
+The prompt is saved under the configured milestone root using canonical naming for new work.
+
+Product Owner commits the prompt through Repo Control or manual Git.
+
+Coder does not perform this Git mutation.
+
+---
+
+# 38. Step 3 — Select Active Milestone
+
+Product Owner explicitly selects the milestone in Repo Control.
+
+Repo Control does not infer active status from newest filename, modification time, highest milestone number, missing closeout, or Git history recency.
+
+---
+
+# 39. Step 4 — Approve Handoff
+
+For lifecycle-managed milestones:
+
+```text
+PLANNING
+→ Product Owner approves prompt
+→ READY
+```
+
+Repo Control records the approval event in the milestone workflow sidecar.
+
+---
+
+# 40. Step 5 — Generate Coder Handoff
+
+Current state:
+
+```text
+Repo Control assembles Coder Packet
+→ Product Owner copies packet to Coder
+```
+
+Future state:
+
+```text
+Coder queries Repo Control directly
+```
+
+Direct Coder tool integration is not yet implemented.
+
+---
+
+# 41. Step 6 — Coder Preflight
+
+Coder confirms correct repository, branch, working-tree state, active milestone, milestone mode, required standing rules, required reconnaissance, relevant files, and validation strategy.
 
 Unexpected dirty files must be reported.
 
-Do not clean, stash, reset, or discard them.
+Do not clean, stash, reset, revert, or discard them.
 
 ---
 
-# 38. Step 6 — Reconnaissance or Targeted Inspection
-
-If milestone is reconnaissance, inspect enough to establish the implementation roadmap.
-
-If milestone follows reconnaissance, verify the roadmap, inspect named paths, and expand only when evidence requires it.
-
-Stop broad investigation when relevant authority is known, affected files are known, implementation shape is known, validation is defined, and further searching is unlikely to change the plan.
-
----
-
-# 39. Step 7 — Implement
-
-The Coder makes the smallest safe change satisfying the milestone.
-
-Prefer existing code, existing patterns, explicit control flow, small helpers, narrow changes, targeted tests, and mature external tools where architecture calls for them.
-
-Avoid speculative frameworks, unrelated cleanup, broad refactors, unnecessary wrappers, duplicate capability, and premature generalization.
-
----
-
-# 40. Step 8 — Iterative Questions / Stops / Escalations
-
-At any point, the Coder may stop and raise a question, clarification, bug discovery, test failure, architecture conflict, scope issue, or tool/integration problem.
-
-The Architect and Product Owner respond.
-
-The decision is preserved.
-
-The Coder resumes only when the path is clear.
-
-This step may repeat multiple times.
-
----
-
-# 41. Step 9 — Validate
-
-Validation may include unit tests, integration tests, CLI tests, browser/UI tests, Git behavior checks, static checks, manual Product Owner validation, external-tool benchmark, repository-intelligence comparison, and Git status/diff review.
-
-Validation should match the milestone risk.
-
----
-
-# 42. Step 10 — Closeout
-
-Coder produces one closeout reflecting actual implementation, actual test outcome, actual deviations, actual limitations, and actual Git state.
-
-It should include decisions made during the milestone where they affected implementation.
-
----
-
-# 43. Step 11 — Architect Review
-
-The Architect reviews:
+# 42. Step 7 — Start Implementation
 
 ```text
-milestone prompt
-+ addenda / lock-ins
-+ closeout
-+ relevant Git diff
-+ tests
-+ repository intelligence where useful
+READY
+→ implementation_started
+→ IN_PROGRESS
 ```
 
-Possible outcomes:
+Coder performs the smallest safe change satisfying approved scope.
+
+---
+
+# 43. Step 8 — Iterative Question / Stop / Bug Loop
+
+During implementation the Coder may encounter a question, clarification, stop condition, escalation, bug discovery, test failure, or unexpected repository evidence.
+
+If blocking:
+
+```text
+IN_PROGRESS
+→ WAITING
+```
+
+Architect and Product Owner respond as appropriate.
+
+Meaningful decisions are recorded durably.
+
+After valid resolution:
+
+```text
+WAITING
+→ implementation_resumed
+→ IN_PROGRESS
+```
+
+This loop may repeat.
+
+---
+
+# 44. Step 9 — Validate
+
+Validation may include unit, integration, CLI, browser/UI, Git behavior, static, Product Owner manual, external-tool, repository-intelligence, and Git status/diff checks.
+
+Validation should match milestone risk.
+
+---
+
+# 45. Step 10 — Closeout
+
+Coder creates one closeout reflecting actual implementation, actual validation, incorporated decisions, deviations, limitations, and final read-only Git state.
+
+---
+
+# 46. Step 11 — Submit for Review
+
+```text
+IN_PROGRESS
+→ closeout_submitted
+→ REVIEW
+```
+
+Closeout presence alone does not trigger review automatically.
+
+---
+
+# 47. Step 12 — Architect Review
+
+Product Owner generates the Architect Review Packet.
+
+Architect reviews prompt, binding lock-ins, relevant events, closeout, Git evidence, test evidence, and governing context where useful.
+
+Possible recommendations:
 
 ```text
 ACCEPT
@@ -882,42 +1032,68 @@ REJECT / REWORK
 
 ---
 
-# 44. Step 12 — Product Owner Acceptance
+# 48. Step 13 — Bounded Correction Loop
 
-The Product Owner reviews the Architect recommendation, performs user testing if needed, accepts or rejects completion, approves Git action, and decides whether follow-up work is immediate or parked.
+If review identifies bounded work:
+
+```text
+REVIEW
+→ correction_requested
+→ IN_PROGRESS
+```
+
+Coder performs only the approved bounded correction.
+
+Then the closeout is resubmitted and the milestone returns to `REVIEW`.
+
+A material change requires escalation or a new milestone.
 
 ---
 
-# 45. Step 13 — Git Completion
+# 49. Step 14 — Product Owner Acceptance
+
+Product Owner reviews the Architect recommendation, performs user testing if needed, accepts or rejects implementation, decides follow-up timing, and authorizes Git completion.
+
+Acceptance is explicit.
+
+---
+
+# 50. Step 15 — Git Completion
 
 Git mutation remains Product Owner-owned.
 
-Typical lifecycle:
+Typical sequence:
 
 ```text
 review exact files
 → stage intended files
-→ inspect staged diff/stat
+→ inspect staged state
 → commit
 → push
-→ tag/merge/branch action if appropriate
 ```
 
-Repo Control II should progressively provide graphical support for this workflow.
+Coder does not own these actions.
 
 ---
 
-# 46. Step 14 — Milestone Closure
+# 51. Step 16 — Milestone Closure
 
-A milestone is closed when approved scope is complete, required validation is complete, closeout exists, Architect review is complete, Product Owner accepts, required Git action is complete or explicitly deferred, and follow-up work is captured.
+Normal closure requires approved scope complete, required validation complete, closeout present, Architect review complete, Product Owner acceptance, Git action complete or explicitly deferred, and follow-up work captured.
 
-Repo Control should record the final state.
+Repo Control then records explicit acceptance/closure events:
+
+```text
+REVIEW
+→ acceptance_recorded
+→ milestone_closed
+→ CLOSED
+```
 
 ---
 
-# Part VII — Git Workflow Rules
+# Part VIII — Git Workflow Rules
 
-# 47. Product Owner Git Ownership
+# 52. Product Owner Git Ownership
 
 Coding agents do not perform normal Git mutations.
 
@@ -936,22 +1112,18 @@ git switch
 git stash
 git clean
 branch creation/deletion
-remote deletion
+remote mutation
 ```
 
-Read-only Git is expected.
+Read-only Git inspection is expected.
 
 ---
 
-# 48. Exact-File Staging
+# 53. Exact-File Staging
 
-Product Owner should prefer specific-file staging over:
+Product Owner should prefer specific-file staging over broad commands such as `git add .`.
 
-```bash
-git add .
-```
-
-Typical review:
+Normal review includes:
 
 ```bash
 git status --short
@@ -959,451 +1131,327 @@ git diff --name-only
 git diff --stat
 ```
 
-Repo Control II should make exact-file selection easier through graphical controls.
+Repo Control should make exact-file review and staging understandable and explicit.
 
 ---
 
-# 49. Branch Lifecycle
-
-Substantial work should normally occur on an approved branch once branch strategy is in use.
-
-Conceptually:
-
-```text
-main
-→ feature / milestone arc
-→ implementation
-→ validation
-→ documentation
-→ merge
-→ post-merge validation
-```
-
-Do not introduce complex branching merely because Git supports it.
-
----
-
-# 50. Remote State
+# 54. Local vs Remote State
 
 Repo Control should clearly distinguish:
 
 ```text
 local working tree
+local index
 local branch
 local HEAD
-upstream branch
+upstream tracking ref
 remote repository
 GitHub state
 ```
 
-A user should not need to infer these distinctions from raw Git output.
+When local ahead/behind is based on tracking refs without remote refresh, that fact should be explicit.
 
 ---
 
-# Part VIII — Context and Token Efficiency
+# Part IX — Context and AI Efficiency
 
-# 51. Context Loading Principle
+# 55. Context Loading Principle
 
 AI should receive the smallest sufficient context.
 
-Preferred stack:
+Preferred Coder context:
 
 ```text
-standing Agent Skill / coding-agent rules
+active milestone prompt
 +
-active milestone
+approved binding lock-ins
 +
-approved addenda / lock-ins
+standing coding-agent procedure
 +
-approved reconnaissance
+current workflow state
 +
 targeted repository evidence
 +
-relevant tests / Git state
+relevant validation expectations
 ```
 
-Avoid reloading every global document for every implementation task.
-
----
-
-# 52. Always-Needed Coder Context
-
-At minimum:
-
-- active milestone;
-- applicable standing coding-agent procedure;
-- current repository path;
-- current branch;
-- approved lock-ins.
-
----
-
-# 53. Context Loaded As Needed
-
-Load architecture/context when work touches architecture, workflow state, Git authority, repository-intelligence integration, external tool integration, security, persistence, model gateway, cross-agent behavior, or project-wide UI structure.
-
----
-
-# 54. Repository Intelligence Use
-
-Use repository intelligence to answer targeted questions:
+Preferred Architect review context:
 
 ```text
-what calls this function?
-what tests cover this module?
-what depends on this class?
-what changed structurally?
-what neighboring code should the Coder inspect?
+milestone objective
++
+approved decisions
++
+relevant event history
++
+closeout
++
+Git state
++
+test evidence
++
+targeted governing context
 ```
 
-Do not dump the entire graph into every prompt.
-
 ---
 
-# 55. Stop Broad Investigation
+# 56. Governing Context vs Current Work Context
 
-Stop repository-wide analysis when implementation path is stable, affected files are known, test strategy is known, authority boundaries are clear, and further searching is unlikely to change the plan.
-
-Longer investigation is not inherently better.
-
----
-
-# Part IX — External Tool Workflow
-
-# 56. Tool Adoption Process
-
-Before adopting a major external tool:
+Distinguish:
 
 ```text
-identify current problem
-→ define evaluation criteria
-→ test candidate
-→ compare alternatives
-→ review licensing / deployment
-→ review architectural fit
-→ Product Owner decides
-→ integrate incrementally
+STANDING PROJECT CONTEXT
+
+project_context.md
+project_architecture.md
+project_workflow.md
+coding_agent_rules.md
+canonical_parking_lot.md
 ```
 
-Do not adopt a tool before its intended problem is clear.
+from:
+
+```text
+CURRENT WORK CONTEXT
+
+active milestone prompt
+workflow sidecar
+binding lock-ins
+closeout
+current Git/test evidence
+```
+
+Repo Control should assemble context according to task need rather than always sending everything.
 
 ---
 
-# 57. Repository Intelligence Evaluation
+# 57. Current Packet Limitation
 
-Graphify and DevLens should be benchmarked against a real repo.
+The current M003.003 packet implementation favors correctness/completeness and may include large standing documents in full.
 
-Evaluation should consider installation, indexing, working-tree support, graph accuracy, query quality, refresh, speed, MCP/tool usability, licensing, integration effort, usefulness to Architect, and usefulness to Coder.
+That is acceptable as an initial transport proof.
 
----
-
-# 58. Agent Skills Workflow
-
-Agent Skills should carry reusable procedure.
-
-The milestone prompt should contain current scope, not repeated standing instructions.
-
-Skills should be versionable and inspectable.
-
-When a skill changes materially, affected workflows should be revalidated.
+Future optimization should reduce repeated standing content, preserve authoritative wording where needed, avoid silent summarization of binding instructions, use source references, and be driven by real usage evidence.
 
 ---
 
-# 59. Model Gateway Workflow
+# Part X — External Tool Workflow
 
-Model gateway evaluation comes later.
+# 58. Agent Skills
+
+Agent Skills remain the intended reusable procedure layer.
+
+Until Agent Skills are implemented and validated, `coding_agent_rules.md` remains the standing Coder procedure source.
+
+---
+
+# 59. Repository Intelligence
+
+Repository intelligence should provide deterministic structural evidence for targeted questions such as what calls a function, what tests cover a module, what depends on a class, and what changed structurally.
+
+Candidate engines remain Graphify and DevLens.
+
+---
+
+# 60. Model Gateway
+
+Model routing remains a later concern.
 
 Do not redesign workflow around LiteLLM, OmniRoute, or local models before a concrete routing need exists.
 
-Model choice should follow task requirements rather than drive architecture.
+---
+
+# Part XI — Stop, Escalation, and Reset
+
+# 61. Stop Conditions
+
+Stop when the wrong repository or branch is active, unexpected dirty files threaten isolation, required dependencies are missing, repository reality materially contradicts the prompt, unauthorized Git mutation would be required, material scope expansion appears necessary, validation cannot be completed, a destructive operation appears necessary, project isolation cannot be guaranteed, or only speculative solutions remain.
+
+Do not silently work around stop conditions.
 
 ---
 
-# Part X — Inherited Code Workflow
+# 62. Escalation Protocol
 
-# 60. Legacy Code Is Evidence, Not Authority
-
-The copied Repo Control I implementation is not automatically accepted.
-
-The first reconnaissance should classify major subsystems:
+Use a structure such as:
 
 ```text
-KEEP
-REFACTOR
-RETIRE
+STATUS: ESCALATION REQUIRED
+
+Observed conflict:
+Approved assumption that failed:
+Evidence:
+Files / systems involved:
+Why proceeding would broaden scope or increase risk:
+Smallest safe options:
+Recommended decision:
+Incomplete changes, if any:
 ```
 
-The Coder should not start rewriting before this classification is approved.
+Stop at the escalation point.
 
 ---
 
-# 61. Salvage Decision Rule
+# 63. Controlled Reset Principle
 
-Keep an inherited subsystem when it already provides real value, aligns with new architecture, is understandable, is testable, and retaining it is cheaper and safer than replacement.
-
-Refactor when valuable logic exists but current coupling conflicts with new architecture.
-
-Retire when the capability is no longer needed, an external tool replaces it better, it creates unnecessary complexity, or it exists only because of the old product direction.
-
----
-
-# 62. Controlled Reset Principle
-
-If implementation enters a repeated patch/retry loop and uncertainty increases:
+If repeated patch/retry cycles increase uncertainty:
 
 ```text
 stop
 → preserve evidence
 → identify trusted baseline
 → classify what is worth keeping
-→ reconstruct bounded accepted behavior
-→ revalidate
+→ reconstruct only accepted behavior
+→ revalidate through bounded gates
 ```
 
-Do not continue speculative repairs indefinitely.
-
 ---
 
-# Part XI — Reasoning Guidance
+# Part XII — Current Workflow Baseline
 
-# 63. Higher-Reasoning Work
+# 64. Implemented Workflow Capabilities
 
-Use deeper architectural reasoning for architecture, inherited-code reconnaissance, Git-control architecture, workflow orchestration, repository-intelligence selection, security boundaries, external tool adoption, persistence design, model gateway architecture, and complex escalations.
-
-The result should be a concrete recommendation.
-
----
-
-# 64. Medium-Reasoning Work
-
-Appropriate for implementation after reconnaissance, bounded Git UI work, targeted integration, tests, bug fixes with known architecture, closeout preparation, and implementation debugging.
-
----
-
-# 65. Lower-Complexity Work
-
-Appropriate for documentation formatting, copy changes, small mechanical fixes, simple tests, and narrowly scoped cleanup.
-
-Do not lower rigor when risk is unclear.
-
----
-
-# Part XII — Workflow State Model
-
-# 66. Candidate High-Level States
-
-Current conceptual states:
+Repo Control II now has:
 
 ```text
-PLANNING
-→ READY_FOR_CODER
-→ CODING
-→ READY_FOR_ARCHITECT_REVIEW
-→ APPROVED
-→ READY_FOR_GIT
-→ CLOSED
+canonical milestone root configuration
+recursive milestone discovery
+canonical Mxxx.xxx[.xxx...] naming
+explicit active-milestone selection
+repository-scoped milestone pointer
+six-state lifecycle
+durable workflow sidecar
+question / answer / decision events
+binding Product Owner lock-ins
+bug and test events
+waiting / resume behavior
+closeout submission
+review / correction loop
+explicit acceptance and closure
+Coder handoff packet
+Architect review packet
+configured governing-document roles
+current local Git evidence in review packet
 ```
-
-Intermediate substates/events may include:
-
-```text
-WAITING_FOR_CLARIFICATION
-ESCALATION_REQUIRED
-BLOCKED
-VALIDATING
-```
-
-These are not yet a locked database schema.
 
 ---
 
-# 67. State vs Event
+# 65. Current Manual Transport Still Remaining
 
-Repo Control should distinguish state from chronology.
-
-Example:
+The Product Owner still currently performs the final transport step:
 
 ```text
-current state:
-CODING
+Repo Control generates Coder Packet
+→ Product Owner copies packet to coding agent
 
-event history:
-prompt approved
-coder started
-question submitted
-architect answered
-Product Owner confirmed
-implementation resumed
-test failed
-bug classified
-fix completed
-validation passed
+Repo Control generates Architect Review Packet
+→ Product Owner copies packet to ChatGPT
 ```
 
-This prevents the workflow model from becoming overly complex.
+This is an intentional transitional architecture.
+
+The Product Owner remains in the approval loop but should gradually leave the raw data-transport path.
 
 ---
 
-# 68. Workflow Transition Authority
+# 66. Near-Term Direction
 
-Not every role may perform every transition.
+The next workflow integration step should focus on controlled read-only Architect access to Repo Control state.
 
 Conceptually:
 
 ```text
-Architect
-→ PLANNING to READY_FOR_CODER recommendation
-
-Coder
-→ CODING / WAITING / VALIDATING status updates
-
-Architect
-→ READY_FOR_ARCHITECT_REVIEW assessment
-
-Product Owner
-→ APPROVED
-
-Product Owner / Repo Control UI
-→ READY_FOR_GIT to CLOSED after Git completion
+Product Owner asks Architect
+→ Architect queries Repo Control
+→ Repo Control returns selected milestone / prompt / workflow / closeout / Git evidence
+→ Architect reasons over bounded current evidence
 ```
 
-Exact permissions remain to be designed.
+Direct Coder submission and multi-agent writes remain later work.
+
+Before exposing remote/tool interfaces, authentication, authorization, rate limiting, audit, caller identity, and safe local access must be considered explicitly.
 
 ---
 
-# Part XIII — Near-Term Workflow Transition
+# 67. UX Direction
 
-# 69. Current Manual Workflow
+The current Milestone page proves the workflow model but is not yet the desired final UX.
 
-Today:
+The universal event-entry form is functionally complete but operationally clunky.
+
+Do not optimize it prematurely.
+
+After several real milestone runs, use observed behavior to redesign toward phase-aware controls, for example:
 
 ```text
-Architect creates prompt
-→ Product Owner saves/copies it
-→ Product Owner directs Coder
-→ Coder works
-→ Product Owner carries questions back
-→ Architect answers
-→ Product Owner carries answer to Coder
-→ Coder closes out
-→ Product Owner brings closeout to Architect
-→ Architect reviews
-→ Product Owner performs Git
+PLANNING
+→ Approve prompt
+
+READY
+→ Start implementation
+
+IN_PROGRESS
+→ Ask question
+→ Record bug
+→ Record test result
+→ Submit closeout
+
+WAITING
+→ Record answer / decision
+→ Resume
+
+REVIEW
+→ Request correction
+→ Accept milestone
 ```
 
-This is the baseline that Repo Control II should improve.
+UX hardening should preserve the backend event model rather than redesign workflow semantics merely for appearance.
 
 ---
 
-# 70. Transitional Workflow
-
-Near-term improvements may happen in stages:
-
-```text
-Stage 1
-standardized files and naming
-
-Stage 2
-Agent Skills reduce repeated instructions
-
-Stage 3
-Repo Control tracks active milestone
-
-Stage 4
-Coder reads active milestone directly
-
-Stage 5
-Repo Control stores Q&A / decisions
-
-Stage 6
-Architect queries Repo Control directly
-
-Stage 7
-Repo Control assembles review evidence
-
-Stage 8
-Git UI completes Product Owner action
-```
-
-Do not require the final architecture before gaining value from earlier stages.
-
----
-
-# 71. Target Workflow
-
-```text
-Product Owner discusses work with Architect
-
-Architect
-→ reads current project state through Repo Control
-→ creates milestone
-
-Repo Control
-→ stores milestone
-→ sets READY_FOR_CODER
-
-Coder
-→ reads milestone + skills
-→ implements
-
-Coder / Architect / Product Owner
-↔ iterate through questions, stops, bugs, decisions
-
-Coder
-→ validates
-→ creates closeout
-
-Repo Control
-→ assembles review evidence
-
-Architect
-→ reviews
-→ recommends acceptance
-
-Product Owner
-→ accepts
-→ uses Repo Control Git UI
-→ commits/pushes as appropriate
-
-Repo Control
-→ closes milestone
-```
-
----
-
-# 72. Workflow Success Criteria
+# 68. Workflow Success Criteria
 
 The workflow is improving when:
 
 - the Product Owner copies fewer artifacts manually;
-- the Architect has better current repository evidence;
-- the Coder reads less irrelevant context;
+- the Architect receives current bounded evidence;
+- the Coder receives current authoritative instructions;
 - standing rules are repeated less often;
-- fewer implementation assumptions are rediscovered;
 - questions and decisions are durably preserved;
-- Git actions are easier to understand;
-- milestone boundaries remain clear;
-- implementation reviews require less manual reconstruction;
-- Product Owner authority remains explicit.
+- lifecycle status is visible rather than remembered;
+- implementation reviews require less reconstruction;
+- Git state is deterministic and understandable;
+- AI context becomes more targeted;
+- Product Owner authority remains explicit;
+- no automation silently broadens scope or mutates Git.
 
 ---
 
-# 73. Initial Workflow Baseline
+# 69. Current Baseline Statement
 
-Repo Control II currently begins with:
+Repo Control II is no longer in the clean-restart or workflow-design-only phase.
+
+The current operational baseline includes:
 
 ```text
-Product Owner-directed milestone workflow;
-ChatGPT as Architect;
-VS Code coding agents as Coder;
-Linux authoritative repository;
-GitHub remote repository;
-Product Owner-owned Git mutations;
-manual prompt/coder transport still present;
-new governing documents being created;
-Agent Skills not yet implemented;
-repository intelligence not yet selected;
-workflow orchestration not yet implemented.
+Product Owner-directed milestone workflow
+ChatGPT as Architect
+VS Code coding agents as Coder
+Linux authoritative repositories
+GitHub remote repositories
+Product Owner-owned Git mutations
+browser-based Git Control
+explicit repository selection
+explicit milestone selection
+canonical milestone naming for new work
+durable workflow lifecycle/events
+Coder handoff packets
+Architect review packets
+manual copy of generated packets still present
+Agent Skills not yet implemented
+repository intelligence not yet integrated
+direct Architect tools not yet implemented
+direct Coder tools not yet implemented
 ```
 
-The purpose of the next milestones is to improve this workflow incrementally while preserving the controls that already work.
+The next milestones should continue reducing manual transport while preserving the Product Owner as the authority for consequential decisions.

@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Clean restart and architecture definition  
+**Project phase:** Git Control complete; Workflow Orchestration active  
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `https://github.com/CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Framework established; no active Parking Lot entries yet
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
+**Current status:** Two active deferred workflow/UX items
 
 ---
 
@@ -150,7 +150,7 @@ Does it require immediate separate work?
     │
     └── No
          ↓
-      Parking Lot
+       Parking Lot
 ```
 
 The Parking Lot must not be used to avoid creating a necessary follow-up milestone.
@@ -218,16 +218,17 @@ when the architecture is not yet decided.
 
 The Parking Lot may contain future workflow improvements, but those improvements are not active workflow rules until formally adopted.
 
-For example:
+Examples include:
 
 ```text
-future automation of prompt storage
+future lifecycle UX hardening
+future packet-context optimization
 future Architect connector
 future Coder handoff automation
 future workflow-state notifications
 ```
 
-remain Parking Lot items until promoted into an approved milestone and then into governing workflow if accepted.
+These remain Parking Lot items until promoted into an approved milestone and, if accepted, reflected in governing workflow.
 
 ---
 
@@ -401,7 +402,6 @@ Repo Control II is expected to evaluate several external tools over time.
 Potential items may eventually appear here for:
 
 ```text
-GitButler
 Graphify
 DevLens
 Agent Skills
@@ -441,7 +441,7 @@ Possible future Parking Lot categories may include:
 
 These examples are illustrative only.
 
-They are not current Parking Lot entries.
+They are not current Parking Lot entries unless explicitly listed in the active-entry section below.
 
 ---
 
@@ -515,32 +515,135 @@ Growth alone is not a sign of good planning.
 
 ---
 
-# 22. Initial Repo Control II Parking Lot
+# 22. Active Repo Control II Parking Lot
 
-No canonical Parking Lot entries are currently established.
+## WORKFLOW-001 — Milestone Lifecycle UX Hardening
 
-Current state:
+### Status
 
-```text
-No active entries.
-```
+Deferred — Near-Term Candidate
 
-This is intentional.
+### Summary
 
-The project is still defining its baseline architecture and workflow.
+Redesign the Milestone-page lifecycle controls after several real workflow runs so the user is presented with phase-appropriate actions instead of the current dense, universal **Record a meaningful workflow event** form.
 
-The first likely entries should emerge from:
+The intended direction is context-sensitive actions such as:
 
 ```text
-inherited-code reconnaissance
-Git-control evaluation
-Agent Skills implementation
-repository-intelligence evaluation
-workflow-orchestration design
-later model-gateway evaluation
+PLANNING
+→ Approve prompt
+
+READY
+→ Start implementation
+
+IN_PROGRESS
+→ Ask question
+→ Record bug
+→ Record test result
+→ Submit closeout
+
+WAITING
+→ Record answer / decision
+→ Resume
+
+REVIEW
+→ Request correction
+→ Accept milestone
 ```
 
-Only genuinely deferred work should be added.
+### Why It Is Parked
+
+The M003.002 implementation intentionally prioritized a complete, explicit event model over polished interaction design.
+
+The current form is functional but clunky.
+
+Redesigning it immediately would risk optimizing around assumptions rather than observed usage.
+
+### Trigger for Reconsideration
+
+Revisit after several real milestones have been operated through the lifecycle and the Product Owner can identify:
+
+- which actions are actually used;
+- which fields are routinely unnecessary;
+- which events need shortcuts;
+- where mistakes or confusion occur;
+- whether phase-aware actions materially improve usability.
+
+### Likely Scope
+
+```text
+Milestone page UX
+phase-aware action rendering
+event form simplification
+validation/error presentation
+workflow action labels
+possibly event-history presentation
+```
+
+### Dependencies
+
+The existing lifecycle/event backend should remain stable enough to serve as the semantic foundation.
+
+### Notes
+
+Prefer improving the UI around the existing event model rather than changing lifecycle semantics solely for presentation convenience.
+
+---
+
+## WORKFLOW-002 — Handoff Packet Context Optimization
+
+### Status
+
+Deferred — Near-Term Candidate
+
+### Summary
+
+Reduce the size and repeated standing-document content in Coder and Architect Review Packets while preserving authoritative instructions, binding decisions, deterministic evidence, and explicit source references.
+
+M003.003 proved the packet transport model, but live packets can be several thousand lines because they may include full milestone prompts and complete standing documents.
+
+### Why It Is Parked
+
+The initial implementation deliberately favored correctness and completeness over aggressive context reduction.
+
+There is not yet enough real usage evidence to know which standing material can safely be omitted, summarized, referenced, or progressively disclosed for each packet type.
+
+Premature optimization could remove important instructions or create a second interpretation layer.
+
+### Trigger for Reconsideration
+
+Revisit after several real Coder and Architect packet uses have established:
+
+- which sections are consistently useful;
+- which standing rules are unnecessarily repeated;
+- which sources can be referenced rather than embedded;
+- where full authoritative wording remains necessary;
+- whether packet size causes material AI/context inefficiency;
+- whether Agent Skills or direct read-only tools change the context-delivery model.
+
+### Likely Scope
+
+```text
+handoff packet assembly policy
+Coder vs Architect packet inclusion rules
+progressive disclosure
+source-reference strategy
+standing-document excerpts or role-specific subsets
+packet size and token-efficiency metrics
+optional compact/full packet modes if justified
+```
+
+### Dependencies
+
+Useful evidence should come from real use of M003.003 packets.
+
+Future Agent Skills and direct Architect/Coder tool access may materially change the optimal packet design and should be considered before locking a more complex packet-selection model.
+
+### Notes
+
+Do not silently summarize or truncate binding instructions.
+
+Any optimization should preserve provenance and make omitted/referenced sources explicit.
 
 ---
 
