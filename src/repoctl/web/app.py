@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Flask, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
 from ..analysis.manager import AnalysisError, analyze_comparison
@@ -35,6 +35,11 @@ from ..workflow.milestones import (
 )
 from ..workflow.lifecycle import WorkflowRecordError, load_milestone_workflow, record_milestone_event
 from ..workflow.status import WorkflowError, generate_milestone_status
+from .architect_contract import (
+    MAX_PACKET_BYTES,
+    ArchitectContractError,
+    build_architect_response,
+)
 from .repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .views import (
     comparison_id_choices,
@@ -104,6 +109,23 @@ def _read_status(status_json_path: Path) -> dict[str, Any]:
     import json
 
     return json.loads(status_json_path.read_text(encoding="utf-8"))
+
+
+def _architect_json_response(payload: dict[str, Any], status_code: int = 200) -> Response:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if len(body.encode("utf-8")) > MAX_PACKET_BYTES:
+        payload = {
+            "contract_version": "1",
+            "error": {
+                "code": "response_oversized",
+                "message": f"Architect response exceeds the {MAX_PACKET_BYTES}-byte limit.",
+            },
+        }
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        status_code = 413
+    response = Response(body, status=status_code, mimetype="application/json")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def create_web_app(
@@ -200,6 +222,14 @@ def create_web_app(
 
     @app.errorhandler(WebUIError)
     def _handle_web_error(err: WebUIError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": err.code, "message": err.safe_message},
+                },
+                err.status_code,
+            )
         return render_template(
             "error.html",
             error_code=err.code,
@@ -209,6 +239,14 @@ def create_web_app(
 
     @app.errorhandler(WorkflowReasonError)
     def _handle_workflow_reason_error(err: WorkflowReasonError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": err.code, "message": err.safe_message},
+                },
+                400,
+            )
         return render_template(
             "error.html",
             error_code=err.code,
@@ -243,6 +281,14 @@ def create_web_app(
     @app.errorhandler(WorkflowError)
     @app.errorhandler(AnalysisError)
     def _handle_expected_service_error(err: Exception):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "service_error", "message": str(err)},
+                },
+                400,
+            )
         return render_template(
             "error.html",
             error_code="service_error",
@@ -252,6 +298,25 @@ def create_web_app(
 
     @app.errorhandler(Exception)
     def _handle_unexpected_error(err: Exception):
+        if request.path.startswith("/api/architect/"):
+            if isinstance(err, HTTPException):
+                return _architect_json_response(
+                    {
+                        "contract_version": "1",
+                        "error": {"code": err.name.lower().replace(" ", "_"), "message": err.description},
+                    },
+                    err.code or 500,
+                )
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {
+                        "code": "unexpected_error",
+                        "message": "Unexpected Architect contract error.",
+                    },
+                },
+                500,
+            )
         if isinstance(err, HTTPException):
             return render_template(
                 "error.html",
@@ -265,6 +330,144 @@ def create_web_app(
             error_message="Unexpected application error.",
             mutation_note="NO TARGET GIT MUTATION",
         ), 500
+
+    @app.errorhandler(ArchitectContractError)
+    def _handle_architect_contract_error(err: ArchitectContractError):
+        return _architect_json_response(
+            {
+                "contract_version": "1",
+                "error": {"code": err.code, "message": str(err)},
+            },
+            err.status_code,
+        )
+
+    def architect_query_value(name: str, *, maximum_length: int) -> str | None:
+        values = request.args.getlist(name)
+        if not values:
+            return None
+        if len(values) != 1 or not values[0] or len(values[0]) > maximum_length:
+            raise ArchitectContractError(
+                "invalid_query_parameter",
+                f"Query parameter {name!r} must be supplied once and within its length limit.",
+                400,
+            )
+        return values[0]
+
+    def architect_endpoint(resource: str, role: str | None = None) -> Response:
+        allowed_parameters = {
+            "expected_repository_key",
+            "expected_generation",
+            "expected_milestone_id",
+        }
+        unknown_parameters = set(request.args) - allowed_parameters
+        if unknown_parameters:
+            raise ArchitectContractError(
+                "unsupported_query_parameter",
+                f"Unsupported query parameter: {sorted(unknown_parameters)[0]!r}.",
+                400,
+            )
+        try:
+            expected_repository_key = architect_query_value("expected_repository_key", maximum_length=64)
+            expected_generation_text = architect_query_value("expected_generation", maximum_length=12)
+            expected_milestone_id = architect_query_value("expected_milestone_id", maximum_length=32)
+            if expected_generation_text is not None:
+                try:
+                    expected_generation = int(expected_generation_text)
+                except ValueError as exc:
+                    raise ArchitectContractError(
+                        "invalid_query_parameter",
+                        "Query parameter 'expected_generation' must be a non-negative integer.",
+                        400,
+                    ) from exc
+                if expected_generation < 0:
+                    raise ArchitectContractError(
+                        "invalid_query_parameter",
+                        "Query parameter 'expected_generation' must be a non-negative integer.",
+                        400,
+                    )
+            else:
+                expected_generation = None
+
+            with repository_action_lock:
+                active_repository, active_generation = registry.snapshot()
+                if (
+                    active_repository.key != current_repository().key
+                    or active_generation != g.repository_registry_generation
+                ):
+                    raise ArchitectContractError(
+                        "stale_repository_selection",
+                        "The active repository changed during this request; refresh status and retry.",
+                        409,
+                    )
+                payload = build_architect_response(
+                    repository=current_repository(),
+                    registry_generation=g.repository_registry_generation,
+                    state_root=effective_state_root,
+                    resource=resource,
+                    role=role,
+                    expected_repository_key=expected_repository_key,
+                    expected_generation=expected_generation,
+                    expected_milestone_id=expected_milestone_id,
+                )
+                active_repository, active_generation = registry.snapshot()
+                if (
+                    active_repository.key != current_repository().key
+                    or active_generation != g.repository_registry_generation
+                ):
+                    raise ArchitectContractError(
+                        "stale_repository_selection",
+                        "The active repository changed during this request; refresh status and retry.",
+                        409,
+                    )
+                return _architect_json_response(payload)
+        except ArchitectContractError as exc:
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": exc.code, "message": str(exc)},
+                },
+                exc.status_code,
+            )
+
+    @app.get("/api/architect/v1/status")
+    def architect_status():
+        return architect_endpoint("status")
+
+    @app.get("/api/architect/v1/milestone")
+    def architect_milestone():
+        return architect_endpoint("milestone")
+
+    @app.get("/api/architect/v1/prompt")
+    def architect_prompt():
+        return architect_endpoint("prompt")
+
+    @app.get("/api/architect/v1/workflow")
+    def architect_workflow():
+        return architect_endpoint("workflow")
+
+    @app.get("/api/architect/v1/closeout")
+    def architect_closeout():
+        return architect_endpoint("closeout")
+
+    @app.get("/api/architect/v1/git")
+    def architect_git():
+        return architect_endpoint("git")
+
+    @app.get("/api/architect/v1/evidence")
+    def architect_evidence():
+        return architect_endpoint("evidence")
+
+    @app.get("/api/architect/v1/documents")
+    def architect_documents():
+        return architect_endpoint("documents")
+
+    @app.get("/api/architect/v1/documents/<role>")
+    def architect_document(role: str):
+        return architect_endpoint("documents", role=role)
+
+    @app.get("/api/architect/v1/review")
+    def architect_review():
+        return architect_endpoint("review")
 
     @app.get("/healthz")
     def health_check():

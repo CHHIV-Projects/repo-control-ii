@@ -116,6 +116,64 @@ Git evidence where appropriate; test outcomes remain labeled as reported
 unless independently verified. Packets are not saved as project artifacts and
 generation does not change milestone lifecycle, selection, or Git state.
 
+## Architect read-only API (M003.004)
+
+Repo Control exposes a versioned, provider-neutral, GET-only JSON contract for
+an Architect client to retrieve current repository evidence without copying a
+large handoff packet. The active repository and selected milestone come only
+from the server registry and external milestone-selection pointer; callers
+cannot supply repository or filesystem paths.
+
+The API is available beneath `/api/architect/v1`:
+
+| Endpoint | Result |
+|---|---|
+| `GET /status` | Active repository, registry generation, current selection, and lifecycle summary when selected. |
+| `GET /milestone` | Selected milestone identity, phase, waiting state, closeout/workflow status, binding lock-in, open conditions, and next authorized action. |
+| `GET /prompt` | Full selected authoritative prompt with source metadata. |
+| `GET /workflow` | Bounded recent event history, binding lock-ins, and unresolved conditions. |
+| `GET /closeout` | Closeout status and full bounded content when present. A missing closeout required by REVIEW is returned as an explicit contract state. |
+| `GET /git` | Deterministic local branch, HEAD, upstream, and bounded working-tree summary. |
+| `GET /evidence` | Bounded recorded test-result events, labeled as reported rather than independently verified. |
+| `GET /documents` | Configured governing-document roles and repository-relative paths with presence, safety, and size status. |
+| `GET /documents/{role}` | Full bounded content for one configured role; roles are allowlisted by the registry. |
+| `GET /review` | Bounded aggregate of milestone, workflow, Git, evidence, and configured-document metadata; large source content is not embedded. |
+
+Example local queries:
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/architect/v1/status
+curl -fsS 'http://127.0.0.1:8765/api/architect/v1/prompt?expected_repository_key=repo-control-ii&expected_generation=0&expected_milestone_id=M003.004'
+curl -fsS http://127.0.0.1:8765/api/architect/v1/documents/architecture
+curl -fsS http://127.0.0.1:8765/api/architect/v1/review
+```
+
+Responses use `application/json`, include `contract_version`, server-resolved
+repository and selection identity, source labels, and explicit null/status
+values. Follow-up requests may provide `expected_repository_key`,
+`expected_generation`, and `expected_milestone_id`; mismatches return HTTP 409
+with a stable JSON error object. The registry generation is process-local and
+increments when the active repository changes; it is not a durable registry
+revision. Other errors use JSON `{ "error": { "code": "...", "message": "..." } }`
+with an appropriate 4xx/5xx status. Responses are not cached.
+
+Each Markdown source is limited to 128 KB, workflow sidecars to 5 MB,
+event summaries to 30 events, Git paths to 40 per category, and each JSON
+response to 512 KB. Oversized authoritative content is rejected explicitly,
+never silently truncated. The aggregate omits prompt and governing-document
+contents by default. Git state uses local tracking refs only; API queries do
+not fetch, contact remotes, or run tests.
+
+Every Architect route is GET-only and read-only. GET access requires no CSRF
+token because these routes do not mutate state; cross-origin browser reads
+remain subject to the browser same-origin policy, and the API does not enable
+CORS. This is not independent caller authentication: the service trusts its
+existing loopback boundary and the accepted SSH local-tunnel path. Keep the
+systemd service bound to `127.0.0.1:8765`; do not expose it to a LAN or public
+network. Local processes/users able to reach that loopback service or
+authorized tunnel can read the selected project's exposed evidence. No
+authenticated role identity is asserted.
+
 Browser Git mutation boundary:
 
 - GET requests are read-only. Mutations require a CSRF-protected POST, a short-lived single-use confirmation token, and fresh Git-state validation.
