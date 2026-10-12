@@ -513,6 +513,29 @@ Recommended choice:
 
 If the question blocks work, it should be represented as a workflow event and may place the milestone in `WAITING`.
 
+PRE-IMPLEMENTATION REVIEW
+
+Review the milestone before coding for genuine blockers, ambiguities,
+conflicts, risks, or materially useful implementation insights.
+
+Do not ask a question merely to demonstrate that the prompt was reviewed.
+
+Do not restate or summarize the prompt unless the summary identifies
+a material issue.
+
+If there are no meaningful questions or insights, say so briefly
+and proceed.
+
+Raise a pre-coding question only when the answer could materially affect:
+- scope;
+- product behavior;
+- architecture;
+- authority;
+- risk;
+- implementation direction;
+- validation;
+- or the ability to proceed safely.
+
 ---
 
 # 17. Decision and Lock-In Rules
