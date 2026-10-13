@@ -4,11 +4,11 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; Workflow Orchestration active and partially implemented  
-**Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner, coding agents as implementers, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals  
-**Current workflow emphasis:** use the implemented milestone-selection, lifecycle, decision/event, and handoff-packet capabilities to reduce manual transport among Product Owner, Architect, and Coder while preserving explicit authority boundaries.
+**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
+**Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
+**Current workflow emphasis:** Standardize read-only Architect MCP access as the primary live evidence path (with manual review packets as fallback), maintain strict six-state lifecycle discipline, and reconcile all governing documents with the implemented system.
 
 ---
 
@@ -178,24 +178,26 @@ The Architect:
 
 The Architect should use current deterministic project evidence where available.
 
-Current transport capability:
+Standard live transport path:
+
+```text
+Architect (ChatGPT)
+→ queries Repo Control directly through read-only MCP tools
+  (repo_status, repo_milestone, repo_prompt, repo_workflow, repo_git, etc.)
+→ receives bounded current evidence deterministically
+→ reasons over live evidence
+```
+
+Operational fallback path:
 
 ```text
 Product Owner
 → generates Architect Review Packet in Repo Control
 → provides bounded packet to Architect
-→ Architect reviews current milestone evidence
+→ Architect reviews milestone evidence from packet
 ```
 
-Future direction:
-
-```text
-Architect
-→ queries Repo Control directly through controlled read-only tools
-→ receives bounded current evidence
-```
-
-The Architect should not rely on chat memory when current project documents, milestone artifacts, Git facts, or test evidence are available.
+The Architect should not rely on chat memory when current project documents, milestone artifacts, Git facts, or test evidence can be queried directly.
 
 ---
 
@@ -842,6 +844,8 @@ source references
 
 Reported test-result events are labeled as reported unless independently verified.
 
+While the persistent Secure MCP Tunnel (`repo_review`, `repo_milestone`, `repo_closeout`, `repo_git`, etc.) is now the standard live evidence retrieval path for ChatGPT Architect sessions, the Architect Review Packet remains an accepted and maintained fallback for offline review, portable export, or degraded network conditions.
+
 ---
 
 # 34. Packet Authority and Freshness
@@ -1016,7 +1020,24 @@ Closeout presence alone does not trigger review automatically.
 
 # 47. Step 12 — Architect Review
 
-Product Owner generates the Architect Review Packet.
+Standard path:
+
+```text
+Architect (ChatGPT) invokes read-only MCP tools:
+- repo_milestone / repo_workflow (phase, events, binding lock-ins)
+- repo_closeout (review implementation report)
+- repo_git (inspect working tree cleanliness, modified/untracked files, HEAD)
+- repo_evidence (inspect reported test outcomes)
+- repo_document (verify governing document compliance)
+- repo_review (compact aggregate summary)
+```
+
+Fallback path:
+
+```text
+Product Owner generates Architect Review Packet in Repo Control UI
+and pastes it into ChatGPT.
+```
 
 Architect reviews prompt, binding lock-ins, relevant events, closeout, Git evidence, test evidence, and governing context where useful.
 
@@ -1336,40 +1357,25 @@ current local Git evidence in review packet
 
 ---
 
-# 65. Current Manual Transport Still Remaining
+# 65. Operational Transport Model
 
-The Product Owner still currently performs the final transport step:
+The operational transport architecture now distinguishes Architect from Coder workflows:
 
-```text
-Repo Control generates Coder Packet
-→ Product Owner copies packet to coding agent
-
-Repo Control generates Architect Review Packet
-→ Product Owner copies packet to ChatGPT
-```
-
-This is an intentional transitional architecture.
-
-The Product Owner remains in the approval loop but should gradually leave the raw data-transport path.
+- **Architect (ChatGPT):** Uses the live, persistent Secure MCP Tunnel (`repo_status`, `repo_milestone`, `repo_prompt`, `repo_workflow`, `repo_closeout`, `repo_git`, `repo_evidence`, `repo_documents`, `repo_document`, `repo_review`). The Product Owner no longer copies review packets manually during normal connected sessions. Architect Review Packets remain available as an on-demand fallback.
+- **Coder (VS Code):** Directly consumes the active milestone prompt and governing documents from the local filesystem, or receives a generated Coder Handoff Packet. The Coder remains bound to read-only Git commands.
+- **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
 ---
 
 # 66. Near-Term Direction
 
-The next workflow integration step should focus on controlled read-only Architect access to Repo Control state.
+With read-only Architect MCP access operational, the next workflow enhancements focus on:
 
-Conceptually:
+1. **Reconciliation & Procedure:** Completing governing-document reconciliation (M003.007) and establishing reusable Agent Skills (R004) to standardize coding-agent behavior without prompt repetition.
+2. **Context & Packet Optimization:** Evaluating whether Coder Handoff Packets can be trimmed or made modular without losing authoritative instruction.
+3. **Phase-Aware Milestone UI:** Hardening the Milestone page controls based on operational usage (WORKFLOW-001).
 
-```text
-Product Owner asks Architect
-→ Architect queries Repo Control
-→ Repo Control returns selected milestone / prompt / workflow / closeout / Git evidence
-→ Architect reasons over bounded current evidence
-```
-
-Direct Coder submission and multi-agent writes remain later work.
-
-Before exposing remote/tool interfaces, authentication, authorization, rate limiting, audit, caller identity, and safe local access must be considered explicitly.
+Direct Coder tool write access and multi-agent coordination remain deliberately deferred.
 
 ---
 
@@ -1429,29 +1435,32 @@ The workflow is improving when:
 
 # 69. Current Baseline Statement
 
-Repo Control II is no longer in the clean-restart or workflow-design-only phase.
+Repo Control II has completed the foundational Workflow Orchestration arc.
 
 The current operational baseline includes:
 
 ```text
 Product Owner-directed milestone workflow
-ChatGPT as Architect
-VS Code coding agents as Coder
-Linux authoritative repositories
-GitHub remote repositories
-Product Owner-owned Git mutations
-browser-based Git Control
-explicit repository selection
-explicit milestone selection
-canonical milestone naming for new work
-durable workflow lifecycle/events
-Coder handoff packets
-Architect review packets
-manual copy of generated packets still present
-Agent Skills not yet implemented
-repository intelligence not yet integrated
-direct Architect tools not yet implemented
-direct Coder tools not yet implemented
+ChatGPT as Architect querying Repo Control via persistent Secure MCP Tunnel
+VS Code coding agents as Coder under strict read-only Git discipline
+Linux authoritative repositories on henderson-server1
+GitHub remote repositories with dedicated Deploy Key authentication
+Product Owner-owned Git mutations via guarded Repo Control UI
+browser-based Git Control (stage, unstage, restore, commit, branch, push)
+explicit multi-repository selection allowlist
+explicit active-milestone selection pointer (.repo-control/selected-milestone.json)
+recursive milestone prompt discovery beneath configured milestone_root
+canonical milestone naming (Mxxx.xxx[_name]_prompt.md)
+durable workflow lifecycle and event ledger (*_workflow.md)
+accepted six-state lifecycle (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLOSED)
+on-demand Coder handoff packets and Architect review packets
+read-only Architect JSON API on loopback (/api/architect/v1/*)
+persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
+10 read-only MCP tools providing direct Architect evidence retrieval
+manual review packets retained as operational fallback
+Agent Skills not yet implemented (planned for R004)
+repository intelligence not yet integrated (planned for R005)
+direct Coder write tools intentionally omitted
 ```
 
-The next milestones should continue reducing manual transport while preserving the Product Owner as the authority for consequential decisions.
+The next milestones focus on encoding reusable Agent Skills (R004) and evaluating repository intelligence (R005) while preserving the Product Owner as the sole authority for consequential decisions.

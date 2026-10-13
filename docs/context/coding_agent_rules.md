@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Git Control complete; Workflow Orchestration active and partially implemented  
+**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  

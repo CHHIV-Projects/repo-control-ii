@@ -208,6 +208,39 @@ To configure and enable it:
    sudo systemctl enable --now repo-control-architect-tunnel.service
    ```
 
+### Operator Guidance and Health Verification
+
+The persistent tunnel enables ChatGPT to retrieve authoritative repository and milestone evidence directly without manual copy/paste.
+
+**Health Verification Commands:**
+
+```bash
+# Verify Repo Control service is active on loopback
+systemctl status repo-control.service
+curl -fsS http://127.0.0.1:8765/api/architect/v1/status
+
+# Verify Secure MCP Tunnel service is active
+systemctl status repo-control-architect-tunnel.service
+curl -fsS http://127.0.0.1:8080/healthz
+
+# Inspect tunnel client service logs
+journalctl -u repo-control-architect-tunnel.service -n 50 --no-pager
+```
+
+**Standard Workflow Pattern:**
+1. **Planning & Prompt Review:** Architect invokes `repo_status`, `repo_prompt`, and `repo_document` to inspect active state and governing context.
+2. **Implementation Monitoring:** Product Owner marks milestone `READY` then `IN_PROGRESS` in Repo Control UI. Coder works under strict read-only Git discipline.
+3. **Closeout Review:** When implementation finishes and closeout is written, Architect invokes `repo_review`, `repo_milestone`, `repo_closeout`, and `repo_git` to assess completion and Git cleanliness.
+4. **Acceptance & Git Action:** Architect advises the Product Owner. Product Owner reviews, performs Git staging/commit/push via Repo Control UI, and closes the milestone (`REVIEW` → `CLOSED`).
+
+**Fallback Procedure:**
+If the MCP tunnel is interrupted, degraded, or offline:
+1. Open Repo Control UI at `http://127.0.0.1:8765`.
+2. Navigate to the **Milestone** page for the active milestone.
+3. Click **Generate Architect Review Packet**.
+4. Copy and paste the resulting bounded text packet directly into ChatGPT.
+5. All milestone data and Git evidence remain fully available for review.
+
 
 Every Architect route is GET-only and read-only. GET access requires no CSRF
 token because these routes do not mutate state; cross-origin browser reads

@@ -4,12 +4,12 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; Workflow Orchestration next  
-**Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
-**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current branch:** `main`  
-**Current repository state:** Active, version-controlled Repo Control II repository with the initial Git Control arc complete and operationally accepted  
-**Current working emphasis:** preserve the accepted Git Control foundation and begin the next major arc focused on workflow orchestration, milestone-state visibility, and reduction of manual handoff between Product Owner, Architect, coding agents, repository state, tests, and Git.
+**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
+**Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
+**Current branch:** `main`
+**Current repository state:** Active, version-controlled Repo Control II repository with Git Control complete and Workflow Orchestration operationally established through persistent read-only Architect MCP access
+**Current working emphasis:** Reconcile governing context, architecture, workflow, rules, and parking-lot documents with the implemented M003.001–M003.006 reality; standardize read-only Architect MCP tunnel interaction with fallback to manual packets; and prepare for the next capability arcs without weakening safety or Product Owner control.
 
 ---
 
@@ -383,7 +383,7 @@ Future Git work should be incremental and driven by actual use.
 
 ## 7.2 Workflow Orchestration
 
-**Status: next major arc.**
+**Status: core capabilities implemented and operationally accepted through M003.006; governing document reconciliation active in M003.007.**
 
 Purpose:
 
@@ -392,7 +392,7 @@ Coordinate trusted project state between Product Owner,
 Architect, Coder, repository, tests, and Git.
 ```
 
-This is expected to become Repo Control II's most distinctive custom capability.
+This is Repo Control II's core coordination capability.
 
 A milestone is a **bounded work container**, not a single prompt-response transaction.
 
@@ -426,25 +426,25 @@ A new or separate milestone should normally be created when a discovered issue m
 - implementation direction;
 - validation burden.
 
-Candidate high-level workflow states remain:
+The accepted, implemented six-state lifecycle model is:
 
 ```text
 PLANNING
-→ READY_FOR_CODER
-→ CODING
-      ↔ WAITING_FOR_CLARIFICATION
-      ↔ ESCALATION_REQUIRED
-      ↔ BLOCKED
-      ↔ VALIDATING
-→ READY_FOR_ARCHITECT_REVIEW
-→ APPROVED
-→ READY_FOR_GIT
+→ READY
+→ IN_PROGRESS
+      ↔ WAITING
+→ REVIEW
 → CLOSED
 ```
 
-The exact state model remains subject to design and testing.
+Key architectural foundations established in this arc include:
 
-The next arc should begin with architecture reconnaissance rather than immediate automation.
+- recursive discovery of milestone prompt artifacts beneath configured repository `milestone_root`;
+- external active milestone selection pointer (`.repo-control/selected-milestone.json`) outside repository content;
+- human-readable chronological workflow sidecars (`*_workflow.md`) recording lifecycle transitions, binding decisions, and open conditions;
+- on-demand Coder and Architect Review handoff packets;
+- provider-neutral, read-only Architect JSON API on loopback (`/api/architect/v1/*`);
+- persistent, read-only Architect Secure MCP Tunnel (`repoctl mcp-architect` via OpenAI `tunnel-client` daemon, systemd unit `repo-control-architect-tunnel.service`).
 
 ## 7.3 Agent Procedure
 
@@ -573,19 +573,24 @@ Architect responsibilities include:
 - implementation acceptance guidance;
 - next-milestone planning.
 
-The current preferred integration direction is to keep the existing ChatGPT Architect experience while allowing ChatGPT to query controlled Repo Control tools.
-
-Conceptually:
+The accepted, operational integration architecture provides this capability through the Secure MCP Tunnel (M003.006):
 
 ```text
-Product Owner asks Architect
+Product Owner asks Architect (ChatGPT)
         ↓
-Architect invokes Repo Control tools
+Architect invokes Repo Control MCP tools
+(repo_status, repo_milestone, repo_prompt, repo_workflow, repo_git, etc.)
         ↓
-Repo Control returns deterministic project evidence
+Secure MCP Tunnel (tunnel-client daemon + repoctl mcp-architect)
+        ↓
+Repo Control loopback API (http://127.0.0.1:8765/api/architect/v1/*)
+        ↓
+Deterministic project/milestone/Git evidence returned to Architect
         ↓
 Architect reasons over bounded evidence
 ```
+
+The Architect remains in ChatGPT without requiring manual copy/paste of repository state, prompt files, or Git status. In offline or degraded tunnel situations, the generated Architect Review handoff packet serves as an accepted fallback.
 
 Repo Control does not need to replace the ChatGPT browser experience.
 
@@ -690,9 +695,9 @@ This principle supports reliability, explainability, context efficiency, repeata
 
 ---
 
-# 10. Current Manual Workflow
+# 10. Historical Manual Workflow
 
-The current working pattern across projects remains approximately:
+The baseline manual working pattern across earlier projects was:
 
 ```text
 1. Product Owner discusses milestone with ChatGPT / Architect.
@@ -715,62 +720,65 @@ The current working pattern across projects remains approximately:
    commit, branch, fetch, update, and push operations.
 ```
 
-The workflow works, but the Product Owner still acts as the transport mechanism between several tools.
+While functional, this model placed the entire state-transfer and copy/paste burden onto the Product Owner.
 
-The next major arc should preserve deliberate review gates while reducing that manual transport.
+The M003 Workflow Orchestration arc was created to replace manual copy/paste with controlled tool access while preserving deliberate Product Owner review gates.
 
 ---
 
-# 11. Target Workflow Direction
+# 11. Operational Workflow Model (M003 Baseline)
 
-The intended future pattern remains:
+With the completion of M003.001–M003.006, the standard operational workflow is:
 
 ```text
+Product Owner & Architect (ChatGPT)
+→ discuss milestone objectives
+→ Architect queries Repo Control via MCP tools (repo_status, repo_documents, repo_git)
+→ Product Owner commits approved prompt under docs/milestones/
+→ Product Owner selects milestone in Repo Control UI (PLANNING phase)
+
 Product Owner
-→ defines or discusses milestone with Architect
+→ reviews prompt and lock-ins in Repo Control UI
+→ explicitly confirms transition: PLANNING → READY
 
-Architect
-→ queries Repo Control for current repository/project facts
-→ creates approved structured milestone artifact
-
-Repo Control
-→ stores milestone in correct project location
-→ exposes active milestone state to Coder
-
-Coder
-→ consumes milestone + standing skills
-→ performs preflight
-→ begins bounded implementation
+Coder (VS Code / Coding Agent)
+→ preflight inspection (read-only git status, diff, log)
+→ reviews prompt, coding_agent_rules.md, and project architecture (or Coder Handoff Packet)
+→ Product Owner records transition: READY → IN_PROGRESS
+→ performs bounded implementation and tests (strictly no Git mutations)
 
     ↕ iterative milestone loop
 
     question / clarification
     stop condition
-    escalation
-    unexpected repository reality
-    bug discovery
-    test failure
-    Architect decision
-    Product Owner decision where required
-    prompt addendum / clarification / final lock-in
+    escalation / unexpected repository reality
+    bug discovery / test failure
+    recorded in milestone workflow sidecar (*_workflow.md)
+    optional WAITING phase during blocking questions/decisions
+    prompt addendum / clarification / binding lock-in
+    resumed implementation (IN_PROGRESS)
 
-→ resumes implementation when authorized
-→ validates
-→ writes structured closeout/report
+Coder
+→ completes validation and executes test suite
+→ writes structured closeout artifact (M<arc>.<seq>_<name>_closeout.md)
+→ reports final read-only Git status
+→ Product Owner records transition: IN_PROGRESS → REVIEW
 
-Repo Control
-→ preserves the milestone decision trail
-→ records ready-for-review state
-→ exposes implementation/test/Git evidence
-
-Architect
-→ reviews bounded evidence through Repo Control tools
-→ recommends acceptance, bounded correction, or separate follow-up
+Architect (ChatGPT)
+→ queries Repo Control via MCP tools:
+  * repo_milestone / repo_workflow (lifecycle, events, binding lock-ins)
+  * repo_closeout (implementation report)
+  * repo_evidence (recorded test outcomes)
+  * repo_git (cleanliness, modified/untracked files, upstream status)
+  * repo_document (governing document alignment)
+  (Fallback: Product Owner pastes Architect Review Packet if tunnel unavailable)
+→ evaluates implementation against prompt, architecture, and rules
+→ recommends acceptance, bounded correction, or follow-up milestone
 
 Product Owner
-→ approves
-→ performs Git mutation through Repo Control or manual Git
-→ closes milestone
+→ reviews Architect recommendation
+→ performs guarded Git staging, commit, and push via Repo Control UI (or manual Git)
+→ explicitly records acceptance and transition: REVIEW → CLOSED
 ```
 
 The iterative exchange between prompt and closeout is intentional.
@@ -978,24 +986,29 @@ The current high-level roadmap is:
 ```text
 R001 — Baseline / Inherited Code Reconnaissance              COMPLETE
 R002 — Git Control                                           CLOSED
-R003 — Workflow Orchestration                                NEXT
+R003 / M003 — Workflow Orchestration                         ACTIVE CLOSEOUT
+  ├─ M003.001: Architecture Reconnaissance & Contract Design  COMPLETE
+  ├─ M003.002: Milestone Discovery & Lifecycle Engine         COMPLETE
+  ├─ M003.003: Coder & Architect Handoff Packets              COMPLETE
+  ├─ M003.004: Read-Only Architect API Contract               COMPLETE
+  ├─ M003.005: Transport Evaluation & Security Hardening      COMPLETE
+  ├─ M003.006: Secure MCP Tunnel & Persistent Runtime         ACCEPTED
+  └─ M003.007: MCP Integration & Governing Reconciliation     ACTIVE
 R004 — Agent Procedure / Skills                              PLANNED
 R005 — Repository Intelligence Evaluation / Integration     PLANNED
-R006 — Architect / Coder Workflow Integration               LATER
+R006 — Deeper Architect / Coder Workflow Integration         LATER
 R007 — Model Gateway Evaluation / Routing                   LATER
 ```
 
-The exact later milestone numbering may evolve as reconnaissance clarifies scope.
-
-The preferred capability order is now:
+The preferred capability order is:
 
 ```text
 1. Git Control                         COMPLETE
-2. Workflow Orchestration              NEXT
-3. Agent Procedure
-4. Repository Intelligence
-5. Deeper Architect / Coder Integration
-6. Model Gateway
+2. Workflow Orchestration              ACTIVE CLOSEOUT (M003.007)
+3. Agent Procedure / Skills            PLANNED
+4. Repository Intelligence             PLANNED
+5. Deeper Architect / Coder Integration LATER
+6. Model Gateway                       LATER
 ```
 
 Rationale:
@@ -1005,7 +1018,7 @@ Git Control
 → immediate proven value and now accepted operational foundation
 
 Workflow Orchestration
-→ directly attacks the current copy/paste and state-transfer burden
+→ attacks copy/paste and state transfer; Architect MCP tunnel operational
 
 Agent Procedure
 → reduces repeated prompting and coding-agent drift
@@ -1024,101 +1037,69 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The immediate next step is:
+The immediate work is:
 
 ```text
-R003.00 — Workflow Orchestration Architecture Reconnaissance
+M003.007 — Architect MCP Workflow Integration and Governing-Document Reconciliation
 ```
 
-The reconnaissance should determine:
+Objectives:
 
-- what parts of the current milestone workflow are deterministic versus AI-driven;
-- what current milestone state can be inferred from repository artifacts and Git;
-- how Repo Control should identify the active milestone;
-- what minimum workflow-state model is useful;
-- how milestone prompts, addenda, closeouts, questions, and decisions should be represented;
-- whether tracked Markdown alone is sufficient initially;
-- whether lightweight operational state is required;
-- how to expose active milestone state to the Product Owner;
-- how to reduce copy/paste without coupling Repo Control to one coding agent or AI provider;
-- which transitions must remain explicitly Product Owner-controlled;
-- what the smallest useful implementation slice should be after reconnaissance.
-
-R003.00 should be reconnaissance first, not implementation-first.
+- reconcile the five governing documents with the implemented M003.001–M003.006 reality;
+- formalize the read-only Architect MCP tunnel as the standard live evidence retrieval mechanism while preserving manual review packets as an accepted fallback;
+- standardize the accepted six-state milestone lifecycle model (`PLANNING`, `READY`, `IN_PROGRESS`, `WAITING`, `REVIEW`, `CLOSED`);
+- update operator guidance and close out the M003 Workflow Orchestration arc;
+- prepare for R004 (Agent Procedure / Skills).
 
 ---
 
-# 20. Current Open Questions
+# 20. Resolved and Open Questions
 
-The following remain intentionally unresolved.
+## 20.1 Workflow State Model (Resolved)
 
-## 20.1 Workflow State Model
-
-Determine the minimum useful workflow states and transitions.
-
-Candidate states include:
+The accepted six-state lifecycle model is:
 
 ```text
 PLANNING
-READY_FOR_CODER
-CODING
-WAITING_FOR_CLARIFICATION
-ESCALATION_REQUIRED
-BLOCKED
-VALIDATING
-READY_FOR_ARCHITECT_REVIEW
-APPROVED
-READY_FOR_GIT
-CLOSED
+→ READY
+→ IN_PROGRESS
+      ↔ WAITING
+→ REVIEW
+→ CLOSED
 ```
 
-The system should avoid creating workflow ceremony that does not improve the actual Product Owner experience.
+Transitions are recorded in the per-milestone workflow sidecar. Unresolved blocking conditions gate transitions into READY and REVIEW. Product Owner approval remains required for major state changes.
 
-## 20.2 Workflow State Persistence
+## 20.2 Workflow State Persistence (Resolved)
 
-Determine where milestone/workflow state should live:
+Milestone workflow state is persisted in tracked chronological Markdown sidecars (`*_workflow.md`) beside each milestone prompt. The active milestone pointer is stored externally in `.repo-control/selected-milestone.json` outside repository source files.
 
-- tracked Markdown;
-- lightweight structured local state;
-- database;
-- combination of tracked artifacts and operational state.
+## 20.3 ChatGPT / Architect Integration (Resolved)
 
-Prefer the simplest design that preserves recoverability and transparency.
+Architect integration is operational via the Secure MCP Tunnel (M003.006):
 
-## 20.3 ChatGPT Integration
+- OpenAI `tunnel-client` daemon running as persistent systemd service `repo-control-architect-tunnel.service`;
+- custom stdio JSON-RPC 2.0 adapter `repoctl mcp-architect`;
+- 10 read-only tools mapped to Repo Control's loopback GET endpoints (`/api/architect/v1/*`);
+- Repo Control strictly bound to `127.0.0.1:8765` with zero LAN or public exposure;
+- runtime credentials stored securely outside the repository under `~/.config/repo-control/tunnel.env` (mode 0600);
+- manual Architect Review Packets retained as an operational fallback.
 
-Preferred initial direction:
+## 20.4 Coder Integration (Active Direction)
 
-```text
-keep ChatGPT browser as Architect
-+
-expose controlled Repo Control tools to ChatGPT
-```
+Coding agents currently consume the active milestone prompt, `coding_agent_rules.md`, and relevant architecture documents directly or via generated Coder Handoff Packets. Coding agents remain strictly forbidden from executing Git mutations. Next arc (R004) will evaluate modular Agent Skills.
 
-Open questions include integration mechanism, authentication, local-server accessibility, tool security boundary, project selection, and safe exposure of local working-tree information.
+## 20.5 Repository Intelligence Engine (Future Evaluation)
 
-A separate Repo Control-hosted Architect UI remains a possible later architecture, not the current default.
+Evaluating Graphify, DevLens, or other suitable tools remains planned for R005.
 
-## 20.4 Coder Integration
+## 20.6 Agent Skills (Next Arc)
 
-Determine how coding agents should receive:
+Designing reusable, progressively disclosed Agent Skills for coding agents is planned for R004.
 
-- active milestone;
-- standing skills;
-- repository context;
-- current workflow state.
+## 20.7 Model Gateway (Deferred)
 
-The system should ideally support more than one coding agent.
-
-## 20.5 Repository Intelligence Engine
-
-Benchmark Graphify, DevLens, or other suitable tools on a real repository.
-
-Determine installation complexity, language coverage, graph fidelity, working-tree support, queryability, incremental refresh behavior, tool interface quality, performance, licensing implications, and usefulness to both Architect and Coder.
-
-## 20.6 Agent Skills
-
-Determine how much standing procedure should move into reusable skills and how those skills should be discovered or supplied to coding agents.
+Model routing via LiteLLM or OmniRoute remains deferred until workflow and procedure layers are mature.
 
 ## 20.7 Model Gateway
 
@@ -1196,25 +1177,28 @@ A feature that does not improve that workflow, reduce risk, improve understandin
 
 # 23. Current Baseline Statement
 
-Repo Control II is now beyond the clean-foundation phase.
+Repo Control II is now beyond the initial workflow-foundation phase.
 
 The project currently has:
 
 ```text
 an authoritative Linux-hosted Git repository;
 a working GitHub remote using dedicated SSH authentication;
-accepted governing context documents;
-an always-on systemd service;
+accepted governing context and architecture documents;
+an always-on systemd service (repo-control.service) bound to 127.0.0.1:8765;
 loopback-only browser access through an automatic Windows SSH tunnel;
 a portable Windows launcher package;
 a server-controlled multi-repository allowlist;
 an accepted browser-based routine Git control surface;
-guarded local Git mutations;
-basic branch and remote operations;
-verified noninteractive GitHub Push;
-Product Owner operational acceptance of the R002 Git Control arc.
+guarded local Git mutations and verified noninteractive GitHub Push;
+Product Owner operational acceptance of the R002 Git Control arc;
+recursive milestone prompt discovery and external selection pointer;
+chronological tracked workflow sidecars with an accepted six-state lifecycle engine;
+on-demand generation of Coder and Architect handoff packets;
+a versioned, provider-neutral, read-only Architect JSON API on loopback;
+a persistent, read-only Architect Secure MCP Tunnel service (repo-control-architect-tunnel.service);
+verified live read-only Architect operations from ChatGPT with zero repository mutations;
+Product Owner operational acceptance of the M003.001–M003.006 milestones.
 ```
 
-The immediate objective is no longer to prove Git Control.
-
-The immediate objective is to use that accepted foundation to design the smallest useful Workflow Orchestration capability that reduces manual state transfer without weakening Product Owner authority or prematurely automating the entire development process.
+The immediate objective is to complete the M003.007 reconciliation of governing documents, solidify the Architect MCP interaction as the standard workflow pattern, and transition smoothly into the R004 Agent Procedure arc.

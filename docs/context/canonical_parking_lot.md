@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; Workflow Orchestration active  
+**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Two active deferred workflow/UX items
+**Current status:** Active deferred workflow/UX and packet-optimization items refined for post-M003 baseline
 
 ---
 
@@ -594,50 +594,43 @@ Prefer improving the UI around the existing event model rather than changing lif
 
 ### Status
 
-Deferred — Near-Term Candidate
+Deferred — Near-Term Candidate (Partially Superseded for Live Architect by MCP Tunnel)
 
 ### Summary
 
-Reduce the size and repeated standing-document content in Coder and Architect Review Packets while preserving authoritative instructions, binding decisions, deterministic evidence, and explicit source references.
+Optimize context size and avoid repeating standing documents in Coder Handoff Packets and fallback Architect Review Packets while preserving authoritative instructions, binding decisions, deterministic evidence, and explicit source references.
 
-M003.003 proved the packet transport model, but live packets can be several thousand lines because they may include full milestone prompts and complete standing documents.
+Note: With the operational acceptance of M003.006 (Secure MCP Tunnel), live Architect review sessions no longer rely on large monolithic review packets; ChatGPT queries individual endpoints on demand. However, manual Architect Review Packets remain supported as an operational fallback, and Coder Handoff Packets still bundle full prompts and standing rules.
 
 ### Why It Is Parked
 
 The initial implementation deliberately favored correctness and completeness over aggressive context reduction.
 
-There is not yet enough real usage evidence to know which standing material can safely be omitted, summarized, referenced, or progressively disclosed for each packet type.
-
-Premature optimization could remove important instructions or create a second interpretation layer.
+With Architect live evidence retrieval now handled primarily via the MCP tunnel, the context burden is shifted primarily to Coder handoffs. Context optimization for Coder packets is best evaluated alongside the upcoming R004 Agent Skills work, which may provide a cleaner progressive disclosure model for standing procedure.
 
 ### Trigger for Reconsideration
 
-Revisit after several real Coder and Architect packet uses have established:
+Revisit during or following R004 (Agent Skills) to evaluate:
 
-- which sections are consistently useful;
-- which standing rules are unnecessarily repeated;
-- which sources can be referenced rather than embedded;
-- where full authoritative wording remains necessary;
-- whether packet size causes material AI/context inefficiency;
-- whether Agent Skills or direct read-only tools change the context-delivery model.
+- whether Agent Skills replace standing document embedding in Coder packets;
+- which prompt sections and rules are essential in Coder packets versus referenceable;
+- whether fallback Architect Review Packets need a compact mode;
+- token-efficiency metrics and context window limits for coding agents.
 
 ### Likely Scope
 
 ```text
-handoff packet assembly policy
-Coder vs Architect packet inclusion rules
-progressive disclosure
+Coder handoff packet assembly policy
+fallback Architect packet inclusion rules
+progressive disclosure via Agent Skills
 source-reference strategy
-standing-document excerpts or role-specific subsets
 packet size and token-efficiency metrics
 optional compact/full packet modes if justified
 ```
 
 ### Dependencies
 
-Useful evidence should come from real use of M003.003 packets.
-
-Future Agent Skills and direct Architect/Coder tool access may materially change the optimal packet design and should be considered before locking a more complex packet-selection model.
+Useful evidence should come from R004 Agent Skills design and real Coder execution experience.
 
 ### Notes
 
