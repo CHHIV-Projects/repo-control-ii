@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (M009 loopback only)")
     web_parser.add_argument("--port", default=8765, type=int, help="Bind port")
 
+    mcp_parser = subparsers.add_parser("mcp-architect", help="Start read-only Architect MCP stdio adapter")
+    mcp_parser.add_argument(
+        "--repo-control-url",
+        default="http://127.0.0.1:8765",
+        help="Base URL for Repo Control web server (default: http://127.0.0.1:8765)",
+    )
+
     milestone_parser = subparsers.add_parser("milestone", help="Milestone workflow commands")
     milestone_subparsers = milestone_parser.add_subparsers(dest="milestone_command", required=True)
     milestone_status_parser = milestone_subparsers.add_parser("status", help="Report deterministic read-only Git workflow state")
@@ -216,6 +223,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"web failed: {exc}", file=sys.stderr)
             return 1
         return 0
+
+    if args.command == "mcp-architect":
+        from .mcp.architect_adapter import serve_stdio
+
+        try:
+            serve_stdio(repo_control_url=args.repo_control_url)
+            return 0
+        except Exception as exc:
+            print(f"mcp-architect failed: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "milestone" and args.milestone_command == "status":
         repository_path = args.repository if args.repository else str(Path.cwd())

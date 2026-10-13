@@ -164,6 +164,51 @@ never silently truncated. The aggregate omits prompt and governing-document
 contents by default. Git state uses local tracking refs only; API queries do
 not fetch, contact remotes, or run tests.
 
+## Architect Secure MCP Tunnel (M003.006)
+
+Repo Control provides a read-only Model Context Protocol (MCP) stdio adapter that integrates with OpenAI's `tunnel-client` daemon, enabling ChatGPT (as Architect) to query Repo Control securely without public ingress or port forwarding.
+
+Repo Control remains strictly bound to `127.0.0.1:8765`. The adapter runs locally over stdio and maps MCP tool calls strictly to loopback HTTP GET endpoints:
+
+| Tool | Mapped Endpoint | Purpose |
+|---|---|---|
+| `repo_status` | `GET /api/architect/v1/status` | Read-only overview of active repository and milestone status |
+| `repo_milestone` | `GET /api/architect/v1/milestone` | Milestone lifecycle, phase, prompt, and closeout status |
+| `repo_prompt` | `GET /api/architect/v1/prompt` | Active milestone prompt text and metadata |
+| `repo_workflow` | `GET /api/architect/v1/workflow` | Chronological workflow lifecycle events and open conditions |
+| `repo_closeout` | `GET /api/architect/v1/closeout` | Milestone closeout report content or status |
+| `repo_git` | `GET /api/architect/v1/git` | Read-only Git branch, HEAD, and working-tree status |
+| `repo_evidence` | `GET /api/architect/v1/evidence` | Recorded test results and binding verification items |
+| `repo_documents` | `GET /api/architect/v1/documents` | List registered governing documents |
+| `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
+| `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
+
+### Running the Adapter
+
+```bash
+repoctl mcp-architect [--repo-control-url http://127.0.0.1:8765]
+```
+
+### Systemd Service Setup
+
+A systemd unit is provided at `ops/systemd/repo-control-architect-tunnel.service`.
+To configure and enable it:
+
+1. Copy the example environment file outside the repository:
+   ```bash
+   mkdir -p ~/.config/repo-control
+   cp ops/systemd/architect-tunnel.env.example ~/.config/repo-control/tunnel.env
+   chmod 600 ~/.config/repo-control/tunnel.env
+   ```
+2. Populate `CONTROL_PLANE_API_KEY` (restricted runtime key with Tunnels Read+Use permissions) and `CONTROL_PLANE_TUNNEL_ID` in `~/.config/repo-control/tunnel.env`.
+3. Install and start the service:
+   ```bash
+   sudo cp ops/systemd/repo-control-architect-tunnel.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now repo-control-architect-tunnel.service
+   ```
+
+
 Every Architect route is GET-only and read-only. GET access requires no CSRF
 token because these routes do not mutate state; cross-origin browser reads
 remain subject to the browser same-origin policy, and the API does not enable

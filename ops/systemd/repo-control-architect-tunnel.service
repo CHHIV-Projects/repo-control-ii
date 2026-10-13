@@ -1,0 +1,23 @@
+[Unit]
+Description=Repo Control Architect Secure MCP Tunnel service
+After=network.target repo-control.service
+Wants=repo-control.service
+
+[Service]
+Type=simple
+User=chuck
+WorkingDirectory=/home/chuck/projects/repo-control-ii
+EnvironmentFile=-/etc/repo-control/architect-tunnel.env
+EnvironmentFile=-/home/chuck/.config/repo-control/tunnel.env
+ExecStart=/home/chuck/.local/bin/tunnel-client run \
+  --control-plane.api-key=env:CONTROL_PLANE_API_KEY \
+  --control-plane.tunnel-id=${CONTROL_PLANE_TUNNEL_ID} \
+  --mcp.command "/home/chuck/projects/repo-control-ii/.venv/bin/repoctl mcp-architect --repo-control-url http://127.0.0.1:8765" \
+  --health.listen-addr 127.0.0.1:8080
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
