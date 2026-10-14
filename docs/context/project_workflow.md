@@ -205,22 +205,40 @@ The Architect should not rely on chat memory when current project documents, mil
 
 The Coder:
 
-- reads the active milestone;
-- reads the current Coder Packet when provided;
+- reads the active milestone and verifies implementation authorization directly via `repoctl coder-context` or `repoctl coder-status`;
+- reads the current Coder Packet when provided as an export/fallback;
 - follows standing coding-agent rules;
 - performs read-only Git/repository preflight;
 - confirms repository and branch;
 - performs reconnaissance when requested;
 - inspects targeted code;
 - implements approved scope;
-- runs required validation;
-- asks focused questions when genuinely blocked;
+- runs required validation and records test results via `repoctl coder-test`;
+- asks focused questions or records blockers via `repoctl coder-question`;
 - stops when a stop condition is reached;
 - escalates architecture, authority, safety, or scope conflicts;
-- records bug discoveries and test failures;
-- resumes only when sufficient clarification or approval is available;
-- prepares one closeout;
+- records bug discoveries via `repoctl coder-bug`;
+- resumes only when sufficient clarification or approval is available and the workflow is resumed;
+- prepares one closeout and submits it for review via `repoctl coder-closeout`;
 - reports final read-only Git state.
+
+Standard live transport path (co-located Coder):
+
+```text
+Coder
+→ queries Repo Control directly for active milestone, prompt, and authorization via `repoctl coder-context`
+→ checks status via `repoctl coder-status`
+→ submits bounded events via `coder-question`, `coder-bug`, `coder-test`, and `coder-closeout`
+```
+
+Operational fallback path (disconnected or external Coder):
+
+```text
+Product Owner
+→ generates Coder Handoff Packet in Repo Control
+→ provides bounded packet to Coder
+→ Coder works from packet instructions
+```
 
 The Coder does not:
 
@@ -949,22 +967,29 @@ Repo Control records the approval event in the milestone workflow sidecar.
 
 ---
 
-# 40. Step 5 — Generate Coder Handoff
+# 40. Step 5 — Coder Handoff and Interface
 
-Current state:
+Primary standard path (co-located Coder):
+
+```text
+Coder runs `repoctl coder-context` directly
+→ verifies implementation authorization
+→ receives authoritative prompt, standing references, and binding lock-ins
+```
+
+Secondary / fallback path (disconnected or external Coder):
 
 ```text
 Repo Control assembles Coder Packet
 → Product Owner copies packet to Coder
 ```
 
-Future state:
-
-```text
-Coder queries Repo Control directly
-```
-
-Direct Coder tool integration is not yet implemented.
+Direct Coder local CLI access is implemented in M003.009 for co-located agents on `henderson-server1`:
+- local co-located Coders use `repoctl coder-context` and `repoctl coder-status` for direct context and status retrieval;
+- bounded Coder workflow submission commands are implemented (`coder-question`, `coder-bug`, `coder-test`, `coder-closeout`);
+- Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use;
+- Architect continues using read-only MCP via the Secure MCP Tunnel;
+- Product Owner retains sole authority for prompt approvals, lock-in approvals, workflow resume, acceptance, milestone closure, and all Git mutations.
 
 ---
 
@@ -1387,20 +1412,20 @@ current local Git evidence in review packet
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
 - **Architect (ChatGPT):** Uses the live, persistent Secure MCP Tunnel (`repo_status`, `repo_milestone`, `repo_prompt`, `repo_workflow`, `repo_closeout`, `repo_git`, `repo_evidence`, `repo_documents`, `repo_document`, `repo_review`). The Product Owner no longer copies review packets manually during normal connected sessions. Architect Review Packets remain available as an on-demand fallback.
-- **Coder (VS Code):** Directly consumes the active milestone prompt and governing documents from the local filesystem, or receives a generated Coder Handoff Packet. The Coder remains bound to read-only Git commands.
+- **Coder (VS Code):** Co-located Coders interact directly with Repo Control via the local CLI: retrieving authoritative prompt, standing references, and authorization checks via `repoctl coder-context` and `repoctl coder-status`, and submitting bounded lifecycle events via `repoctl coder-question`, `repoctl coder-bug`, `repoctl coder-test`, and `repoctl coder-closeout`. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
 ---
 
 # 66. Near-Term Direction
 
-With read-only Architect MCP access operational, the next workflow enhancements focus on:
+With read-only Architect MCP access and local Coder CLI workflow interfaces operational, the next workflow enhancements focus on:
 
 1. **Reconciliation & Procedure:** Completing governing-document reconciliation (M003.007) and establishing reusable Agent Skills (R004) to standardize coding-agent behavior without prompt repetition.
 2. **Context & Packet Optimization:** Evaluating whether Coder Handoff Packets can be trimmed or made modular without losing authoritative instruction.
 3. **Phase-Aware Milestone UI:** Hardening the Milestone page controls based on operational usage (WORKFLOW-001).
 
-Direct Coder tool write access and multi-agent coordination remain deliberately deferred.
+Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
 ---
 
@@ -1485,7 +1510,8 @@ persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
 manual review packets retained as operational fallback
 Agent Skills not yet implemented (planned for R004)
 repository intelligence not yet integrated (planned for R005)
-direct Coder write tools intentionally omitted
+local Coder CLI workflow interface and bounded event submission implemented (M003.009)
+remote Coder MCP transport deferred (WORKFLOW-003)
 ```
 
 The next milestones focus on encoding reusable Agent Skills (R004) and evaluating repository intelligence (R005) while preserving the Product Owner as the sole authority for consequential decisions.
