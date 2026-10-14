@@ -120,25 +120,26 @@ Do not assume local tracking refs have been refreshed from the remote unless an 
 
 # 4. Repo Control Workflow Context
 
-Repo Control II now provides a workflow layer in addition to Git control.
+Repo Control II provides a workflow layer in addition to Git control.
 
-For canonical lifecycle-managed milestones, Repo Control may provide:
+For canonical lifecycle-managed milestones, Repo Control provides:
 
 ```text
-explicit selected milestone
-current lifecycle phase
+authoritative selected milestone (external selection pointer)
+current lifecycle phase and authorization check
 authoritative milestone prompt
-workflow sidecar
+workflow sidecar with immutable event history
 Product Owner-approved binding lock-ins
-open questions / blockers
-bug and test events
-closeout
-Coder Handoff Packet
-Architect Review Packet
+open questions, blockers, and bug records
+closeout artifact discovery
+Coder Local CLI interface (`repoctl coder-context`, `repoctl coder-status`)
+Coder bounded event submission (`coder-question`, `coder-bug`, `coder-test`, `coder-closeout`)
+Coder Handoff Packet (fallback manual transport)
+Architect Review Packet (fallback manual transport)
 current deterministic Git evidence
 ```
 
-The Coder should treat the Coder Handoff Packet as **derived transport output**, not as a new source of truth.
+The Coder should use `repoctl coder-context` as the primary, authoritative mechanism for retrieving active milestone instructions and verifying implementation authorization. When Coder Handoff Packets are used, treat them as **derived transport output**, not as a new source of truth.
 
 Authority remains with:
 
@@ -154,7 +155,7 @@ governing project documents
 current deterministic repository evidence
 ```
 
-If packet content conflicts with an authoritative source, stop and report the discrepancy.
+If packet or context content conflicts with an authoritative source, stop and report the discrepancy.
 
 ---
 
@@ -164,22 +165,22 @@ For every implementation milestone:
 
 ```text
 1. Confirm the authoritative repository.
-2. Confirm the active milestone.
-3. Read this file or the current Coder Handoff Packet containing it.
-4. Read the active milestone prompt.
-5. Read Product Owner-approved binding lock-ins.
+2. Run `repoctl coder-context` to retrieve active milestone selection, prompt, and authorization status.
+3. Verify implementation authorization status: proceed only if authorized (`IN_PROGRESS` or `IN_PROGRESS (correction mode)`).
+4. Review standing document references and the authoritative milestone prompt.
+5. Review Product Owner-approved binding lock-ins and open conditions.
 6. Read approved reconnaissance when the milestone depends on it.
-7. Perform read-only Git preflight.
-8. Confirm current branch and working-tree state.
-9. Confirm lifecycle phase and milestone mode.
-10. Load only relevant broader context.
-11. Inspect targeted implementation paths.
-12. Confirm the milestone boundary.
-13. Ask only genuinely blocking questions.
-14. Escalate when approved scope or architecture is materially insufficient.
-15. Implement only approved scope.
-16. Run relevant validation.
-17. Create or update the required closeout.
+7. Perform read-only Git preflight (`git branch`, `git status`, `git log`).
+8. Confirm current branch and clean working-tree state.
+9. Load only relevant broader context.
+10. Inspect targeted implementation paths.
+11. Confirm the milestone boundary.
+12. If blocked or clarification needed, submit via `repoctl coder-question` (or escalate if out of scope).
+13. If bugs are discovered, submit via `repoctl coder-bug`.
+14. Implement only approved scope.
+15. Run relevant validation and record evidence via `repoctl coder-test`.
+16. Create or update the required closeout artifact.
+17. Submit closeout for Product Owner review via `repoctl coder-closeout`.
 18. Report final read-only Git status.
 19. Stop before Product Owner Git actions.
 ```
@@ -188,7 +189,7 @@ The agent must not infer live repository state solely from documentation.
 
 The agent must not infer project architecture solely from inherited code when governing documents define a newer architecture.
 
-The agent must not infer workflow authorization merely from the existence of a prompt or closeout.
+The agent must not infer workflow authorization merely from the existence of a prompt or closeout. Always verify authorization with `repoctl coder-context` or `repoctl coder-status`.
 
 ---
 
@@ -927,12 +928,28 @@ A skill does not override Product Owner direction or the active milestone.
 
 ---
 
-# 32. Git Preflight
+# 32. Workflow and Git Preflight
 
 Before editing, from the Linux repository:
 
 ```bash
 cd /home/chuck/projects/repo-control-ii
+repoctl coder-context
+```
+
+This single command deterministically retrieves and reports:
+
+- authoritative active milestone selection (from external selection pointer);
+- current lifecycle phase and explicit implementation authorization check;
+- latest binding lock-ins and open waiting conditions;
+- deterministic standing document paths and Git mutation prohibition notice;
+- full authoritative milestone prompt text.
+
+Do NOT proceed with implementation if `Authorization` is `NO` (such as `PLANNING`, `WAITING`, `REVIEW`, or `CLOSED`).
+
+Follow with standard read-only Git preflight:
+
+```bash
 git branch --show-current
 git status --short
 git log --oneline --decorate -5
@@ -950,12 +967,26 @@ Expected normal state:
 ```text
 correct repository
 correct branch
-known working-tree state
-active milestone identified
+clean working-tree state
+active milestone identified and authorized
 lifecycle permits work
 ```
 
 Unexpected dirty files must be reported.
+
+---
+
+## 32.1 Bounded Coder Workflow Commands
+
+During implementation, coding agents should interact with the workflow sidecar exclusively via the bounded Coder CLI commands:
+
+- `repoctl coder-status`: Quick read-only check of lifecycle phase, authorization, open blockers, and lock-ins.
+- `repoctl coder-question "<summary>" [--blocking] [--category ...]`: Submit an implementation question or blocker. A `--blocking` question pauses work and transitions the milestone into `WAITING`.
+- `repoctl coder-bug "<summary>"`: Record discovery of a defect during implementation.
+- `repoctl coder-test "<summary>" --source "<cmd>" --result "<outcome>"`: Record test execution evidence (labeled as reported evidence).
+- `repoctl coder-closeout [--summary "<summary>"]`: Submit closeout artifact for Product Owner review (transitions `IN_PROGRESS -> REVIEW`). Requires matching closeout file to exist.
+
+Coding agents must NEVER attempt to perform Product Owner approvals, prompt approvals, lifecycle starts, resumes, or milestone closures.
 
 ---
 

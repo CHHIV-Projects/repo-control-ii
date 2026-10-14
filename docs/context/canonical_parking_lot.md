@@ -640,6 +640,47 @@ Any optimization should preserve provenance and make omitted/referenced sources 
 
 ---
 
+## WORKFLOW-003 — Future Coder MCP Integration
+
+### Status
+
+Deferred
+
+### Summary
+
+Evaluate and implement an MCP (Model Context Protocol) transport interface for Coder agents (e.g., Claude Desktop, Cline, or external autonomous agents) if non-local or containerized coding agents are supported in the future.
+
+### Why It Is Parked
+
+The M003.008 architectural reconnaissance confirmed that the primary Coder operates co-located with the repository on `henderson-server1` via VS Code Remote SSH. For co-located coding agents, direct in-process Python CLI execution (`repoctl coder-context`, `repoctl coder-status`, and bounded event submission commands) meets all workflow requirements with zero network attack surface, zero daemon dependencies, zero authentication overhead, and zero protocol translation complexity. Introducing an MCP server for the Coder would add unnecessary operational surface without current functional benefit.
+
+### Trigger for Reconsideration
+
+Revisit only if:
+
+- a non-local or containerized coding agent without local shell/Python execution access becomes a primary project tool;
+- an external coding assistant platform requires standardized MCP server discovery for repository context and event submission;
+- the Product Owner explicitly decides to support remote coding agents across network boundaries.
+
+### Likely Scope
+
+```text
+src/repoctl/mcp/coder_adapter.py (or unified adapter)
+Coder MCP tool definitions (context, status, question, bug, test, closeout)
+transport security and authentication for remote Coder clients
+ops/systemd service configuration if networked
+```
+
+### Dependencies
+
+Requires a clear use case for non-local Coder execution that cannot be served by local CLI or VS Code Remote SSH.
+
+### Notes
+
+If ever implemented, Coder MCP must strictly adhere to the same Model B bounded write boundary established in M003.009: hardcoded `actor_role="coder"`, `po_approved=False`, strictly non-authoritative event types, zero Git mutation authority, and zero caller-selectable generic event submission.
+
+---
+
 # 23. Entry Template
 
 Copy this section when creating a new Parking Lot item:

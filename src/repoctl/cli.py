@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -78,6 +79,70 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_stage_parser.add_argument("plan_id", help="Prepared immutable stage plan identifier")
     milestone_stage_parser.add_argument("--approve", action="store_true", help="Explicitly approve exact stage plan execution")
     milestone_stage_parser.add_argument("--repository", help="Path inside target Git repository")
+
+    coder_context_parser = subparsers.add_parser(
+        "coder-context", help="Retrieve authoritative active milestone context for Coder agents"
+    )
+    coder_context_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_context_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
+    )
+    coder_context_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_context_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+
+    coder_status_parser = subparsers.add_parser(
+        "coder-status", help="Report active milestone lifecycle and workflow status for Coder agents"
+    )
+    coder_status_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_status_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
+    )
+    coder_status_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_status_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+
+    coder_question_parser = subparsers.add_parser(
+        "coder-question", help="Submit a bounded question or blocker from the Coder"
+    )
+    coder_question_parser.add_argument("summary", help="Question summary or description")
+    coder_question_parser.add_argument(
+        "--blocking", action="store_true", help="Mark question as a blocker that pauses implementation into WAITING"
+    )
+    coder_question_parser.add_argument(
+        "--category",
+        choices=["clarification", "decision", "blocker", "other"],
+        help="Question category (default: blocker if --blocking, else None)",
+    )
+    coder_question_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_question_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_question_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+
+    coder_bug_parser = subparsers.add_parser(
+        "coder-bug", help="Record discovery of a defect during implementation"
+    )
+    coder_bug_parser.add_argument("summary", help="Defect discovery summary")
+    coder_bug_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_bug_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_bug_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+
+    coder_test_parser = subparsers.add_parser(
+        "coder-test", help="Record test execution evidence from the Coder"
+    )
+    coder_test_parser.add_argument("summary", help="Test execution summary")
+    coder_test_parser.add_argument("--source", required=True, help="Test evidence source (e.g. command or suite)")
+    coder_test_parser.add_argument("--result", required=True, help="Test outcome result (e.g. pass/fail counts)")
+    coder_test_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_test_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_test_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+
+    coder_closeout_parser = subparsers.add_parser(
+        "coder-closeout", help="Submit milestone closeout artifact for Product Owner review"
+    )
+    coder_closeout_parser.add_argument(
+        "--summary", default="Closeout submitted for review", help="Closeout submission summary"
+    )
+    coder_closeout_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_closeout_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_closeout_parser.add_argument("--milestone-root", help="Explicit milestone root override")
 
     return parser
 
@@ -432,6 +497,178 @@ def main(argv: list[str] | None = None) -> int:
         print("Push performed: false")
         print(f"execution_dir: {result['execution_dir']}")
         print(f"reused_existing: {result['reused_existing']}")
+        return 0
+
+    if args.command == "coder-context":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            format_coder_context_text,
+            get_coder_context,
+        )
+
+        try:
+            context_data = get_coder_context(
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder context failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder context failed: {exc}", file=sys.stderr)
+            return 1
+
+        if args.format == "json":
+            print(json.dumps(context_data, ensure_ascii=False, indent=2))
+        else:
+            print(format_coder_context_text(context_data))
+        return 0
+
+    if args.command == "coder-status":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            format_coder_status_text,
+            get_coder_status,
+        )
+
+        try:
+            status_data = get_coder_status(
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder status failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder status failed: {exc}", file=sys.stderr)
+            return 1
+
+        if args.format == "json":
+            print(json.dumps(status_data, ensure_ascii=False, indent=2))
+        else:
+            print(format_coder_status_text(status_data))
+        return 0
+
+    if args.command == "coder-question":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            submit_coder_question,
+        )
+
+        try:
+            result = submit_coder_question(
+                summary=args.summary,
+                blocking=args.blocking,
+                category=args.category,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder question failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder question failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("Question recorded successfully")
+        print(f"event_id:     {result['event_id']}")
+        print(f"milestone_id: {result['milestone_id']}")
+        print(f"lifecycle:    {result['phase_before']} -> {result['phase_after']}")
+        print(f"blocking:     {'yes' if result['blocking'] else 'no'}")
+        if result["blocking"]:
+            print(f"category:     {result['waiting_category']}")
+            print(f"reason:       {result['waiting_reason']}")
+        print(f"next_action:  {result['next_action']}")
+        return 0
+
+    if args.command == "coder-bug":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            submit_coder_bug,
+        )
+
+        try:
+            result = submit_coder_bug(
+                summary=args.summary,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder bug failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder bug failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("Bug recorded successfully")
+        print(f"event_id:     {result['event_id']}")
+        print(f"milestone_id: {result['milestone_id']}")
+        print(f"lifecycle:    {result['phase']}")
+        print(f"summary:      {result['summary']}")
+        print(f"next_action:  {result['next_action']}")
+        return 0
+
+    if args.command == "coder-test":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            submit_coder_test_result,
+        )
+
+        try:
+            result = submit_coder_test_result(
+                summary=args.summary,
+                source=args.source,
+                result=args.result,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder test failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder test failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("Test result recorded successfully")
+        print(f"event_id:     {result['event_id']}")
+        print(f"milestone_id: {result['milestone_id']}")
+        print(f"lifecycle:    {result['phase']}")
+        print(f"source:       {result['evidence_source']}")
+        print(f"result:       {result['result']} (reported evidence)")
+        print(f"next_action:  {result['next_action']}")
+        return 0
+
+    if args.command == "coder-closeout":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            submit_coder_closeout,
+        )
+
+        try:
+            result = submit_coder_closeout(
+                summary=args.summary,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder closeout failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder closeout failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("Closeout submitted successfully")
+        print(f"event_id:      {result['event_id']}")
+        print(f"milestone_id:  {result['milestone_id']}")
+        print(f"lifecycle:     {result['phase_before']} -> {result['phase_after']}")
+        print(f"evidence_path: {result['evidence_path']}")
+        print(f"next_action:   {result['next_action']}")
         return 0
 
     parser.print_help()

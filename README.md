@@ -241,6 +241,33 @@ If the MCP tunnel is interrupted, degraded, or offline:
 4. Copy and paste the resulting bounded text packet directly into ChatGPT.
 5. All milestone data and Git evidence remain fully available for review.
 
+## Coder Local Workflow CLI (Milestone 003.009)
+
+Repo Control provides a dedicated, co-located CLI workflow interface for local coding agents running on `henderson-server1` (e.g. via VS Code Remote SSH). This allows Coder agents to retrieve authoritative instructions and submit bounded workflow events directly without large monolithic packet copy/pasting, daemon dependencies, or network surface:
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `repoctl coder-context` | Retrieve authoritative active milestone prompt, lifecycle authorization, and standing document references |
+| `repoctl coder-status` | Quick read-only report of active milestone lifecycle, blockers, lock-ins, and event counts |
+| `repoctl coder-question "<summary>" [--blocking] [--category ...]` | Record an implementation question or blocker. `--blocking` pauses implementation into `WAITING` |
+| `repoctl coder-bug "<summary>"` | Record discovery of a defect during implementation |
+| `repoctl coder-test "<summary>" --source "<cmd>" --result "<outcome>"` | Record test execution evidence (labeled as reported evidence) |
+| `repoctl coder-closeout [--summary "<summary>"]` | Submit discovered closeout artifact for Product Owner review (`IN_PROGRESS` → `REVIEW`) |
+
+### Options and Formats
+
+`coder-context` and `coder-status` support `--format text` (default human-readable) and `--format json` (machine-readable structured payload for future Agent Skills).
+
+Optional `--repository <path>` can target any registered repository worktree (defaults to current working directory).
+
+### Enforced Invariants
+
+- **Authoritative Selection:** Uses the external milestone selection pointer managed by Repo Control. Never guesses from Git logs or file timestamps.
+- **Bounded Write Boundary (Model B):** Hardcodes `actor_role="coder"` and `po_approved=False`. Generic event submission (`--type`) is strictly forbidden.
+- **Git Mutation Prohibition:** Coding agents must not stage, commit, push, or mutate Git. Consequential Git actions remain strictly with the Product Owner.
+
 
 Every Architect route is GET-only and read-only. GET access requires no CSRF
 token because these routes do not mutate state; cross-origin browser reads

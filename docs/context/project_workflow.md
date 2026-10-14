@@ -799,11 +799,17 @@ Repo Control currently records actor role as reported context. It does not claim
 
 ---
 
-# Part VI — Handoff Packets
+# Part VI — Coder Interface and Handoff Packets
 
-# 32. Coder Packet
+# 32. Coder Interface and Packet Options
 
-Repo Control can generate a derived, read-only Coder Packet containing:
+Repo Control II provides two complementary mechanisms for delivering instructions and workflow state to Coder agents:
+
+1. **Coder Local CLI Interface (Primary for Co-Located Agents):**
+   Established in M003.009, local coding agents running on `henderson-server1` (via VS Code Remote SSH) interact directly with Repo Control via the local CLI (`repoctl coder-context`, `repoctl coder-status`). This in-process execution avoids monolithic document bundling, provides deterministic standing document references, checks implementation authorization, and provides bounded event submission with zero network overhead.
+
+2. **Coder Handoff Packet (Fallback / Export):**
+   Repo Control can generate a derived, read-only monolithic Coder Packet containing:
 
 ```text
 repository / milestone identity
@@ -821,6 +827,25 @@ source references
 The packet does not replace the prompt or governing documents.
 
 Packet generation does not change lifecycle or Git state.
+
+---
+
+## 32.1 Coder Local CLI Workflow and Bounded Event Submission
+
+Co-located coding agents execute under strict boundary constraints (Model B write boundary):
+
+- **Context Retrieval:** `repoctl coder-context` retrieves the authoritative milestone prompt and checks lifecycle authorization before coding begins.
+- **Status Check:** `repoctl coder-status` provides lightweight inspection of lifecycle phase, blockers, lock-ins, and open questions without re-reading the prompt.
+- **Question Submission:** `repoctl coder-question "<summary>" [--blocking] [--category ...]` records implementation questions. If marked `--blocking`, the milestone transitions from `IN_PROGRESS` to `WAITING` until answered and resumed by the Product Owner.
+- **Defect Discovery:** `repoctl coder-bug "<summary>"` records defects discovered during work without granting classification authority.
+- **Validation Evidence:** `repoctl coder-test "<summary>" --source "<cmd>" --result "<outcome>"` records test execution outcomes, labeled as reported evidence.
+- **Closeout Submission:** `repoctl coder-closeout [--summary "<summary>"]` verifies the matching closeout artifact exists and transitions the milestone from `IN_PROGRESS` to `REVIEW`.
+
+**Enforced Invariants:**
+- All Coder CLI commands hardcode `actor_role="coder"` and `po_approved=False`.
+- The Coder CLI provides no generic `coder-event` command.
+- The Coder CLI cannot execute Product Owner actions (`prompt_approved`, `lock_in_approved`, `implementation_resumed`, `acceptance_recorded`, `milestone_closed`).
+- Absolute prohibition on Git mutations remains strictly enforced.
 
 ---
 
