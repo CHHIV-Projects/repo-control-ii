@@ -16,10 +16,12 @@ from repoctl.mcp.architect_adapter import (
     TOOL_MAP,
     AdapterValidationError,
     execute_get,
+    execute_post,
     handle_rpc_request,
     log_audit_event,
     serve_stdio,
     validate_tool_call,
+    validate_submission_call,
 )
 
 
@@ -37,12 +39,16 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "repo_documents",
         "repo_document",
         "repo_review",
+        "repo_dispatches",
+        "architect_submit_prompt_draft",
+        "architect_submit_instruction_draft",
+        "architect_submit_response_draft",
     }
 
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}
         self.assertEqual(advertised_names, self.EXPECTED_TOOLS)
-        self.assertEqual(len(TOOL_INVENTORY), 10)
+        self.assertEqual(len(TOOL_INVENTORY), 14)
 
     def test_schemas_forbid_additional_properties(self):
         for tool in TOOL_INVENTORY:
@@ -69,6 +75,8 @@ class TestArchitectMcpValidation(unittest.TestCase):
     def test_unknown_tool_rejected(self):
         with self.assertRaises(AdapterValidationError):
             validate_tool_call("arbitrary_tool", {})
+        with self.assertRaises(AdapterValidationError):
+            validate_tool_call([], {})
 
     def test_arbitrary_arguments_rejected(self):
         with self.assertRaises(AdapterValidationError) as ctx:
@@ -196,7 +204,78 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         resp = handle_rpc_request(req, "http://127.0.0.1:8765")
         self.assertEqual(resp["id"], 2)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 14)
+
+    def test_submission_tools_are_fixed_and_typed(self):
+        path, payload = validate_submission_call(
+            "architect_submit_prompt_draft",
+            {
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+                "milestone_id": "M003.012",
+                "title": "Next milestone",
+                "body": "# Prompt",
+            },
+        )
+        self.assertEqual(path, "/api/architect/v1/dispatches/prompt")
+        self.assertEqual(payload["title"], "Next milestone")
+        self.assertEqual(payload["milestone_id"], "M003.012")
+        with self.assertRaises(AdapterValidationError):
+            validate_submission_call(
+                "architect_submit_instruction_draft",
+                {
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 3,
+                    "milestone_id": "M003.011",
+                    "body": "Do this",
+                    "path": "../../arbitrary",
+                },
+            )
+        with self.assertRaises(AdapterValidationError):
+            validate_submission_call([], {})
+
+    def test_dispatch_readback_filters_are_type_checked(self):
+        with self.assertRaises(AdapterValidationError):
+            validate_tool_call(
+                "repo_dispatches",
+                {
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 0,
+                    "status": [],
+                },
+            )
+        with self.assertRaises(AdapterValidationError):
+            validate_submission_call(
+                "architect_submit_response_draft",
+                {
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 3,
+                    "milestone_id": "M003.011",
+                    "body": "Answer",
+                    "related_event_id": "not-an-event-id",
+                },
+            )
+
+    @patch("urllib.request.urlopen")
+    def test_execute_post_success(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 201
+        mock_resp.read.return_value = json.dumps(
+            {"contract_version": "1", "data": {"dispatch": {"status": "PENDING"}}}
+        ).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        status, data = execute_post(
+            "http://127.0.0.1:8765",
+            "/api/architect/v1/dispatches/instruction",
+            {"milestone_id": "M003.011", "body": "Bounded"},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(data["data"]["dispatch"]["status"], "PENDING")
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
 
     @patch("repoctl.mcp.architect_adapter.execute_get")
     def test_tools_call_success(self, mock_exec):

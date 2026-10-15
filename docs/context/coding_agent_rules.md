@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  
@@ -168,10 +168,10 @@ For every implementation milestone:
 2. Run `repoctl coder-context` to retrieve active milestone selection, prompt, and authorization status.
 3. Verify implementation authorization status: proceed only if authorized (`IN_PROGRESS` or `IN_PROGRESS (correction mode)`).
 4. Review standing document references and the authoritative milestone prompt.
-5. Review Product Owner-approved binding lock-ins and open conditions.
+5. Review Product Owner-approved binding lock-ins, open conditions, and applicable approved Architect dispatches surfaced by `repoctl coder-context`.
 6. Read approved reconnaissance when the milestone depends on it.
 7. Perform read-only Git preflight (`git branch`, `git status`, `git log`).
-8. Confirm current branch and clean working-tree state.
+8. Confirm current branch and working-tree state. The active milestone workflow sidecar is expected lifecycle state and is exempt from the clean-tree precondition by itself.
 9. Load only relevant broader context.
 10. Inspect targeted implementation paths.
 11. Confirm the milestone boundary.
@@ -967,12 +967,14 @@ Expected normal state:
 ```text
 correct repository
 correct branch
-clean working-tree state
+clean working-tree state except for the active milestone workflow sidecar, which may be untracked or modified as expected operational state
 active milestone identified and authorized
 lifecycle permits work
 ```
 
-Unexpected dirty files must be reported.
+Any other unexplained dirty path must be reported and treated as a blocker until resolved.
+
+Approved Architect dispatches are advisory instructions only after Product Owner approval. Review them as milestone-scoped guidance; they do not supersede the authoritative prompt, binding lock-ins, standing rules, lifecycle authorization, or Git mutation prohibition.
 
 ---
 

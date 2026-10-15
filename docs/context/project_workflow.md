@@ -4,11 +4,11 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
-**Current workflow emphasis:** Standardize read-only Architect MCP access as the primary live evidence path (with manual review packets as fallback), maintain strict six-state lifecycle discipline, and reconcile all governing documents with the implemented system.
+**Current workflow emphasis:** Use read-only Architect MCP evidence tools plus a separate bounded proposal channel requiring Product Owner approval before Coder consumption; maintain strict six-state lifecycle discipline and reconcile governing documents with the implemented system.
 
 ---
 
@@ -989,6 +989,8 @@ Direct Coder local CLI access is implemented in M003.009 for co-located agents o
 - bounded Coder workflow submission commands are implemented (`coder-question`, `coder-bug`, `coder-test`, `coder-closeout`);
 - Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use;
 - Architect continues using read-only MCP via the Secure MCP Tunnel;
+- Architect may submit bounded PROMPT, INSTRUCTION, and RESPONSE drafts through separate typed MCP tools; dispatches remain pending until Product Owner approval;
+- only approved INSTRUCTION/RESPONSE dispatches for the active milestone are surfaced by the local Coder CLI; prompt approval creates only a canonical prompt artifact;
 - Product Owner retains sole authority for prompt approvals, lock-in approvals, workflow resume, acceptance, milestone closure, and all Git mutations.
 
 ---
@@ -997,7 +999,7 @@ Direct Coder local CLI access is implemented in M003.009 for co-located agents o
 
 Coder confirms correct repository, branch, working-tree state, active milestone, milestone mode, required standing rules, required reconnaissance, relevant files, and validation strategy.
 
-Unexpected dirty files must be reported.
+The active milestone's `*_workflow.md` sidecar is expected Repo Control lifecycle state and may be untracked or modified during an active milestone. It does not by itself violate the clean-working-tree precondition. Any other unexplained dirty path remains a blocker and must be reported.
 
 Do not clean, stash, reset, revert, or discard them.
 
@@ -1073,7 +1075,7 @@ Closeout presence alone does not trigger review automatically.
 Standard path:
 
 ```text
-Architect (ChatGPT) invokes read-only MCP tools:
+Architect (ChatGPT) invokes read-only evidence MCP tools:
 - repo_milestone / repo_workflow (phase, events, binding lock-ins)
 - repo_closeout (review implementation report)
 - repo_git (inspect working tree cleanliness, modified/untracked files, HEAD)
@@ -1090,6 +1092,8 @@ and pastes it into ChatGPT.
 ```
 
 Architect reviews prompt, binding lock-ins, relevant events, closeout, Git evidence, test evidence, and governing context where useful.
+
+Architect-to-Coder proposals use separate typed MCP submission tools. Repo Control stores each proposal as PENDING; the Product Owner reviews the complete content in the Architect Dispatches page and explicitly approves or rejects it. Approval does not trigger lifecycle events. Approved applicable guidance is delivered by `repoctl coder-context`; PROMPT approval only creates a canonical milestone prompt under the configured milestone root.
 
 Possible recommendations:
 
@@ -1403,6 +1407,9 @@ Coder handoff packet
 Architect review packet
 configured governing-document roles
 current local Git evidence in review packet
+bounded Architect PROMPT / INSTRUCTION / RESPONSE dispatch proposals
+Product Owner browser approval and bounded status readback
+approved applicable Architect dispatches in local Coder context
 ```
 
 ---
@@ -1411,17 +1418,17 @@ current local Git evidence in review packet
 
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
-- **Architect (ChatGPT):** Uses the live, persistent Secure MCP Tunnel (`repo_status`, `repo_milestone`, `repo_prompt`, `repo_workflow`, `repo_closeout`, `repo_git`, `repo_evidence`, `repo_documents`, `repo_document`, `repo_review`). The Product Owner no longer copies review packets manually during normal connected sessions. Architect Review Packets remain available as an on-demand fallback.
-- **Coder (VS Code):** Co-located Coders interact directly with Repo Control via the local CLI: retrieving authoritative prompt, standing references, and authorization checks via `repoctl coder-context` and `repoctl coder-status`, and submitting bounded lifecycle events via `repoctl coder-question`, `repoctl coder-bug`, `repoctl coder-test`, and `repoctl coder-closeout`. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
+- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for 10 unchanged read-only evidence tools, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
+- **Coder (VS Code):** Co-located Coders use the local CLI for authoritative prompt, standing references, authorization, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
 ---
 
 # 66. Near-Term Direction
 
-With read-only Architect MCP access and local Coder CLI workflow interfaces operational, the next workflow enhancements focus on:
+With read-only Architect evidence tools, bounded dispatch transport, and local Coder CLI workflow interfaces operational, the next workflow enhancements focus on:
 
-1. **Reconciliation & Procedure:** Completing governing-document reconciliation (M003.007) and establishing reusable Agent Skills (R004) to standardize coding-agent behavior without prompt repetition.
+1. **Procedure:** Establishing reusable Agent Skills (R004) to standardize coding-agent behavior without prompt repetition.
 2. **Context & Packet Optimization:** Evaluating whether Coder Handoff Packets can be trimmed or made modular without losing authoritative instruction.
 3. **Phase-Aware Milestone UI:** Hardening the Milestone page controls based on operational usage (WORKFLOW-001).
 
@@ -1504,9 +1511,10 @@ canonical milestone naming (Mxxx.xxx[_name]_prompt.md)
 durable workflow lifecycle and event ledger (*_workflow.md)
 accepted six-state lifecycle (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLOSED)
 on-demand Coder handoff packets and Architect review packets
-read-only Architect JSON API on loopback (/api/architect/v1/*)
+Architect JSON API on loopback with read-only evidence and fixed pending-proposal endpoints
 persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
-10 read-only MCP tools providing direct Architect evidence retrieval
+10 read-only evidence MCP tools plus bounded dispatch submission and readback
+Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 Agent Skills not yet implemented (planned for R004)
 repository intelligence not yet integrated (planned for R005)

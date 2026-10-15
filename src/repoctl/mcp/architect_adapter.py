@@ -1,7 +1,7 @@
-"""Read-only Architect MCP adapter for Repo Control II.
+"""Bounded Architect MCP adapter for Repo Control II.
 
-Exposes a strictly bounded, GET-only set of Model Context Protocol (MCP) tools
-backed by the local Repo Control Architect API (http://127.0.0.1:8765/api/architect/v1/*).
+Exposes read-only evidence tools and narrowly typed proposal submissions through
+the local Repo Control Architect API (http://127.0.0.1:8765/api/architect/v1/*).
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 import logging
+import re
 import sys
 import time
 from typing import Any, BinaryIO, TextIO
@@ -19,6 +20,10 @@ import urllib.request
 ADAPTER_VERSION = "0.1.0"
 DEFAULT_REPO_CONTROL_URL = "http://127.0.0.1:8765"
 DEFAULT_TIMEOUT_SECONDS = 10.0
+MAX_DISPATCH_BODY_BYTES = 64 * 1024
+MAX_DISPATCH_READ_LIMIT = 5
+_DISPATCH_ID_PATTERN = r"^[0-9a-f]{32}$"
+_MILESTONE_ID_PATTERN = r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})$"
 
 ALLOWED_DOCUMENT_ROLES = frozenset(
     {"context", "architecture", "workflow", "coding_agent_rules", "parking_lot"}
@@ -173,9 +178,99 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "repo_dispatches",
+        "description": "Read bounded Architect dispatch status and content for this repository; supply dispatch_id to verify a specific submission.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+                "milestone_id": {
+                    "type": "string",
+                    "pattern": _MILESTONE_ID_PATTERN,
+                    "description": "Optional canonical milestone filter.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["PENDING", "APPROVED", "REJECTED"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_DISPATCH_READ_LIMIT,
+                },
+                "dispatch_id": {
+                    "type": "string",
+                    "pattern": _DISPATCH_ID_PATTERN,
+                    "description": "Optional durable ID of one submitted dispatch.",
+                },
+            },
+            "required": ["expected_repository_key", "expected_generation"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "architect_submit_prompt_draft",
+        "description": "Submit a bounded PROMPT proposal for Product Owner review. This does not create/select/approve/start a milestone or change Git.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+                "milestone_id": {"type": "string", "pattern": _MILESTONE_ID_PATTERN},
+                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                "body": {"type": "string", "minLength": 1, "maxLength": MAX_DISPATCH_BODY_BYTES},
+            },
+            "required": [
+                "expected_repository_key",
+                "expected_generation",
+                "milestone_id",
+                "title",
+                "body",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "architect_submit_instruction_draft",
+        "description": "Submit an INSTRUCTION proposal for the currently active milestone for Product Owner review. It cannot change lifecycle, files, or Git.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+                "milestone_id": {"type": "string", "pattern": _MILESTONE_ID_PATTERN},
+                "body": {"type": "string", "minLength": 1, "maxLength": MAX_DISPATCH_BODY_BYTES},
+            },
+            "required": ["expected_repository_key", "expected_generation", "milestone_id", "body"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "architect_submit_response_draft",
+        "description": "Submit a RESPONSE proposal, optionally related to a workflow event, for Product Owner review. It does not record a workflow answer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+                "milestone_id": {"type": "string", "pattern": _MILESTONE_ID_PATTERN},
+                "body": {"type": "string", "minLength": 1, "maxLength": MAX_DISPATCH_BODY_BYTES},
+                "related_event_id": {"type": "string", "pattern": _DISPATCH_ID_PATTERN},
+            },
+            "required": ["expected_repository_key", "expected_generation", "milestone_id", "body"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 TOOL_MAP: dict[str, dict[str, Any]] = {tool["name"]: tool for tool in TOOL_INVENTORY}
+SUBMISSION_TOOL_TYPES = {
+    "architect_submit_prompt_draft": "PROMPT",
+    "architect_submit_instruction_draft": "INSTRUCTION",
+    "architect_submit_response_draft": "RESPONSE",
+}
 
 
 class AdapterValidationError(ValueError):
@@ -184,7 +279,7 @@ class AdapterValidationError(ValueError):
 
 def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, str]]:
     """Validate tool call arguments strictly against allowlists and return endpoint path + query params."""
-    if tool_name not in TOOL_MAP:
+    if not isinstance(tool_name, str) or tool_name not in TOOL_MAP:
         raise AdapterValidationError(f"Unknown tool: {tool_name!r}")
 
     tool_def = TOOL_MAP[tool_name]
@@ -213,6 +308,36 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
             raise AdapterValidationError("expected_milestone_id must be a non-empty string <= 32 characters")
         query_params["expected_milestone_id"] = val
 
+    if tool_name == "repo_dispatches":
+        if "milestone_id" in arguments:
+            value = arguments["milestone_id"]
+            if not isinstance(value, str) or not re.fullmatch(_MILESTONE_ID_PATTERN[1:-1], value):
+                raise AdapterValidationError("milestone_id must use a supported canonical milestone form")
+            query_params["milestone_id"] = value
+        if "status" in arguments:
+            value = arguments["status"]
+            if not isinstance(value, str) or value not in {"PENDING", "APPROVED", "REJECTED"}:
+                raise AdapterValidationError("status must be PENDING, APPROVED, or REJECTED")
+            query_params["status"] = value
+        if "limit" in arguments:
+            value = arguments["limit"]
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not 1 <= value <= MAX_DISPATCH_READ_LIMIT
+            ):
+                raise AdapterValidationError(f"limit must be an integer from 1 to {MAX_DISPATCH_READ_LIMIT}")
+            query_params["limit"] = str(value)
+        if "dispatch_id" in arguments:
+            value = arguments["dispatch_id"]
+            if not isinstance(value, str) or not re.fullmatch(_DISPATCH_ID_PATTERN[1:-1], value):
+                raise AdapterValidationError("dispatch_id must be a 32-character lowercase hexadecimal ID")
+            query_params["dispatch_id"] = value
+        for name in ("expected_repository_key", "expected_generation"):
+            if name not in arguments:
+                raise AdapterValidationError(f"Missing required argument {name!r} for repo_dispatches")
+        return "/api/architect/v1/dispatches", query_params
+
     if tool_name == "repo_status":
         return "/api/architect/v1/status", query_params
     elif tool_name == "repo_milestone":
@@ -233,7 +358,7 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         if "role" not in arguments:
             raise AdapterValidationError("Missing required argument 'role' for repo_document")
         role = arguments["role"]
-        if role not in ALLOWED_DOCUMENT_ROLES:
+        if not isinstance(role, str) or role not in ALLOWED_DOCUMENT_ROLES:
             raise AdapterValidationError(
                 f"Invalid document role {role!r}; must be one of {sorted(ALLOWED_DOCUMENT_ROLES)}"
             )
@@ -242,6 +367,76 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         return "/api/architect/v1/review", query_params
     else:
         raise AdapterValidationError(f"Unhandled tool: {tool_name!r}")
+
+
+def validate_submission_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Validate a typed Architect proposal and return its fixed POST endpoint and payload."""
+    if not isinstance(tool_name, str):
+        raise AdapterValidationError(f"Unknown submission tool: {tool_name!r}")
+    dispatch_type = SUBMISSION_TOOL_TYPES.get(tool_name)
+    if dispatch_type is None:
+        raise AdapterValidationError(f"Unknown submission tool: {tool_name!r}")
+    tool_def = TOOL_MAP[tool_name]
+    allowed = set(tool_def["inputSchema"]["properties"])
+    required = set(tool_def["inputSchema"].get("required", []))
+    unknown = set(arguments) - allowed
+    missing = required - set(arguments)
+    if unknown:
+        raise AdapterValidationError(f"Unknown arguments for {tool_name}: {sorted(unknown)}")
+    if missing:
+        raise AdapterValidationError(f"Missing required arguments for {tool_name}: {sorted(missing)}")
+    repository_key = arguments["expected_repository_key"]
+    if not isinstance(repository_key, str) or not repository_key or len(repository_key) > 64:
+        raise AdapterValidationError("expected_repository_key must be a non-empty string <= 64 characters")
+    generation = arguments["expected_generation"]
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+        raise AdapterValidationError("expected_generation must be a non-negative integer")
+    milestone_id = arguments["milestone_id"]
+    if not isinstance(milestone_id, str) or not re.fullmatch(_MILESTONE_ID_PATTERN[1:-1], milestone_id):
+        raise AdapterValidationError("milestone_id must use a supported canonical milestone form")
+    body = arguments["body"]
+    if (
+        not isinstance(body, str)
+        or not body.strip()
+        or "\x00" in body
+        or any(ord(character) < 32 and character not in "\t\n\r" for character in body)
+    ):
+        raise AdapterValidationError("body must be non-empty text without unsupported control characters")
+    try:
+        body_size = len(body.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise AdapterValidationError("body contains invalid Unicode") from exc
+    if body_size > MAX_DISPATCH_BODY_BYTES:
+        raise AdapterValidationError(f"body exceeds the {MAX_DISPATCH_BODY_BYTES}-byte limit")
+    payload: dict[str, Any] = {
+        "expected_repository_key": repository_key,
+        "expected_generation": generation,
+        "milestone_id": milestone_id,
+        "body": body,
+    }
+    if dispatch_type == "PROMPT":
+        title = arguments.get("title")
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise AdapterValidationError("title must be non-empty text of at most 200 characters")
+        try:
+            title.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise AdapterValidationError("title contains invalid Unicode") from exc
+        payload["title"] = title
+    if dispatch_type == "RESPONSE" and "related_event_id" in arguments:
+        related_event_id = arguments["related_event_id"]
+        if not isinstance(related_event_id, str) or not re.fullmatch(_DISPATCH_ID_PATTERN[1:-1], related_event_id):
+            raise AdapterValidationError("related_event_id must be a 32-character lowercase hexadecimal ID")
+        payload["related_event_id"] = related_event_id
+    endpoint = {
+        "PROMPT": "/api/architect/v1/dispatches/prompt",
+        "INSTRUCTION": "/api/architect/v1/dispatches/instruction",
+        "RESPONSE": "/api/architect/v1/dispatches/response",
+    }[dispatch_type]
+    return endpoint, payload
 
 
 def execute_get(
@@ -297,6 +492,92 @@ def execute_get(
             "error": {
                 "code": "internal_adapter_error",
                 "message": f"Unexpected error executing GET: {exc}",
+            }
+        }
+
+
+def execute_post(
+    base_url: str,
+    path: str,
+    payload: dict[str, Any],
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[int, dict[str, Any]]:
+    """Execute a fixed, typed JSON POST to a proposal-submission endpoint."""
+    url = urllib.parse.urljoin(base_url, path)
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": f"repo-control-architect-adapter/{ADAPTER_VERSION}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(1_048_577)
+            if len(body) > 1_048_576:
+                return 502, {
+                    "error": {
+                        "code": "upstream_response_oversized",
+                        "message": "Repo Control response exceeded its limit.",
+                    }
+                }
+            try:
+                return resp.status, json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return 502, {
+                    "error": {
+                        "code": "invalid_json_response",
+                        "message": "Upstream returned non-JSON body",
+                    }
+                }
+    except urllib.error.HTTPError as err:
+        try:
+            body = err.read(1_048_577)
+            if len(body) > 1_048_576:
+                return err.code, {
+                    "error": {
+                        "code": "upstream_response_oversized",
+                        "message": "Repo Control error response exceeded its limit.",
+                    }
+                }
+            return err.code, json.loads(body.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return err.code, {
+                "error": {
+                    "code": "upstream_http_error",
+                    "message": f"HTTP {err.code}: {err.reason}",
+                }
+            }
+    except urllib.error.URLError as err:
+        return 503, {
+            "error": {
+                "code": "upstream_unavailable",
+                "message": f"Failed to connect to Repo Control at {base_url}: {err.reason}",
+            }
+        }
+    except TimeoutError:
+        return 504, {
+            "error": {
+                "code": "upstream_timeout",
+                "message": f"Timed out connecting to Repo Control at {base_url}",
+            }
+        }
+    except OSError as exc:
+        return 500, {
+            "error": {
+                "code": "internal_adapter_error",
+                "message": f"Could not submit proposal: {exc}",
+            }
+        }
+    except Exception as exc:
+        return 500, {
+            "error": {
+                "code": "internal_adapter_error",
+                "message": f"Unexpected error submitting proposal: {exc}",
             }
         }
 
@@ -382,7 +663,12 @@ def handle_rpc_request(
             }
 
         try:
-            path, query_params = validate_tool_call(tool_name, arguments)
+            if tool_name in SUBMISSION_TOOL_TYPES:
+                path, submission_payload = validate_submission_call(tool_name, arguments)
+                query_params = {}
+            else:
+                path, query_params = validate_tool_call(tool_name, arguments)
+                submission_payload = None
         except AdapterValidationError as err:
             duration_ms = (time.perf_counter() - start_time) * 1000.0
             log_audit_event(
@@ -413,7 +699,10 @@ def handle_rpc_request(
                 },
             }
 
-        status_code, response_data = execute_get(base_url, path, query_params)
+        if submission_payload is None:
+            status_code, response_data = execute_get(base_url, path, query_params)
+        else:
+            status_code, response_data = execute_post(base_url, path, submission_payload)
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
         repo_key = None
@@ -425,6 +714,8 @@ def handle_rpc_request(
             source_scope = response_data.get("source_scope")
             if isinstance(source_scope, dict):
                 milestone_id = source_scope.get("milestone_id")
+            if milestone_id is None and isinstance(arguments.get("milestone_id"), str):
+                milestone_id = arguments["milestone_id"]
 
         log_audit_event(
             tool_name=tool_name,

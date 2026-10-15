@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="panel">
+    <h2>Architect Dispatches</h2>
+    <p>Review complete Architect proposals before they become available to the Coder.</p>
+    <p>Active milestone: <strong>{{ active_milestone_id or "None selected" }}</strong></p>
+  </section>
+
+  {% if not dispatches %}
+    <section class="panel">
+      <p>No Architect dispatches have been submitted for this repository.</p>
+    </section>
+  {% endif %}
+
+  {% for dispatch in dispatches %}
+    <section class="panel">
+      {% if dispatch["type"] == "PROMPT" %}
+        <h2>Architect Prompt Draft</h2>
+        <h3>{{ dispatch["milestone_id"] }} — {{ dispatch["title"] }}</h3>
+        <p>Canonical destination: <code>{{ dispatch["canonical_destination"] }}</code></p>
+      {% else %}
+        <h2>Architect Dispatch</h2>
+      {% endif %}
+      <dl>
+        <dt>Type</dt><dd>{{ dispatch["type"] }}</dd>
+        <dt>Target</dt><dd>{{ dispatch["milestone_id"] }}</dd>
+        <dt>Status</dt><dd>{{ dispatch["status"] }}</dd>
+        <dt>Submitted</dt><dd>{{ dispatch["created_at"] }}</dd>
+        {% if dispatch.get("related_event_id") %}
+          <dt>Related event</dt><dd>{{ dispatch["related_event_id"] }}</dd>
+        {% endif %}
+      </dl>
+      <pre class="dispatch-body">{{ dispatch["body"] }}</pre>
+      {% if dispatch["status"] == "PENDING" %}
+        <form method="post" action="{{ url_for('resolve_architect_dispatch', dispatch_id=dispatch['dispatch_id'], action='approve') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+          <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+          <button type="submit">{{ "Approve & Save Prompt" if dispatch["type"] == "PROMPT" else "Approve & Send" }}</button>
+        </form>
+        <form method="post" action="{{ url_for('resolve_architect_dispatch', dispatch_id=dispatch['dispatch_id'], action='reject') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+          <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+          <button type="submit">Reject</button>
+        </form>
+      {% endif %}
+    </section>
+  {% endfor %}
+{% endblock %}

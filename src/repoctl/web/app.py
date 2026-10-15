@@ -27,6 +27,16 @@ from ..workflow.git_history import (
     inspect_history,
 )
 from ..workflow.handoff_packets import HandoffPacketError, generate_handoff_packet
+from ..workflow.architect_dispatches import (
+    MAX_BODY_BYTES as MAX_ARCHITECT_DISPATCH_BODY_BYTES,
+    MAX_READ_LIMIT as MAX_ARCHITECT_DISPATCH_READ_LIMIT,
+    ArchitectDispatchError,
+    get_dispatch,
+    list_dispatches,
+    list_owner_dispatches,
+    submit_dispatch,
+    update_dispatch_status,
+)
 from ..workflow.milestones import (
     MilestoneArtifactError,
     discover_milestones,
@@ -489,6 +499,23 @@ def create_web_app(
             err.status_code,
         )
 
+    @app.errorhandler(ArchitectDispatchError)
+    def _handle_architect_dispatch_error(err: ArchitectDispatchError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "invalid_dispatch", "message": str(err)},
+                },
+                400,
+            )
+        return render_template(
+            "error.html",
+            error_code="architect_dispatch_failed",
+            error_message=str(err),
+            mutation_note="No workflow or Git state was changed.",
+        ), 400
+
     def architect_query_value(name: str, *, maximum_length: int) -> str | None:
         values = request.args.getlist(name)
         if not values:
@@ -616,6 +643,353 @@ def create_web_app(
     @app.get("/api/architect/v1/review")
     def architect_review():
         return architect_endpoint("review")
+
+    def dispatch_preconditions(payload: dict[str, Any]) -> None:
+        expected_key = payload.get("expected_repository_key")
+        expected_generation = payload.get("expected_generation")
+        if not isinstance(expected_key, str) or not expected_key or len(expected_key) > 64:
+            raise ArchitectContractError(
+                "invalid_precondition",
+                "expected_repository_key must be a non-empty string of at most 64 characters.",
+                400,
+            )
+        if (
+            not isinstance(expected_generation, int)
+            or isinstance(expected_generation, bool)
+            or expected_generation < 0
+        ):
+            raise ArchitectContractError(
+                "invalid_precondition",
+                "expected_generation must be a non-negative integer.",
+                400,
+            )
+        active_repository, active_generation = registry.snapshot()
+        if (
+            expected_key != current_repository().key
+            or expected_key != active_repository.key
+            or expected_generation != g.repository_registry_generation
+            or expected_generation != active_generation
+        ):
+            raise ArchitectContractError(
+                "stale_repository_selection",
+                "The active repository changed; refresh Repo Control status and retry.",
+                409,
+            )
+
+    def active_dispatch_milestone(milestone_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            selection = load_milestone_selection(
+                current_repository().path,
+                effective_state_root,
+                current_repository().milestone_root,
+            )
+            if selection["status"] != "selected" or selection["selection"]["milestone_id"] != milestone_id:
+                raise ArchitectContractError(
+                    "stale_milestone_selection",
+                    "The target is not the currently selected milestone.",
+                    409,
+                )
+            workflow = load_milestone_workflow(
+                current_repository().path,
+                effective_state_root,
+                current_repository().milestone_root,
+                selection["selection"],
+            )
+        except (MilestoneArtifactError, WorkflowRecordError) as exc:
+            raise ArchitectContractError("milestone_state_unavailable", str(exc), 409) from exc
+        if workflow["phase"] == "CLOSED":
+            raise ArchitectContractError(
+                "milestone_closed",
+                "INSTRUCTION and RESPONSE dispatches require a non-closed active milestone.",
+                409,
+            )
+        return selection["selection"], workflow
+
+    def submit_architect_dispatch(dispatch_type: str) -> Response:
+        if not request.is_json:
+            raise ArchitectContractError("invalid_content_type", "Dispatch submissions require application/json.", 415)
+        request_limit = MAX_ARCHITECT_DISPATCH_BODY_BYTES * 2 + 8192
+        if request.content_length is not None and request.content_length > request_limit:
+            raise ArchitectContractError(
+                "dispatch_request_oversized",
+                f"Dispatch request exceeds the {request_limit}-byte transport limit.",
+                413,
+            )
+        raw_body = request.stream.read(request_limit + 1)
+        if len(raw_body) > request_limit:
+            raise ArchitectContractError(
+                "dispatch_request_oversized",
+                f"Dispatch request exceeds the {request_limit}-byte transport limit.",
+                413,
+            )
+        try:
+            payload = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArchitectContractError("invalid_json", "Dispatch request must contain valid JSON.", 400) from exc
+        if not isinstance(payload, dict):
+            raise ArchitectContractError("invalid_dispatch", "Dispatch request must be a JSON object.", 400)
+        fields = {
+            "expected_repository_key",
+            "expected_generation",
+            "milestone_id",
+            "body",
+        }
+        if dispatch_type == "PROMPT":
+            fields.add("title")
+        if dispatch_type == "RESPONSE" and "related_event_id" in payload:
+            fields.add("related_event_id")
+        if set(payload) != fields:
+            raise ArchitectContractError(
+                "invalid_dispatch",
+                f"{dispatch_type} dispatch requires exactly these fields: {', '.join(sorted(fields))}.",
+                400,
+            )
+        try:
+            dispatch_preconditions(payload)
+            milestone_id = payload["milestone_id"]
+            if not isinstance(milestone_id, str):
+                raise ArchitectDispatchError("Target milestone ID must be a string.")
+            with repository_action_lock:
+                require_current_repository_selection()
+                dispatch_preconditions(payload)
+                if dispatch_type in {"INSTRUCTION", "RESPONSE"}:
+                    _, active_workflow = active_dispatch_milestone(milestone_id)
+                    related_event_id = payload.get("related_event_id")
+                    if dispatch_type == "RESPONSE" and related_event_id is not None and not any(
+                        event.get("event_id") == related_event_id
+                        for event in active_workflow.get("event_history", [])
+                    ):
+                        raise ArchitectContractError(
+                            "related_event_not_found",
+                            "The related workflow event is not part of the active milestone.",
+                            400,
+                        )
+                record = submit_dispatch(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().repository_id,
+                    dispatch_type=dispatch_type,
+                    milestone_id=milestone_id,
+                    body=payload["body"],
+                    title=payload.get("title"),
+                    related_event_id=payload.get("related_event_id"),
+                    milestone_root=current_repository().milestone_root,
+                )
+        except ArchitectContractError:
+            raise
+        except ArchitectDispatchError:
+            raise
+        response = _architect_json_response(
+            {
+                "contract_version": "1",
+                "repository": {
+                    "key": current_repository().key,
+                    "repository_id": current_repository().repository_id,
+                    "registry_generation": g.repository_registry_generation,
+                },
+                "data": {"dispatch": record},
+            },
+            201,
+        )
+        return response
+
+    @app.post("/api/architect/v1/dispatches/prompt")
+    def architect_submit_prompt():
+        return submit_architect_dispatch("PROMPT")
+
+    @app.post("/api/architect/v1/dispatches/instruction")
+    def architect_submit_instruction():
+        return submit_architect_dispatch("INSTRUCTION")
+
+    @app.post("/api/architect/v1/dispatches/response")
+    def architect_submit_response():
+        return submit_architect_dispatch("RESPONSE")
+
+    @app.get("/api/architect/v1/dispatches")
+    def architect_dispatches():
+        allowed_parameters = {
+            "expected_repository_key",
+            "expected_generation",
+            "milestone_id",
+            "status",
+            "limit",
+            "dispatch_id",
+        }
+        unknown = set(request.args) - allowed_parameters
+        if unknown:
+            raise ArchitectContractError(
+                "unsupported_query_parameter",
+                f"Unsupported query parameter: {sorted(unknown)[0]!r}.",
+                400,
+            )
+        payload: dict[str, Any] = {}
+        for name in ("expected_repository_key", "expected_generation"):
+            values = request.args.getlist(name)
+            if len(values) != 1:
+                raise ArchitectContractError(
+                    "invalid_precondition",
+                    f"Query parameter {name!r} must be supplied exactly once.",
+                    400,
+                )
+            if name == "expected_generation":
+                try:
+                    payload[name] = int(values[0])
+                except ValueError as exc:
+                    raise ArchitectContractError(
+                        "invalid_precondition",
+                        "expected_generation must be a non-negative integer.",
+                        400,
+                    ) from exc
+            else:
+                payload[name] = values[0]
+        dispatch_preconditions(payload)
+        milestone_values = request.args.getlist("milestone_id")
+        status_values = request.args.getlist("status")
+        limit_values = request.args.getlist("limit")
+        if len(milestone_values) > 1 or len(status_values) > 1 or len(limit_values) > 1:
+            raise ArchitectContractError("invalid_query_parameter", "Dispatch filters may be supplied only once.", 400)
+        try:
+            try:
+                limit = int(limit_values[0]) if limit_values else MAX_ARCHITECT_DISPATCH_READ_LIMIT
+            except ValueError as exc:
+                raise ArchitectDispatchError("Dispatch read limit must be an integer.") from exc
+            if not 1 <= limit <= MAX_ARCHITECT_DISPATCH_READ_LIMIT:
+                raise ArchitectDispatchError(
+                    f"Dispatch read limit must be between 1 and {MAX_ARCHITECT_DISPATCH_READ_LIMIT}."
+                )
+            if milestone_values:
+                list_dispatches(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().repository_id,
+                    milestone_id=milestone_values[0],
+                    limit=1,
+                )
+            if status_values and status_values[0] not in {"PENDING", "APPROVED", "REJECTED"}:
+                raise ArchitectDispatchError("Dispatch status must be PENDING, APPROVED, or REJECTED.")
+            dispatch_id_values = request.args.getlist("dispatch_id")
+            if len(dispatch_id_values) > 1:
+                raise ArchitectDispatchError("Dispatch ID may be supplied only once.")
+            if dispatch_id_values:
+                records = [
+                    get_dispatch(
+                        current_repository().path,
+                        effective_state_root,
+                        current_repository().repository_id,
+                        dispatch_id_values[0],
+                    )
+                ]
+                if milestone_values and records[0]["milestone_id"] != milestone_values[0]:
+                    records = []
+                if status_values and records and records[0]["status"] != status_values[0]:
+                    records = []
+            else:
+                records = list_dispatches(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().repository_id,
+                    milestone_id=milestone_values[0] if milestone_values else None,
+                    status=status_values[0] if status_values else None,
+                    limit=limit,
+                )
+        except ArchitectDispatchError as exc:
+            raise ArchitectContractError("invalid_dispatch_query", str(exc), 400) from exc
+        return _architect_json_response(
+            {
+                "contract_version": "1",
+                "repository": {
+                    "key": current_repository().key,
+                    "repository_id": current_repository().repository_id,
+                    "registry_generation": g.repository_registry_generation,
+                },
+                "data": {
+                    "dispatches": records,
+                    "returned_count": len(records),
+                    "limit": limit,
+                },
+            }
+        )
+
+    @app.get("/architect-dispatches")
+    def architect_dispatches_page():
+        try:
+            records = list_owner_dispatches(
+                current_repository().path,
+                effective_state_root,
+                current_repository().repository_id,
+            )
+            selection = load_milestone_selection(
+                current_repository().path,
+                effective_state_root,
+                current_repository().milestone_root,
+            )
+        except (ArchitectDispatchError, MilestoneArtifactError) as exc:
+            raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
+        active_milestone_id = (
+            selection["selection"]["milestone_id"] if selection["status"] == "selected" else None
+        )
+        return render_template(
+            "architect_dispatches.html",
+            dispatches=records,
+            active_milestone_id=active_milestone_id,
+        )
+
+    @app.post("/architect-dispatches/<dispatch_id>/<action>")
+    def resolve_architect_dispatch(dispatch_id: str, action: str):
+        _require_csrf()
+        if action not in {"approve", "reject"}:
+            raise WebUIError("invalid_dispatch_action", "Unknown Architect dispatch action.", status_code=404)
+        with repository_action_lock:
+            require_current_repository_selection()
+            if (
+                request.form.get("repository_key") != current_repository().key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+            ):
+                raise WebUIError(
+                    "stale_dispatch_review",
+                    "The active repository changed since this review was rendered. Refresh and review again.",
+                    status_code=409,
+                )
+            dispatch_status = "APPROVED" if action == "approve" else "REJECTED"
+            active_milestone_id = None
+            if dispatch_status == "APPROVED":
+                try:
+                    dispatches = list_owner_dispatches(
+                        current_repository().path,
+                        effective_state_root,
+                        current_repository().repository_id,
+                    )
+                    selected = next(
+                        (item for item in dispatches if item["dispatch_id"] == dispatch_id),
+                        None,
+                    )
+                    if selected is None:
+                        raise ArchitectDispatchError("Architect dispatch was not found for this repository.")
+                    if selected["type"] in {"INSTRUCTION", "RESPONSE"}:
+                        selection, workflow = active_dispatch_milestone(selected["milestone_id"])
+                        if workflow["phase"] != "CLOSED":
+                            active_milestone_id = selection["milestone_id"]
+                except ArchitectContractError as exc:
+                    raise WebUIError(exc.code, str(exc), status_code=exc.status_code) from exc
+            try:
+                update_dispatch_status(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().repository_id,
+                    dispatch_id,
+                    dispatch_status,
+                    milestone_root=current_repository().milestone_root,
+                    active_milestone_id=active_milestone_id,
+                )
+            except ArchitectDispatchError as exc:
+                raise WebUIError("architect_dispatch_failed", str(exc), status_code=409) from exc
+        flash(
+            "Architect dispatch approved and made available within its bounded scope."
+            if dispatch_status == "APPROVED"
+            else "Architect dispatch rejected.",
+            "success",
+        )
+        return redirect(url_for("architect_dispatches_page"))
 
     @app.get("/healthz")
     def health_check():

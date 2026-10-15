@@ -4,11 +4,11 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
-**Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect JSON API, and persistent read-only Architect Secure MCP Tunnel.
-**Current architectural emphasis:** Reconcile governing context, architecture, workflow, rules, and parking-lot documents with the implemented M003.001–M003.006 reality; standardize read-only Architect MCP tunnel interaction with fallback to manual packets; and preserve deterministic Git authority, Product Owner control, and strict role separation.
+**Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
+**Current architectural emphasis:** Preserve read-only Architect evidence semantics while routing typed proposal submissions through pending Repo Control dispatches, explicit Product Owner approval, and local Coder CLI consumption; preserve deterministic Git authority and strict role separation.
 
 ---
 
@@ -647,8 +647,8 @@ Accepted responsibilities include:
 - reconstruction of milestone lifecycle phase from sidecar event history;
 - open condition tracking and blocking condition enforcement;
 - on-demand generation of Coder and Architect handoff packets;
-- provider-neutral, read-only Architect JSON API on loopback (`/api/architect/v1/*`);
-- persistent, read-only Architect Secure MCP Tunnel (`repoctl mcp-architect` via OpenAI `tunnel-client`).
+- provider-neutral Architect JSON API on loopback with read-only evidence routes and fixed typed proposal-submission routes;
+- persistent Architect Secure MCP Tunnel (`repoctl mcp-architect` via OpenAI `tunnel-client`), exposing bounded dispatch proposals without granting approval or general write authority.
 
 The accepted, implemented six-state lifecycle model is:
 
@@ -820,8 +820,9 @@ tunnel-client daemon (henderson-server1)
       ▼
 repoctl mcp-architect adapter
       │
-      │ HTTP GET (read-only loopback queries)
-      ▼
+      ├── HTTP GET (read-only evidence and bounded dispatch readback)
+      └── fixed typed HTTP POST (pending proposal submissions only)
+             ▼
 Repo Control Service (127.0.0.1:8765/api/architect/v1/*)
       │
       ├── Git inspection
@@ -847,10 +848,27 @@ The adapter exposes 10 focused read-only tools:
 | `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
 | `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
 
-### 14.2 Authority and Security Invariants
+### 14.2 Bounded Dispatch Proposal Tools
+
+The 10 evidence tools above retain their existing read-only behavior. Four separate tools implement the bounded dispatch channel:
+
+| Tool | Endpoint | Scope |
+|---|---|---|
+| `repo_dispatches` | `GET /api/architect/v1/dispatches` | Bounded status/content readback; at most five list results, or one explicit dispatch ID |
+| `architect_submit_prompt_draft` | `POST /api/architect/v1/dispatches/prompt` | Create a pending prompt proposal; no file or lifecycle change |
+| `architect_submit_instruction_draft` | `POST /api/architect/v1/dispatches/instruction` | Create a pending instruction for the selected non-closed milestone |
+| `architect_submit_response_draft` | `POST /api/architect/v1/dispatches/response` | Create a pending response, optionally related to an event in the active milestone |
+
+Dispatch state is repository-scoped operational JSON outside the repository, atomically replaced and bounded to 50 retained records with a 64 KiB body limit. Architect submission cannot approve, reject, write repository files, invoke Git, or record lifecycle events. Only the Product Owner-facing browser route can approve or reject.
+
+PROMPT approval atomically creates only the derived canonical prompt path under the configured milestone root. It does not select the milestone, approve its lifecycle prompt, start work, or mutate Git. Approved INSTRUCTION/RESPONSE content is surfaced in `repoctl coder-context` only for its approved active milestone.
+
+### 14.3 Authority and Security Invariants
 
 - **Authority Boundary:** The MCP tunnel is a transport projection, NOT project authority. Authority remains with Repo Control on `127.0.0.1:8765`, local Git, and tracked markdown artifacts.
-- **Strict Read-Only Enforcement:** Every mapped endpoint is GET-only. The adapter contains zero mutating commands and cannot execute Git, shell, or filesystem operations.
+- **Bounded Capability:** Existing evidence tools remain GET-only. The only Architect POST operations are fixed, typed proposal submissions that persist pending records; they cannot approve dispatches or mutate lifecycle, repository files, or Git.
+- **Product Owner Gate:** A proposal becomes Coder-authoritative only after deliberate approval or rejection on the Product Owner-facing browser route.
+- **Coder Consumption:** Only approved applicable guidance is surfaced by the local Coder CLI; Coder remains Git-prohibited.
 - **Loopback Isolation:** Repo Control binds strictly to `127.0.0.1:8765`. Zero LAN or public ports are opened.
 - **Credential Protection:** Runtime tunnel credentials (`CONTROL_PLANE_API_KEY`, `CONTROL_PLANE_TUNNEL_ID`) reside outside the repository in `~/.config/repo-control/tunnel.env` (permissions `0600`).
 - **Persistent Service:** The tunnel runs as a dedicated systemd service (`repo-control-architect-tunnel.service`) under user `chuck`.
@@ -1382,12 +1400,13 @@ Product Owner control:
 
 Architect integration:
 → Persistent Secure MCP Tunnel (tunnel-client daemon + repoctl mcp-architect)
-  mapping 10 read-only tools to loopback HTTP GET endpoints (/api/architect/v1/*).
+  preserving 10 read-only evidence tools and adding fixed typed dispatch submission/readback endpoints.
   Manual Architect Review Packets serve as operational fallback.
 
 Coder integration:
-→ Coder consumes prompt, coding_agent_rules.md, and governing docs directly or via
-  Coder Handoff Packets. Coder remains strictly forbidden from executing Git mutations.
+→ Coder consumes prompt, approved applicable Architect dispatches, coding_agent_rules.md,
+  and governing docs through the local CLI or Coder Handoff Packets. Coder remains
+  strictly forbidden from executing Git mutations.
 ```
 
 ---
@@ -1404,11 +1423,11 @@ External selection pointer referencing the relative prompt path within the repos
 
 ## 29.3 Architect Integration Mechanism (Decided & Operational)
 
-Persistent Secure MCP Tunnel (`repo-control-architect-tunnel.service`) running OpenAI `tunnel-client` and `repoctl mcp-architect` stdio adapter, mapped to loopback `127.0.0.1:8765/api/architect/v1/*`. Manual review packet retained as fallback.
+Persistent Secure MCP Tunnel (`repo-control-architect-tunnel.service`) running OpenAI `tunnel-client` and `repoctl mcp-architect` stdio adapter. Existing evidence tools remain read-only GETs; separate fixed POST endpoints create only pending typed proposals. `repo_dispatches` provides bounded readback. Manual review packet retained as fallback.
 
 ## 29.4 Coder Integration Mechanism (Active Direction)
 
-Coder packets and direct repository inspection under strict read-only Git rules. Reusable Agent Skills will be evaluated in R004.
+Local `repoctl coder-context` and `repoctl coder-status` under strict read-only Git rules; applicable approved Architect guidance is surfaced through `coder-context`. Reusable Agent Skills will be evaluated in R004.
 
 ## 29.5 Repository Intelligence Engine (Future Evaluation)
 
@@ -1435,13 +1454,15 @@ The architecture is successful when the normal project flow becomes:
 ```text
 Product Owner expresses intent.
 
-Architect inspects trusted current project state via read-only MCP tools.
+Architect inspects trusted current project state via read-only MCP evidence tools.
 
-Architect creates a bounded milestone.
+Architect submits a bounded proposal to Repo Control.
+
+Product Owner reviews and approves or rejects it in Repo Control.
 
 Repo Control discovers and manages the milestone lifecycle.
 
-Coder consumes the milestone and standing rules.
+Coder consumes the active milestone, standing rules, and approved applicable guidance.
 
 Coder and Architect iterate through questions, clarifications, stops, bugs,
 and decisions without the Product Owner manually transporting every artifact.
@@ -1489,10 +1510,11 @@ chronological tracked workflow sidecars (*_workflow.md)
 accepted six-state lifecycle engine (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLOSED)
 open condition tracking and blocking condition enforcement
 on-demand Coder and Architect handoff packet generation
-versioned, read-only Architect JSON API on loopback (/api/architect/v1/*)
+versioned Architect JSON API on loopback (read-only evidence plus fixed bounded proposal submissions)
 persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
-10 read-only MCP tools mapped strictly to loopback HTTP GET endpoints
-live ChatGPT Architect integration with zero repository mutations
+10 read-only evidence MCP tools plus bounded dispatch submission and readback
+Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
+approved applicable dispatches surfaced through local coder-context
 strict Product Owner / Architect / Coder role separation
 deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement

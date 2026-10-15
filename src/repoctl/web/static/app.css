@@ -68,6 +68,7 @@ body {
 .main { padding-bottom: 2rem; }
 .main.main-wide { width: min(98vw, 1920px); }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; overflow-x: auto; }
+.dispatch-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .card { background: #fffefb; border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; }
 .card.error { border-color: #cf9a81; }
 .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.8rem; }

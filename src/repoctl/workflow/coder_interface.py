@@ -8,6 +8,7 @@ from typing import Any
 from ..scanner.core import DEFAULT_STATE_ROOT
 from ..scanner.git_ops import ScanError, validate_git_worktree
 from ..scanner.util import make_repository_id
+from .architect_dispatches import ArchitectDispatchError, list_owner_dispatches
 from ..web.repository_registry import (
     DEFAULT_DOCUMENT_PATHS,
     RepositoryEntry,
@@ -261,6 +262,35 @@ def get_coder_context(
         prompt_content = f"Error: prompt file not found at {prompt_rel_path}"
 
     context_data = dict(status_data)
+    effective_state_root = Path(state_root).expanduser().resolve() if state_root else DEFAULT_STATE_ROOT
+    milestone_id = status_data["milestone"]["id"]
+    try:
+        dispatches = list_owner_dispatches(
+            repo_path,
+            effective_state_root,
+            status_data["repository"]["repository_id"],
+        )
+    except ArchitectDispatchError as exc:
+        raise CoderInterfaceError(f"Could not load approved Architect dispatches: {exc}") from exc
+    applicable_dispatches = [
+        item
+        for item in reversed(dispatches)
+        if item["status"] == "APPROVED"
+        and item["type"] in {"INSTRUCTION", "RESPONSE"}
+        and item.get("approved_milestone_id") == milestone_id
+    ]
+    context_data["approved_architect_dispatches"] = [
+        {
+            "alias": f"A{index}",
+            "dispatch_id": item["dispatch_id"],
+            "type": item["type"],
+            "milestone_id": item["milestone_id"],
+            "approved_at": item["approved_at"],
+            "related_event_id": item.get("related_event_id"),
+            "body": item["body"],
+        }
+        for index, item in enumerate(applicable_dispatches, start=1)
+    ]
     context_data["prompt"] = {
         "path": prompt_rel_path,
         "content": prompt_content,
@@ -314,6 +344,7 @@ def format_coder_context_text(data: dict[str, Any]) -> str:
     status_header = format_coder_status_text(data)
     refs = data.get("standing_references", {})
     prompt_content = data.get("prompt", {}).get("content", "")
+    dispatches = data.get("approved_architect_dispatches", [])
 
     lines = [
         status_header,
@@ -329,11 +360,32 @@ def format_coder_context_text(data: dict[str, Any]) -> str:
         refs.get("git_mutation_policy", GIT_MUTATION_POLICY_NOTICE),
         "",
         "-" * 80,
-        "AUTHORITATIVE PROMPT CONTENT",
+        "APPROVED ARCHITECT DISPATCHES",
         "-" * 80,
-        prompt_content,
-        "=" * 80,
     ]
+    if dispatches:
+        for dispatch in dispatches:
+            lines.extend(
+                [
+                    f"{dispatch['alias']} — {dispatch['milestone_id']}",
+                    f"Type: {dispatch['type']}",
+                    f"Approved: {dispatch['approved_at']}",
+                    dispatch["body"],
+                    "",
+                ]
+            )
+    else:
+        lines.append("None.")
+    lines.extend(
+        [
+            "",
+            "-" * 80,
+            "AUTHORITATIVE PROMPT CONTENT",
+            "-" * 80,
+            prompt_content,
+            "=" * 80,
+        ]
+    )
     return "\n".join(lines)
 
 
