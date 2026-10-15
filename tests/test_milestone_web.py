@@ -99,6 +99,10 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIn("Product Owner: review the prompt", text)
             self.assertIn("not authenticated", text)
             self.assertIn("MILESTONE WORKFLOW — EXPLICIT ACTIONS", text)
+            self.assertIn('data-summary="Approve R003.01 prompt"', text)
+            self.assertIn('name="expected_phase" value="PLANNING"', text)
+            self.assertIn("Action available in PLANNING", text)
+            self.assertNotIn('value="question_submitted"', text)
 
             data = {
                 "csrf_token": csrf,
@@ -109,13 +113,290 @@ class MilestoneWebTests(unittest.TestCase):
                 "event_type": "prompt_approved",
                 "summary": "Prompt reviewed and approved.",
                 "actor_role": "product_owner",
+                "expected_phase": "PLANNING",
             }
             refused = client.post("/milestones/workflow/event", data=data)
             self.assertEqual(refused.status_code, 400)
+            refused_text = refused.get_data(as_text=True)
+            self.assertIn("Select Product Owner and explicitly confirm", refused_text)
+            self.assertIn("Prompt reviewed and approved.", refused_text)
+            self.assertIn('name="po_approved" value="yes"', refused_text)
+            self.assertFalse((first / "docs/milestones/R003.01_test_workflow.md").exists())
+            data["actor_role"] = "coder"
             data["po_approved"] = "yes"
+            wrong_actor = client.post("/milestones/workflow/event", data=data)
+            self.assertEqual(wrong_actor.status_code, 400)
+            self.assertRegex(wrong_actor.get_data(as_text=True), r'value="coder"\s+selected')
+            self.assertFalse((first / "docs/milestones/R003.01_test_workflow.md").exists())
+
+            data["actor_role"] = "product_owner"
             accepted = client.post("/milestones/workflow/event", data=data)
             self.assertEqual(accepted.status_code, 302)
             self.assertIn("Lifecycle: READY", client.get("/milestones").get_data(as_text=True))
+            stale_phase = client.post(
+                "/milestones/workflow/event",
+                data={
+                    **data,
+                    "event_type": "implementation_started",
+                    "expected_phase": "PLANNING",
+                    "summary": "Stale phase submission",
+                },
+            )
+            self.assertEqual(stale_phase.status_code, 409)
+
+    def test_workflow_actions_aliases_and_related_choices_are_milestone_local(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            registry = _registry(root, first, second)
+            client = create_web_app(
+                repository_registry_path=registry,
+                state_root=root / "state",
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            )
+            fragment_args = {
+                "repository_key": "first",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+                "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+            }
+            initial_panel = client.get(
+                "/milestones/workflow/fragment",
+                query_string=fragment_args,
+            )
+            self.assertIn("Events recorded:</strong> 0", initial_panel.get_data(as_text=True))
+            initial_version = re.search(
+                r'data-state-version="([^"]+)"',
+                initial_panel.get_data(as_text=True),
+            )
+            self.assertIsNotNone(initial_version)
+
+            def submit(phase: str, event_type: str, summary: str, **fields: str):
+                return client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                        "expected_phase": phase,
+                        "event_type": event_type,
+                        "summary": summary,
+                        "actor_role": "product_owner",
+                        **fields,
+                    },
+                )
+
+            self.assertEqual(
+                submit("PLANNING", "prompt_approved", "Approve prompt", po_approved="yes").status_code,
+                302,
+            )
+            self.assertEqual(submit("READY", "implementation_started", "Start work").status_code, 302)
+            self.assertEqual(
+                submit("IN_PROGRESS", "question_submitted", "Need scope clarification").status_code,
+                302,
+            )
+            self.assertEqual(
+                submit("IN_PROGRESS", "question_submitted", "Need second clarification").status_code,
+                302,
+            )
+            self.assertEqual(
+                submit("IN_PROGRESS", "bug_discovered", "Incorrect status display").status_code,
+                302,
+            )
+            self.assertEqual(
+                submit("IN_PROGRESS", "bug_discovered", "Incorrect event count").status_code,
+                302,
+            )
+
+            panel = client.get(
+                "/milestones/workflow/fragment",
+                query_string=fragment_args,
+            )
+            text = panel.get_data(as_text=True)
+            self.assertEqual(panel.status_code, 200)
+            final_version = re.search(r'data-state-version="([^"]+)"', text)
+            self.assertIsNotNone(final_version)
+            self.assertNotEqual(initial_version.group(1), final_version.group(1))
+            self.assertIn("Events recorded:</strong> 6", text)
+            self.assertIn("R003.01 Q1 · question_submitted", text)
+            self.assertIn("R003.01 Q2 · question_submitted", text)
+            self.assertIn("R003.01 B1 · bug_discovered", text)
+            self.assertIn("R003.01 B2 · bug_discovered", text)
+            self.assertIn('data-alias="R003.01 Q1"', text)
+            self.assertIn('data-actions="answer_recorded"', text)
+            self.assertIn('data-actions="bug_classified"', text)
+            self.assertIn('data-summary="Response to {related}"', text)
+            self.assertIn('value="answer_recorded"', text)
+            answer_options = re.findall(r'<option value="[^"]+"[^>]*data-actions="answer_recorded"[^>]*>', text)
+            self.assertEqual(len(answer_options), 2)
+            self.assertTrue(all("selected" not in option for option in answer_options))
+            self.assertEqual(panel.headers["Cache-Control"], "no-store")
+
+    def test_phase_actions_follow_the_six_lifecycle_states(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            closeout = first / "docs" / "milestones" / "R003.01_test_closeout.md"
+            closeout.write_text("# Closeout\n", encoding="utf-8")
+            registry = _registry(root, first, second)
+            client = create_web_app(
+                repository_registry_path=registry,
+                state_root=root / "state",
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "first",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            )
+
+            def page_text() -> str:
+                return client.get("/milestones").get_data(as_text=True)
+
+            def assert_actions(text: str, present: set[str], absent: set[str] = frozenset()) -> None:
+                for event_type in present:
+                    self.assertRegex(text, rf'<option value="{event_type}"')
+                for event_type in absent:
+                    self.assertNotRegex(text, rf'<option value="{event_type}"')
+
+            def submit(phase: str, event_type: str, summary: str, **fields: str):
+                return client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                        "expected_phase": phase,
+                        "event_type": event_type,
+                        "summary": summary,
+                        "actor_role": "product_owner",
+                        **fields,
+                    },
+                )
+
+            assert_actions(
+                page_text(),
+                {"prompt_approved", "decision_recorded", "lock_in_approved"},
+                {"implementation_started", "question_submitted"},
+            )
+            self.assertEqual(
+                submit("PLANNING", "prompt_approved", "Approve", po_approved="yes").status_code,
+                302,
+            )
+            assert_actions(page_text(), {"implementation_started"}, {"prompt_approved"})
+
+            self.assertEqual(
+                submit("READY", "implementation_started", "Start implementation").status_code,
+                302,
+            )
+            in_progress = page_text()
+            assert_actions(
+                in_progress,
+                {"question_submitted", "bug_discovered", "closeout_submitted"},
+                {"answer_recorded", "bug_classified", "bug_fixed"},
+            )
+            self.assertEqual(
+                submit(
+                    "IN_PROGRESS",
+                    "question_submitted",
+                    "Clarification needed",
+                    waiting_category="clarification",
+                    waiting_reason="Confirm expected behavior.",
+                ).status_code,
+                302,
+            )
+            waiting = page_text()
+            assert_actions(
+                waiting,
+                {"answer_recorded", "decision_recorded"},
+                {"question_submitted", "implementation_resumed"},
+            )
+
+            answer_option = re.search(
+                r'<option value="([^"]+)"\s+data-actions="answer_recorded"',
+                waiting,
+            )
+            self.assertIsNotNone(answer_option)
+            question_id = answer_option.group(1)
+            rejected_answer = submit(
+                "WAITING",
+                "answer_recorded",
+                "",
+                related_event_id="",
+            )
+            self.assertEqual(rejected_answer.status_code, 400)
+            rejected_text = rejected_answer.get_data(as_text=True)
+            self.assertRegex(
+                rejected_text,
+                rf'<option value="{re.escape(question_id)}"[^>]*selected',
+            )
+            answered = submit(
+                "WAITING",
+                "answer_recorded",
+                "Clarification resolved",
+                related_event_id=question_id,
+            )
+            self.assertEqual(answered.status_code, 302)
+            assert_actions(page_text(), {"implementation_resumed"})
+            self.assertEqual(
+                submit("WAITING", "implementation_resumed", "Resume work").status_code,
+                302,
+            )
+            assert_actions(page_text(), {"question_submitted", "closeout_submitted"})
+
+            self.assertEqual(
+                submit("IN_PROGRESS", "closeout_submitted", "Submit closeout").status_code,
+                302,
+            )
+            review = page_text()
+            assert_actions(
+                review,
+                {"acceptance_recorded", "correction_requested", "review_requested"},
+                {"milestone_closed"},
+            )
+            self.assertEqual(
+                submit(
+                    "REVIEW",
+                    "acceptance_recorded",
+                    "Accept reviewed closeout",
+                    po_approved="yes",
+                ).status_code,
+                302,
+            )
+            assert_actions(page_text(), {"milestone_closed"})
+            self.assertEqual(
+                submit(
+                    "REVIEW",
+                    "milestone_closed",
+                    "Close accepted milestone",
+                    po_approved="yes",
+                ).status_code,
+                302,
+            )
+            closed = page_text()
+            self.assertIn("Lifecycle: CLOSED", closed)
+            self.assertNotIn('data-workflow-form', closed)
 
     def test_stale_milestone_and_repository_workflow_posts_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -33,7 +33,12 @@ from ..workflow.milestones import (
     load_milestone_selection,
     save_milestone_selection,
 )
-from ..workflow.lifecycle import WorkflowRecordError, load_milestone_workflow, record_milestone_event
+from ..workflow.lifecycle import (
+    EVENT_OPTIONS,
+    WorkflowRecordError,
+    load_milestone_workflow,
+    record_milestone_event,
+)
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
     MAX_PACKET_BYTES,
@@ -61,6 +66,149 @@ from .views import (
 
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 MAX_CONTEXT_QUERY_CHARS = 400
+_PHASE_ACTIONS = {
+    "PLANNING": ("prompt_approved", "decision_recorded", "lock_in_approved", "git_disposition_recorded"),
+    "READY": ("implementation_started", "decision_recorded", "lock_in_approved", "git_disposition_recorded"),
+    "IN_PROGRESS": (
+        "question_submitted", "answer_recorded", "decision_recorded", "lock_in_approved",
+        "escalation_opened", "bug_discovered", "bug_classified", "bug_fixed",
+        "test_result_recorded", "closeout_submitted", "git_disposition_recorded",
+    ),
+    "WAITING": (
+        "answer_recorded", "decision_recorded", "lock_in_approved", "escalation_resolved",
+        "bug_discovered", "bug_classified", "bug_fixed", "test_result_recorded",
+        "implementation_resumed", "git_disposition_recorded",
+    ),
+    "REVIEW": (
+        "decision_recorded", "lock_in_approved", "test_result_recorded", "review_requested",
+        "correction_requested", "acceptance_recorded", "milestone_closed", "git_disposition_recorded",
+    ),
+    "CLOSED": (),
+}
+_SUMMARY_PATTERNS = {
+    "prompt_approved": "Approve {milestone} prompt",
+    "implementation_started": "Start {milestone} implementation",
+    "question_submitted": "Question about {milestone}",
+    "answer_recorded": "Response to {related}",
+    "decision_recorded": "Record decision for {milestone}",
+    "lock_in_approved": "Approve binding lock-in for {milestone}",
+    "escalation_opened": "Open escalation for {milestone}",
+    "escalation_resolved": "Resolve escalation for {milestone}",
+    "bug_discovered": "Record bug discovered in {milestone}",
+    "bug_classified": "Classify {related}",
+    "bug_fixed": "Record fix for {related}",
+    "test_result_recorded": "Record test result for {milestone}",
+    "implementation_resumed": "Resume {milestone} implementation",
+    "closeout_submitted": "Submit {milestone} closeout for review",
+    "review_requested": "Request review for {milestone}",
+    "correction_requested": "Request bounded correction for {milestone}",
+    "acceptance_recorded": "Accept {milestone}",
+    "milestone_closed": "Close {milestone}",
+    "git_disposition_recorded": "Record Git disposition for {milestone}",
+}
+
+
+def _decorate_milestone_workflow(
+    workflow: dict[str, Any],
+    milestone_id: str,
+    *,
+    has_closeout: bool,
+) -> dict[str, Any]:
+    aliases: dict[str, str] = {}
+    counters = {"question_submitted": 0, "bug_discovered": 0}
+    for event in workflow.get("event_history", []):
+        event_type = event.get("event_type")
+        if event_type in counters:
+            counters[event_type] += 1
+            suffix = "Q" if event_type == "question_submitted" else "B"
+            aliases[event["event_id"]] = f"{milestone_id} {suffix}{counters[event_type]}"
+
+    def decorate(event: dict[str, Any]) -> dict[str, Any]:
+        result = dict(event)
+        result["display_alias"] = aliases.get(event.get("event_id"), event.get("event_id", ""))
+        return result
+
+    for key in ("event_history", "latest_events", "open_questions", "open_bugs", "fixable_bugs"):
+        workflow[key] = [decorate(event) for event in workflow.get(key, [])]
+    if workflow.get("latest_authoritative_decision"):
+        workflow["latest_authoritative_decision"] = decorate(workflow["latest_authoritative_decision"])
+
+    event_options = dict(EVENT_OPTIONS)
+    available_actions = set(_PHASE_ACTIONS.get(workflow.get("phase"), ()))
+    if not workflow.get("open_questions"):
+        available_actions.discard("answer_recorded")
+    if not workflow.get("open_bugs"):
+        available_actions.discard("bug_classified")
+    if not workflow.get("fixable_bugs"):
+        available_actions.discard("bug_fixed")
+    if workflow.get("waiting_category") != "escalation":
+        available_actions.discard("escalation_resolved")
+    if not has_closeout:
+        available_actions.discard("closeout_submitted")
+    if workflow.get("phase") == "WAITING":
+        waiting_entry = max(
+            (
+                index
+                for index, event in enumerate(workflow["event_history"])
+                if event["phase_after"] == "WAITING" and event["phase_before"] != "WAITING"
+            ),
+            default=-1,
+        )
+        resolutions = {
+            "answer_recorded",
+            "decision_recorded",
+            "lock_in_approved",
+            "escalation_resolved",
+            "bug_fixed",
+        }
+        if not any(event["event_type"] in resolutions for event in workflow["event_history"][waiting_entry + 1 :]):
+            available_actions.discard("implementation_resumed")
+    if not workflow.get("event_history") or workflow["event_history"][-1]["event_type"] != "acceptance_recorded":
+        available_actions.discard("milestone_closed")
+    workflow["ui_events"] = [
+        (event_type, event_options[event_type])
+        for event_type in _PHASE_ACTIONS.get(workflow.get("phase"), ())
+        if event_type in available_actions
+    ]
+    workflow["ui_state_version"] = ":".join(
+        (
+            workflow.get("phase", ""),
+            str(workflow.get("event_count", 0)),
+            ",".join(event_type for event_type, _ in workflow["ui_events"]),
+        )
+    )
+    workflow["default_summaries"] = {
+        event_type: pattern.format(milestone=milestone_id, related="{related}")
+        for event_type, pattern in _SUMMARY_PATTERNS.items()
+    }
+    workflow["default_related_event_ids"] = {}
+    workflow["related_items"] = [
+        {
+            "event_id": event["event_id"],
+            "display_alias": event["display_alias"],
+            "summary": event["summary"],
+            "kind": kind,
+            "actions": actions,
+        }
+        for kind, events, actions in (
+            ("Question", workflow.get("open_questions", []), "answer_recorded"),
+            ("Bug", workflow.get("open_bugs", []), "bug_classified"),
+            ("Bug", workflow.get("fixable_bugs", []), "bug_fixed"),
+        )
+        for event in events
+    ]
+    for event_type, events in (
+        ("answer_recorded", workflow.get("open_questions", [])),
+        ("bug_classified", workflow.get("open_bugs", [])),
+        ("bug_fixed", workflow.get("fixable_bugs", [])),
+    ):
+        if len(events) == 1:
+            workflow["default_related_event_ids"][event_type] = events[0]["event_id"]
+            workflow["default_summaries"][event_type] = _SUMMARY_PATTERNS[event_type].format(
+                milestone=milestone_id,
+                related=events[0]["display_alias"],
+            )
+    return workflow
 
 
 class WebUIError(RuntimeError):
@@ -889,6 +1037,11 @@ def create_web_app(
                     repository.milestone_root,
                     selection["selection"],
                 )
+                _decorate_milestone_workflow(
+                    workflow,
+                    selection["selection"]["milestone_id"],
+                    has_closeout=selection["selection"]["closeout_exists"],
+                )
             except (MilestoneArtifactError, WorkflowRecordError) as exc:
                 workflow = {"status": "invalid", "reason": str(exc)}
         return render_template(
@@ -899,6 +1052,51 @@ def create_web_app(
             milestone_root=repository.milestone_root,
             workflow=workflow,
         )
+
+    @app.get("/milestones/workflow/fragment")
+    def milestone_workflow_fragment():
+        repository = current_repository()
+        if (
+            request.args.get("repository_key") != repository.key
+            or request.args.get("repository_generation") != str(g.repository_registry_generation)
+        ):
+            return Response("", status=409)
+        try:
+            selection = load_milestone_selection(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+            )
+            expected_id = request.args.get("milestone_id", "")
+            expected_prompt_path = request.args.get("prompt_path", "")
+            if (
+                selection["status"] != "selected"
+                or selection["selection"]["milestone_id"] != expected_id
+                or selection["selection"]["prompt_path"] != expected_prompt_path
+            ):
+                return Response("", status=409)
+            workflow = load_milestone_workflow(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+                selection["selection"],
+            )
+        except (MilestoneArtifactError, WorkflowRecordError) as exc:
+            raise WebUIError("milestone_refresh_failed", str(exc), status_code=503) from exc
+        _decorate_milestone_workflow(
+            workflow,
+            selection["selection"]["milestone_id"],
+            has_closeout=selection["selection"]["closeout_exists"],
+        )
+        response = app.make_response(
+            render_template(
+                "milestone_workflow.html",
+                workflow=workflow,
+                selection=selection,
+            )
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/milestones/select")
     def select_milestone():
@@ -977,6 +1175,18 @@ def create_web_app(
                     "The selected milestone changed or is invalid. Refresh the page and retry.",
                     status_code=409,
                 )
+            workflow = load_milestone_workflow(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+                selection["selection"],
+            )
+            if request.form.get("expected_phase") != workflow["phase"]:
+                raise WebUIError(
+                    "stale_workflow_phase",
+                    "The milestone lifecycle changed since this form was rendered. Refresh before submitting.",
+                    status_code=409,
+                )
             try:
                 record_milestone_event(
                     repository.path,
@@ -994,7 +1204,29 @@ def create_web_app(
                     evidence_source=request.form.get("evidence_source") or None,
                     result=request.form.get("result") or None,
                 )
-            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+            except WorkflowRecordError as exc:
+                inventory = discover_milestones(repository.path, repository.milestone_root)
+                workflow = load_milestone_workflow(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                )
+                _decorate_milestone_workflow(
+                    workflow,
+                    selection["selection"]["milestone_id"],
+                    has_closeout=selection["selection"]["closeout_exists"],
+                )
+                return render_template(
+                    "milestones.html",
+                    candidates=inventory["candidates"],
+                    inventory_issues=inventory["issues"],
+                    selection=selection,
+                    milestone_root=repository.milestone_root,
+                    workflow=workflow,
+                    workflow_form_error=str(exc),
+                ), 400
+            except MilestoneArtifactError as exc:
                 raise WebUIError("invalid_workflow_event", str(exc), status_code=400) from exc
         flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
         return redirect(url_for("milestone_page"))
@@ -1062,6 +1294,11 @@ def create_web_app(
                     effective_state_root,
                     repository.milestone_root,
                     selection["selection"],
+                )
+                _decorate_milestone_workflow(
+                    workflow,
+                    selection["selection"]["milestone_id"],
+                    has_closeout=selection["selection"]["closeout_exists"],
                 )
             except (MilestoneArtifactError, WorkflowRecordError) as exc:
                 workflow = {"status": "invalid", "reason": str(exc)}
