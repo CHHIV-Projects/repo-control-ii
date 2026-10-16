@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
@@ -74,7 +74,7 @@ Conceptually:
       GitHub     Local Tree   Tests       Repository Intelligence
                                              │
                                              ▼
-                                      Graphify / DevLens
+                                      Replaceable engine
 ```
 
 The architectural principle is:
@@ -105,7 +105,7 @@ The initial Git Control arc is complete and operationally accepted.
 
 Reduce manual transfer of prompts, questions, clarifications, coder output, test evidence, and repository state between the Architect and Coder.
 
-This is the next major architectural focus.
+The accepted M003 baseline implements bounded Architect evidence/dispatch transport and local Coder workflow access, while retaining Product Owner authority.
 
 ## 3.3 Context Efficiency
 
@@ -304,6 +304,8 @@ Always-on operation, browser access, startup automation, and remote authenticati
 # 5. System Boundary
 
 Repo Control II is a **control plane**, not an IDE, coding model, or source-control replacement.
+
+Its durable value is Product Owner authority, deterministic repository/project state, explicit lifecycle, bounded evidence routing, and safe integration of interchangeable specialized tools. It is not an AI project manager or a bespoke general-purpose agent framework.
 
 Repo Control II should own:
 
@@ -642,7 +644,7 @@ The Workflow Orchestration layer coordinates milestone lifecycle, governing docu
 Accepted responsibilities include:
 
 - recursive discovery of milestone prompt artifacts beneath configured repository `milestone_root`;
-- external active milestone selection pointer (`.repo-control/selected-milestone.json`);
+- external repository-scoped active milestone selection pointer (`<state_root>/<repository_id>/milestones/selection.json`, default state root `~/.local/share/repoctl`);
 - chronological workflow sidecars (`*_workflow.md`) beside each milestone prompt;
 - reconstruction of milestone lifecycle phase from sidecar event history;
 - open condition tracking and blocking condition enforcement;
@@ -670,7 +672,8 @@ PLANNING
 
 READY
 → Product Owner has reviewed and approved the prompt. Unresolved conditions
-  are cleared. Coder is authorized to begin preflight and implementation.
+  are cleared. Coder may preflight, but implementation requires the explicit
+  implementation_started event and IN_PROGRESS authorization.
 
 IN_PROGRESS
 → Implementation is actively underway by the coding agent. Normal tests,
@@ -681,15 +684,17 @@ WAITING
   or Product Owner decision. Resume transitions back to IN_PROGRESS.
 
 REVIEW
-→ Implementation is complete, tests have passed, closeout is present, and
-  read-only Git status is reported. Ready for Architect and Product Owner review.
+→ Closeout/evidence has been explicitly submitted for Architect and Product Owner
+  review. The phase itself does not independently verify passing tests.
 
 CLOSED
-→ Product Owner has accepted the implementation, performed necessary Git
-  mutations (staging, commit, push), and closed the milestone.
+→ Product Owner has accepted and explicitly closed the milestone. Git completion
+  or deferral remains a separate Product Owner decision, not a lifecycle side effect.
 ```
 
 Transitions are explicit and recorded in the per-milestone workflow sidecar. Transition into `READY` and `REVIEW` is gated on zero open blocking conditions.
+
+Tests, Git cleanliness, commits, and closeout presence do not automatically advance lifecycle.
 
 ---
 
@@ -765,6 +770,8 @@ M<arc>.<sequence>[.<subsequence>]_<name>_workflow.md
 ```
 
 It resides in the same directory as the prompt and shares the exact milestone ID and descriptive basename. It is not an active selection anchor or a prompt; it is the durable record of transitions, decisions, and conditions.
+
+It is intended for Git tracking, but the active sidecar may be modified/untracked as expected operational state. Only that sidecar is exempt by itself from clean-tree preflight; a newly materialized prompt or any other unexplained dirty path is not.
 
 ## 13.3 Closeout
 
@@ -871,20 +878,34 @@ Dispatch state is repository-scoped operational JSON outside the repository, ato
 
 PROMPT approval atomically creates only the derived canonical prompt path under the configured milestone root. It does not select the milestone, approve its lifecycle prompt, start work, or mutate Git. Approved INSTRUCTION/RESPONSE content is surfaced in `repoctl coder-context` only for its approved active milestone.
 
+This replaces manual prompt copy/paste where applicable: Architect draft -> Repo Control -> Product Owner review -> canonical prompt. Dispatch **Approve & Save Prompt** is distinct from lifecycle **Approve & Start**. The Product Owner should normally review/commit a materialized prompt before implementation; creation is not a dirty-tree exception.
+
+Pending and rejected proposals are not authorized Coder guidance. Dispatch approval itself records no lifecycle event. The approved section in `coder-context` is milestone-scoped guidance, not standing lifecycle authority.
+
+Live M003.011 discovery showed that tool inventory changes may require an explicit ChatGPT custom-app refresh beyond restarting Linux services. Local `tools/list` evidence must be distinguished from remote catalog visibility.
+
 ### 14.3 Authority and Security Invariants
 
 - **Authority Boundary:** The MCP tunnel is a transport projection, NOT project authority. Authority remains with Repo Control on `127.0.0.1:8765`, local Git, and tracked markdown artifacts.
 - **Bounded Capability:** Existing evidence tools remain GET-only. The only Architect POST operations are fixed, typed proposal submissions that persist pending records; they cannot approve dispatches or mutate lifecycle, repository files, or Git.
-- **Product Owner Gate:** A proposal becomes Coder-authoritative only after deliberate approval or rejection on the Product Owner-facing browser route.
+- **Product Owner Gate:** Only deliberate approval on the Product Owner-facing browser route authorizes applicable guidance; rejection never does.
 - **Coder Consumption:** Only approved applicable guidance is surfaced by the local Coder CLI; Coder remains Git-prohibited.
 - **Loopback Isolation:** Repo Control binds strictly to `127.0.0.1:8765`. Zero LAN or public ports are opened.
 - **Credential Protection:** Runtime tunnel credentials (`CONTROL_PLANE_API_KEY`, `CONTROL_PLANE_TUNNEL_ID`) reside outside the repository in `~/.config/repo-control/tunnel.env` (permissions `0600`).
 - **Persistent Service:** The tunnel runs as a dedicated systemd service (`repo-control-architect-tunnel.service`) under user `chuck`.
 - **Operational Fallback:** When the tunnel is unavailable, the Product Owner can generate and provide an Architect Review Packet as an accepted fallback.
+- **Minimum Evidence:** Natural Architect requests authorize only the minimum bounded read-only evidence required through fixed tools, never arbitrary repository, filesystem, shell, Git, lifecycle, or Product Owner authority.
 
 ---
 
 # 15. Coder Integration Layer
+
+The accepted Coder integration is local, in-process CLI execution, not Coder MCP:
+
+- `repoctl coder-context` / `coder-status`: selected milestone, authorization, standing references, open conditions, and applicable approved dispatches (context only).
+- `coder-question`, `coder-bug`, `coder-test`, `coder-closeout`: fixed bounded event submissions using `actor_role="coder"` and `po_approved=False`.
+
+There is no generic event submission or Product Owner approval/start/resume/acceptance/closure command. The CLI reuses the lifecycle engine; it does not own Git mutations. Handoff packets remain a read-only fallback.
 
 Coder environments may include:
 
@@ -998,12 +1019,7 @@ Current Working-Tree Graph
 
 Repo Control should expose query-oriented repository intelligence rather than dumping entire graphs into AI context.
 
-Candidate engines remain:
-
-- Graphify;
-- DevLens.
-
-The engine remains unselected.
+M004.000 is accepted and CLOSED with **ADOPT FOR POC** for Graphify, not production adoption. Repository intelligence is not integrated. Graphify is evaluated as a replaceable specialized engine; Repo Control must not duplicate its parser or graph-query implementation. Architect and Coder are intended to consume the same underlying bounded evidence source. Accuracy, freshness, offline behavior, and Flask/template gaps still need POC validation.
 
 ---
 
@@ -1065,28 +1081,16 @@ Best represented in Git-tracked Markdown or configuration:
 - stable project configuration;
 - repository allowlist.
 
-## 20.2 Operational Workflow State
+## 20.2 Operational and Workflow State
 
-May require lightweight structured storage:
+The accepted M003 persistence choices are:
 
-- active milestone;
-- current workflow state;
-- transient waiting/escalation state;
-- event timestamps;
-- UI preferences;
-- pending prepared operations;
-- cached intelligence status;
-- active repository selection.
+- external JSON selection pointer at `<state_root>/<repository_id>/milestones/selection.json`, default state root `~/.local/share/repoctl`;
+- chronological Markdown workflow sidecar beside the prompt, including events, current phase reconstruction, waiting reasons, and open conditions;
+- separate external repository-scoped JSON Architect dispatch ledger;
+- in-memory service-wide repository selection and short-lived prepared Git actions.
 
-Possible implementation options remain:
-
-```text
-small local JSON files
-SQLite
-lightweight relational store
-```
-
-The choice should be driven by actual R003 requirements.
+Workflow events are durable milestone evidence, not an alternate database model. Cached intelligence/UI state remains future or derived state; no database was introduced by the M003 workflow or dispatch implementation.
 
 ## 20.3 Derived State
 
@@ -1204,7 +1208,7 @@ GitButler and other Git tools may remain references for UX concepts or future ad
 
 ## 23.2 Repository Intelligence
 
-Graphify and DevLens remain evaluation candidates.
+Graphify is accepted for POC only following M004.000; no production engine integration is approved by that reconnaissance.
 
 ## 23.3 Agent Skills
 
@@ -1337,7 +1341,7 @@ Service startup, remote authentication, and browser access must not depend on tr
 
 # 26. Architecture Sequence
 
-The current preferred architecture sequence is:
+The completed architectural baseline and remaining capability areas are:
 
 ```text
 1. Governing documents                              COMPLETE
@@ -1346,20 +1350,20 @@ The current preferred architecture sequence is:
 
 3. Git Control                                      COMPLETE / CLOSED
 
-4. Workflow Orchestration architecture              NEXT
+4. Workflow Orchestration architecture              ACCEPTED
 
-5. Workflow Orchestration implementation            AFTER RECONNAISSANCE
+5. Workflow Orchestration through M003.012           ACCEPTED / CLOSED
 
-6. Agent Skills / standing procedure                PLANNED
+6. Agent Skills / reusable procedure                NOT IMPLEMENTED
 
-7. Repository Intelligence evaluation/integration   PLANNED
+7. Repository Intelligence                          M004.000 CLOSED; POC ONLY
 
-8. Controlled Architect / Coder integration         LATER
+8. Deeper Architect / Coder integration             DEFERRED
 
 9. Model Gateway                                    LATER
 ```
 
-This sequence prioritizes the current proven workflow pain point: manual state and artifact transport.
+This is not a prescribed future implementation sequence. Any extension requires separately approved scope and must preserve the completed transport/authority boundaries.
 
 ---
 
@@ -1394,7 +1398,8 @@ Minimum state model:
 → Six explicit states: PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLOSED.
 
 Active milestone identity:
-→ External selection pointer (.repo-control/selected-milestone.json) outside tracked repo content.
+→ External repository-scoped selection pointer
+  (<state_root>/<repository_id>/milestones/selection.json) outside tracked repo content.
 
 Artifact and state relationship:
 → Prompts define the initial contract.
@@ -1423,7 +1428,7 @@ Coder integration:
 
 ## 29.1 Workflow Persistence (Decided)
 
-Tracked Markdown workflow sidecars beside each prompt store the durable event history. Active selection pointer is externalized in `.repo-control/selected-milestone.json`.
+Markdown workflow sidecars beside each prompt store durable event history and are intended for Git tracking; the active sidecar may be modified/untracked. The active selection pointer is externalized in `<state_root>/<repository_id>/milestones/selection.json` (default state root `~/.local/share/repoctl`).
 
 ## 29.2 Active Milestone Identity (Decided)
 
@@ -1433,17 +1438,17 @@ External selection pointer referencing the relative prompt path within the repos
 
 Persistent Secure MCP Tunnel (`repo-control-architect-tunnel.service`) running OpenAI `tunnel-client` and `repoctl mcp-architect` stdio adapter. Existing evidence tools remain read-only GETs; separate fixed POST endpoints create only pending typed proposals. `repo_dispatches` provides bounded readback. Manual review packet retained as fallback.
 
-## 29.4 Coder Integration Mechanism (Active Direction)
+## 29.4 Coder Integration Mechanism (Implemented)
 
-Local `repoctl coder-context` and `repoctl coder-status` under strict read-only Git rules; applicable approved Architect guidance is surfaced through `coder-context`. Reusable Agent Skills will be evaluated in R004.
+Local `repoctl coder-context` and `repoctl coder-status`, plus four bounded Coder event commands under strict read-only Git rules. Applicable approved Architect guidance is surfaced separately through `coder-context`; no Coder MCP is implemented.
 
-## 29.5 Repository Intelligence Engine (Future Evaluation)
+## 29.5 Repository Intelligence Engine (POC Only)
 
-Graphify versus DevLens evaluation remains planned for R005.
+M004.000 accepted Graphify for POC, not production adoption or integration.
 
-## 29.6 Agent Skills Packaging (Next Arc)
+## 29.6 Agent Skills Packaging (Not Implemented)
 
-Designing modular, progressively disclosed Agent Skills for coding agents is planned for R004.
+Modular, progressively disclosed Agent Skills remain an intended procedure layer, requiring separately approved work.
 
 ## 29.7 UI Framework (Stable Baseline)
 
@@ -1512,7 +1517,7 @@ prepared-action safeguards and post-action verification
 safe local branch and remote operations
 noninteractive GitHub SSH authentication with repository-scoped Deploy Key
 verified Repo Control Push
-external active milestone selection pointer (.repo-control/selected-milestone.json)
+external repository-scoped milestone selection pointer (<state_root>/<repository_id>/milestones/selection.json)
 recursive milestone prompt discovery beneath configured milestone_root
 chronological tracked workflow sidecars (*_workflow.md)
 accepted six-state lifecycle engine (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLOSED)
@@ -1523,9 +1528,13 @@ persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
 10 read-only evidence MCP tools plus bounded dispatch submission and readback
 Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
 approved applicable dispatches surfaced through local coder-context
+local Coder context/status and bounded question/bug/test/closeout commands; no Coder MCP
+phase-aware workflow controls, aliases/defaults, and five-second server-authoritative polling
+edited-form preservation and stale-submit blocking; no WebSocket/event bus
+compressed Product Owner actions with distinct ordered events and atomic sidecar persistence
 strict Product Owner / Architect / Coder role separation
 deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement
 ```
 
-The next architecture focus is Agent Procedure / Skills (R004) to encode reusable coding-agent behaviors.
+M003 capabilities through M003.012 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.000 is accepted and CLOSED with Graphify approved for POC only. No specialized engine or Agent Skills framework is integrated by this documentation reconciliation.

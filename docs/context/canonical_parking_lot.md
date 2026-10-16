@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; Workflow Orchestration substantially implemented through M003.006 (Persistent Read-Only Architect MCP Tunnel Active; Governing Document Reconciliation in M003.007)
+**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Active deferred workflow/UX and packet-optimization items refined for post-M003 baseline
+**Current status:** Packet-context optimization and future Coder MCP remain deferred; completed phase-aware UX and action compression are not backlog
 
 ---
 
@@ -533,11 +533,11 @@ Note: With the operational acceptance of M003.006 (Secure MCP Tunnel), live Arch
 
 The initial implementation deliberately favored correctness and completeness over aggressive context reduction.
 
-With Architect live evidence retrieval now handled primarily via the MCP tunnel, the context burden is shifted primarily to Coder handoffs. Context optimization for Coder packets is best evaluated alongside the upcoming R004 Agent Skills work, which may provide a cleaner progressive disclosure model for standing procedure.
+Architect live evidence retrieval uses the MCP tunnel, while co-located Coders use `coder-context`/`coder-status` and bounded local submissions. Full packets remain fallbacks/exports; optimizing their size is still unimplemented. Agent Skills may provide progressive disclosure, but no Skills implementation or schedule is established here.
 
 ### Trigger for Reconsideration
 
-Revisit during or following R004 (Agent Skills) to evaluate:
+Revisit when real packet usage or separately approved Agent Skills work justifies evaluating:
 
 - whether Agent Skills replace standing document embedding in Coder packets;
 - which prompt sections and rules are essential in Coder packets versus referenceable;
@@ -557,7 +557,7 @@ optional compact/full packet modes if justified
 
 ### Dependencies
 
-Useful evidence should come from R004 Agent Skills design and real Coder execution experience.
+Useful evidence should come from real Coder/packet usage and any separately approved Agent Skills design.
 
 ### Notes
 

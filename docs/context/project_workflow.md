@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -199,6 +199,8 @@ Product Owner
 
 The Architect should not rely on chat memory when current project documents, milestone artifacts, Git facts, or test evidence can be queried directly.
 
+Natural Architect requests authorize only the minimum required read-only evidence through fixed tools for the selected repository/milestone. They do not authorize arbitrary repository, filesystem, shell, Git, lifecycle, or Product Owner operations. Separate dispatch tools create proposals only.
+
 ---
 
 # 6. Coder / Implementation Agent
@@ -256,6 +258,8 @@ The Coder does not:
 # 7. Repo Control II
 
 Repo Control II is the shared deterministic control plane.
+
+It is not an AI project manager or a general-purpose agent framework. Specialized tools remain replaceable; Repo Control owns authority, deterministic state, explicit lifecycle, and bounded evidence routing rather than duplicating their engines.
 
 It currently owns or exposes:
 
@@ -431,6 +435,8 @@ It preserves meaningful workflow events and machine-readable lifecycle history.
 
 Repo Control reconstructs lifecycle from this durable event history.
 
+The active sidecar may be modified or untracked as expected operational state and alone does not violate clean-tree preflight. This narrow exception does not cover a newly materialized prompt or any other unexplained dirty path.
+
 ---
 
 # Part III — Milestone Modes
@@ -572,25 +578,29 @@ The prompt should describe the current delta rather than restate the whole proje
 Current implemented transport:
 
 ```text
-Architect creates prompt
-→ Product Owner saves/commits prompt
+Architect submits bounded PROMPT draft to Repo Control
+→ dispatch remains PENDING
+→ Product Owner reviews and selects Approve & Save Prompt
+→ Repo Control materializes only the server-derived canonical prompt artifact
+→ Product Owner reviews/commits prompt
 → Product Owner selects milestone in Repo Control
-→ Repo Control can generate a Coder Packet
-→ Product Owner can copy packet to Coder
+→ Product Owner uses lifecycle Approve & Start
+→ local Coder retrieves context and verifies IN_PROGRESS authorization
 ```
 
-The packet is derived output, not project authority.
+Dispatch **Approve & Save Prompt** is transport approval, not lifecycle approval. It does not select the milestone, record `prompt_approved`, start work, stage, commit, or push. Dispatch approval itself records no lifecycle event. A materialized prompt should normally be reviewed/committed before implementation; it is not a silent dirty-tree exception.
 
-The prompt remains authoritative.
+INSTRUCTION and RESPONSE drafts use the same PENDING -> Product Owner approval gate. Only approved applicable INSTRUCTION/RESPONSE records appear in the separate APPROVED ARCHITECT DISPATCHES section of `coder-context`. Pending and rejected dispatches are not authorized Coder guidance; approved guidance does not supersede lifecycle authorization or standing rules.
 
-Future direction:
+Manual prompt saving and Coder Handoff Packets remain fallbacks:
 
 ```text
-Coder
-→ queries Repo Control directly for active milestone and current instructions
+Product Owner saves/reviews/commits canonical prompt
+→ selects and starts milestone explicitly
+→ Coder uses local CLI, or receives a derived Coder Packet
 ```
 
-Direct Coder tool access is not yet implemented.
+The prompt remains authoritative; packets are derived transport, not project authority.
 
 ---
 
@@ -834,7 +844,7 @@ For normal lifecycle browser actions the reported actor is fixed to Product Owne
 Repo Control II provides two complementary mechanisms for delivering instructions and workflow state to Coder agents:
 
 1. **Coder Local CLI Interface (Primary for Co-Located Agents):**
-   Established in M003.009, local coding agents running on `henderson-server1` (via VS Code Remote SSH) interact directly with Repo Control via the local CLI (`repoctl coder-context`, `repoctl coder-status`). This in-process execution avoids monolithic document bundling, provides deterministic standing document references, checks implementation authorization, and provides bounded event submission with zero network overhead.
+   Established in M003.009, local coding agents running on `henderson-server1` (via VS Code Remote SSH) interact directly with Repo Control via the local CLI (`repoctl coder-context`, `repoctl coder-status`). This in-process execution avoids monolithic document bundling, provides deterministic standing document references, checks implementation authorization, and provides bounded event submission without a Coder MCP integration or network service.
 
 2. **Coder Handoff Packet (Fallback / Export):**
    Repo Control can generate a derived, read-only monolithic Coder Packet containing:
@@ -963,17 +973,20 @@ Repo Control does not infer active status from newest filename, modification tim
 
 ---
 
-# 39. Step 4 — Approve Handoff
+# 39. Step 4 — Approve and Start Handoff
 
 For lifecycle-managed milestones:
 
 ```text
 PLANNING
-→ Product Owner approves prompt
+→ Product Owner deliberately submits Approve & Start
+→ prompt_approved
 → READY
+→ implementation_started
+→ IN_PROGRESS
 ```
 
-Repo Control records the approval event in the milestone workflow sidecar.
+Repo Control records both ordered events atomically in the milestone workflow sidecar. Existing READY milestones retain the separate Start implementation action.
 
 ---
 
@@ -1011,11 +1024,13 @@ Coder confirms correct repository, branch, working-tree state, active milestone,
 
 The active milestone's `*_workflow.md` sidecar is expected Repo Control lifecycle state and may be untracked or modified during an active milestone. It does not by itself violate the clean-working-tree precondition. Any other unexplained dirty path remains a blocker and must be reported.
 
-Do not clean, stash, reset, revert, or discard them.
+In particular, PROMPT materialization is not a general dirty-tree exemption; Product Owner review/commit should normally precede implementation. Do not clean, stash, reset, revert, or discard unrelated files.
 
 ---
 
 # 42. Step 7 — Start Implementation
+
+The normal Approve & Start action has already recorded:
 
 ```text
 READY
@@ -1023,7 +1038,7 @@ READY
 → IN_PROGRESS
 ```
 
-Coder performs the smallest safe change satisfying approved scope.
+If the milestone is still READY, Product Owner uses the contextual Start implementation action first. Coder verifies IN_PROGRESS authorization, then performs the smallest safe change satisfying approved scope.
 
 ---
 
@@ -1180,7 +1195,7 @@ REVIEW
 
 # 52. Product Owner Git Ownership
 
-Coding agents do not perform normal Git mutations.
+Coding agents must not perform Git mutations.
 
 Prohibited for coding agents:
 
@@ -1334,7 +1349,7 @@ Until Agent Skills are implemented and validated, `coding_agent_rules.md` remain
 
 Repository intelligence should provide deterministic structural evidence for targeted questions such as what calls a function, what tests cover a module, what depends on a class, and what changed structurally.
 
-Candidate engines remain Graphify and DevLens.
+M004.000 is accepted and CLOSED with Graphify accepted for POC only, not production integration. Architect and Coder are intended to consume the same replaceable underlying intelligence source; this does not authorize builds or integration without a separate approved prompt.
 
 ---
 
@@ -1436,11 +1451,9 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 # 66. Near-Term Direction
 
-With read-only Architect evidence tools, bounded dispatch transport, and local Coder CLI workflow interfaces operational, the next workflow enhancements focus on:
+Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-1. **Procedure:** Establishing reusable Agent Skills (R004) to standardize coding-agent behavior without prompt repetition.
-2. **Context & Packet Optimization:** Evaluating whether Coder Handoff Packets can be trimmed or made modular without losing authoritative instruction.
-3. **Phase-Aware Milestone UI:** Hardening the Milestone page controls based on operational usage (WORKFLOW-001).
+Reusable Agent Skills and packet-context optimization remain unimplemented/deferred areas; they do not prescribe the next milestone. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1448,20 +1461,14 @@ Bounded local Coder write access is implemented in M003.009; future Coder MCP / 
 
 # 67. UX Direction
 
-The current Milestone page proves the workflow model but is not yet the desired final UX.
-
-The universal event-entry form is functionally complete but operationally clunky.
-
-Do not optimize it prematurely.
-
-After several real milestone runs, use observed behavior to redesign toward phase-aware controls, for example:
+The accepted Milestone page uses phase-aware actions, contextual fields, milestone-local Q/B aliases, sole-item auto-selection, and editable deterministic summaries. Its normal Product Owner action surface is:
 
 ```text
 PLANNING
-→ Approve prompt
+→ Approve & Start (prompt_approved, implementation_started)
 
 READY
-→ Start implementation
+→ Start implementation (compatibility for existing READY state)
 
 IN_PROGRESS
 → Ask question
@@ -1470,15 +1477,20 @@ IN_PROGRESS
 → Submit closeout
 
 WAITING
-→ Record answer / decision
-→ Resume
+→ Resolve & Resume (active answer/resolution, optional lock_in_approved,
+   implementation_resumed)
+→ contextual Resume if resolution was already recorded
 
 REVIEW
 → Request correction
-→ Accept milestone
+→ Accept & Close (acceptance_recorded, milestone_closed)
 ```
 
-UX hardening should preserve the backend event model rather than redesign workflow semantics merely for appearance.
+Normal lifecycle forms have no actor dropdown or redundant confirmation checkbox; deliberate action buttons provide authorization in the single-user model, not authenticated identity. Distinct underlying events and server validation remain authoritative.
+
+The browser polls every five seconds. External workflow changes automatically refresh untouched forms; edited forms preserve entered text and block stale submission rather than silently overwriting it. No WebSocket/event bus was introduced. M003.010 observed automatic REVIEW after external Coder closeout only after the new runtime was loaded; its earlier Q2 WAITING transition occurred under the old runtime and required the initial refresh.
+
+Further UX changes should follow observed defects and separately approved scope, not revive completed work as backlog.
 
 ---
 
@@ -1515,7 +1527,7 @@ GitHub remote repositories with dedicated Deploy Key authentication
 Product Owner-owned Git mutations via guarded Repo Control UI
 browser-based Git Control (stage, unstage, restore, commit, branch, push)
 explicit multi-repository selection allowlist
-explicit active-milestone selection pointer (.repo-control/selected-milestone.json)
+external repository-scoped milestone selection pointer (<state_root>/<repository_id>/milestones/selection.json; default state root ~/.local/share/repoctl)
 recursive milestone prompt discovery beneath configured milestone_root
 canonical milestone naming (Mxxx.xxx[_name]_prompt.md)
 durable workflow lifecycle and event ledger (*_workflow.md)
@@ -1526,10 +1538,10 @@ persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
 10 read-only evidence MCP tools plus bounded dispatch submission and readback
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
-Agent Skills not yet implemented (planned for R004)
-repository intelligence not yet integrated (planned for R005)
+Agent Skills not yet implemented
+repository intelligence not integrated; Graphify accepted for POC only (M004.000)
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)
 ```
 
-The next milestones focus on encoding reusable Agent Skills (R004) and evaluating repository intelligence (R005) while preserving the Product Owner as the sole authority for consequential decisions.
+M003 capabilities through M003.012 are accepted and CLOSED. M003.012 acceptance is explicitly PASS WITH LIMITED LIVE COVERAGE; remaining extended polling, stale-form, and Approve & Start live scenarios were not closure gates. Preserve that evidence limit rather than claiming every production scenario was exercised. Future work requires separately approved scope.

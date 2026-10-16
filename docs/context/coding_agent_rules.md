@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  
@@ -140,6 +140,12 @@ current deterministic Git evidence
 ```
 
 The Coder should use `repoctl coder-context` as the primary, authoritative mechanism for retrieving active milestone instructions and verifying implementation authorization. When Coder Handoff Packets are used, treat them as **derived transport output**, not as a new source of truth.
+
+The Coder interface is local CLI execution, not Coder MCP. Bounded submissions hardcode `actor_role="coder"` and `po_approved=False`; there is no generic event or Product Owner action command. Architect evidence tools are fixed read-only operations; natural requests authorize only the minimum evidence needed, not arbitrary repository, filesystem, shell, Git, lifecycle, or Product Owner authority.
+
+Architect PROMPT / INSTRUCTION / RESPONSE submissions are PENDING proposals until Product Owner approval. Pending/rejected dispatches are never authorized guidance. Approved applicable INSTRUCTION/RESPONSE content appears in a separate `coder-context` section and does not confer lifecycle authority. Dispatch approval itself records no lifecycle event or Git mutation.
+
+PROMPT **Approve & Save Prompt** materializes only a server-derived canonical prompt artifact; it does not select, approve/start lifecycle, stage, commit, or push. The Product Owner should normally review/commit the materialized prompt before implementation. Do not treat it as a silent dirty-tree exception.
 
 Authority remains with:
 
@@ -939,6 +945,8 @@ cd /home/chuck/projects/repo-control-ii
 repoctl coder-context
 ```
 
+If `repoctl` is not on the shell PATH, use the repository virtual environment: `.venv/bin/python -m repoctl.cli coder-context` (and the same prefix for other Coder commands).
+
 This single command deterministically retrieves and reports:
 
 - authoritative active milestone selection (from external selection pointer);
@@ -977,6 +985,8 @@ lifecycle permits work
 Any other unexplained dirty path must be reported and treated as a blocker until resolved.
 
 Approved Architect dispatches are advisory instructions only after Product Owner approval. Review them as milestone-scoped guidance; they do not supersede the authoritative prompt, binding lock-ins, standing rules, lifecycle authorization, or Git mutation prohibition.
+
+Only the active workflow sidecar is exempt by itself from clean-tree blocking. A newly materialized prompt should normally be reviewed/committed by the Product Owner before work; separately authorized/explained paths must be reported explicitly, never generalized into a dirty-tree exemption.
 
 ---
 
@@ -1291,7 +1301,9 @@ Framework changes require reconnaissance and explicit approval because they affe
 - deployment;
 - integration surfaces.
 
-The current Milestone page/event form is known to be operationally clunky.
+The accepted Milestone page provides phase-aware actions, aliases/defaults, and compressed Product Owner submissions. Polling refreshes untouched forms from server state; edited forms preserve text and block stale submission. No WebSocket/event bus is present.
+
+M003.012 is CLOSED with acceptance explicitly limited in live coverage. Do not infer that every production stale-form, Approve & Start, or extended polling case was observed from its acceptance.
 
 Do not undertake broad UX redesign unless explicitly scoped.
 
