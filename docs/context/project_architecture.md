@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
@@ -848,7 +848,7 @@ Repo Control Service (127.0.0.1:8765/api/architect/v1/*)
 
 ### 14.1 Read-Only MCP Tool Inventory
 
-The adapter exposes 10 focused read-only tools:
+The adapter exposes 11 focused evidence tools (intelligence queries also persist bounded operational use metrics):
 
 | Tool | Mapped Endpoint | Purpose |
 |---|---|---|
@@ -862,10 +862,11 @@ The adapter exposes 10 focused read-only tools:
 | `repo_documents` | `GET /api/architect/v1/documents` | List registered governing documents |
 | `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
 | `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
+| `repo_intelligence` | `GET /api/architect/v1/intelligence` | Bounded structural evidence with explicit repository/generation preconditions; no build authority |
 
 ### 14.2 Bounded Dispatch Proposal Tools
 
-The 10 evidence tools above retain their existing read-only behavior. Four separate tools implement the bounded dispatch channel:
+The original 10 evidence tools retain their existing read-only behavior. With `repo_intelligence`, the fixed inventory is 15 tools including the four dispatch tools below:
 
 | Tool | Endpoint | Scope |
 |---|---|---|
@@ -1019,7 +1020,19 @@ Current Working-Tree Graph
 
 Repo Control should expose query-oriented repository intelligence rather than dumping entire graphs into AI context.
 
-M004.000 is accepted and CLOSED with **ADOPT FOR POC** for Graphify, not production adoption. Repository intelligence is not integrated. Graphify is evaluated as a replaceable specialized engine; Repo Control must not duplicate its parser or graph-query implementation. Architect and Coder are intended to consume the same underlying bounded evidence source. Accuracy, freshness, offline behavior, and Flask/template gaps still need POC validation.
+M004.001 is accepted and CLOSED: Graphify 0.9.91 recovered 19/20 supported checks and 27/27 bounded audited assertions, but only 1/5 cross-layer checks. M004.002 implements a provisional integration, not an unconditional engine-adoption decision.
+
+`intelligence.service` owns source identity, graph generations, bounds and provenance; a replaceable provider owns engine access. The Graphify provider runs a short-lived, fixed-argument bridge in a dedicated external pinned environment. It uses tested native library lookup/traversal/impact helpers rather than parsing MCP node/edge text or recreating a graph engine. Generic paths retain bounded native text with explicit endpoint-only structured counts; they are not call-chain evidence.
+
+Both `repo_intelligence` and local `repoctl coder-intelligence` use the same service-selected repository and normalized envelope. Operations include stats/freshness, lookup/disambiguation, filtered neighbors, callers/callees, imports/references, likely tests/reverse impact, lexical context and generic paths. Communities, viewer, semantic processing and PR/network tools are excluded.
+
+Source identity hashes supported nonignored tracked/untracked code content, with explicit exclusions/options and branch/HEAD context. Builds copy the bounded scope externally, check identity again after extraction, and publish a manifest/hash. States are MISSING, BUILDING, CURRENT, STALE, FAILED and INCOMPATIBLE; only CURRENT graphs supply evidence. Queries never rebuild. Only deliberate CSRF-protected Product Owner browser approval builds/refreshes; it has no Git or lifecycle side effect.
+
+The fixed external runtime is `~/.local/share/repoctl-tools/graphify-0.9.91/venv`. Application dependencies remain unchanged. Runtime networking is denied through inherited Linux seccomp rules; configuration/home/environment are isolated and credentials are not inherited. This is not a general filesystem sandbox. State lives under `<state_root>/intelligence/<repository_id>`, outside scanner-republished artifacts; at most current and previous graph generations are retained after builds.
+
+Independent defaults are 48 KiB, 60 nodes, 120 relationships, depth 2 and a 5-second request budget; hard maxima are 64 KiB, 120 nodes, 240 relationships, depth 4 and 10 seconds. Native pipes, graph bytes, source scope and process resources have additional bounds. Failures, ambiguity, stale evidence and omissions are explicit; native `isError=false` is never used as a success criterion.
+
+Bounded SQLite measurements retain use metadata, not query text/source bodies. Optional ratings and source-inspection feedback, sticky MISLEADING flags, latency/size statistics, operation breakdowns and comparative task metrics appear at `/intelligence`. Mechanical benchmark replay is not proof of human/model productivity. See [operator instructions](../../README.md#repository-intelligence-m004002-provisional) for installation, access, measurement and limitations.
 
 ---
 
@@ -1208,7 +1221,7 @@ GitButler and other Git tools may remain references for UX concepts or future ad
 
 ## 23.2 Repository Intelligence
 
-Graphify is accepted for POC only following M004.000; no production engine integration is approved by that reconnaissance.
+M004.001 accepted the bounded Graphify POC. M004.002 implements a provisional provider-backed integration with value measurements, subject to its own acceptance; the reconnaissance alone never authorized integration.
 
 ## 23.3 Agent Skills
 
@@ -1356,7 +1369,7 @@ The completed architectural baseline and remaining capability areas are:
 
 6. Agent Skills / reusable procedure                NOT IMPLEMENTED
 
-7. Repository Intelligence                          M004.000 CLOSED; POC ONLY
+7. Repository Intelligence                          M004.001 CLOSED; M004.002 PROVISIONAL
 
 8. Deeper Architect / Coder integration             DEFERRED
 
@@ -1413,7 +1426,7 @@ Product Owner control:
 
 Architect integration:
 → Persistent Secure MCP Tunnel (tunnel-client daemon + repoctl mcp-architect)
-  preserving 10 read-only evidence tools and adding fixed typed dispatch submission/readback endpoints.
+  preserving 10 original read-only evidence tools, adding provisional bounded intelligence/use metrics, and fixed typed dispatch submission/readback endpoints.
   Manual Architect Review Packets serve as operational fallback.
 
 Coder integration:
@@ -1442,9 +1455,9 @@ Persistent Secure MCP Tunnel (`repo-control-architect-tunnel.service`) running O
 
 Local `repoctl coder-context` and `repoctl coder-status`, plus four bounded Coder event commands under strict read-only Git rules. Applicable approved Architect guidance is surfaced separately through `coder-context`; no Coder MCP is implemented.
 
-## 29.5 Repository Intelligence Engine (POC Only)
+## 29.5 Repository Intelligence Engine (Provisional Integration)
 
-M004.000 accepted Graphify for POC, not production adoption or integration.
+Graphify 0.9.91 behind a replaceable provider and a shared bounded Architect/Coder contract. M004.001 is CLOSED; M004.002 acceptance and ongoing value assessment remain separate gates.
 
 ## 29.6 Agent Skills Packaging (Not Implemented)
 
@@ -1525,7 +1538,7 @@ open condition tracking and blocking condition enforcement
 on-demand Coder and Architect handoff packet generation
 versioned Architect JSON API on loopback (read-only evidence plus fixed bounded proposal submissions)
 persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
-10 read-only evidence MCP tools plus bounded dispatch submission and readback
+11 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
 Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
 approved applicable dispatches surfaced through local coder-context
 local Coder context/status and bounded question/bug/test/closeout commands; no Coder MCP
@@ -1537,4 +1550,4 @@ deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement
 ```
 
-M003 capabilities through M003.012 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.000 is accepted and CLOSED with Graphify approved for POC only. No specialized engine or Agent Skills framework is integrated by this documentation reconciliation.
+M003 capabilities through M003.013 and M004.001 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002 adds provisional bounded Graphify integration and value measurements, pending its own acceptance. No Agent Skills framework is integrated.

@@ -17,6 +17,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from ..intelligence.service import IntelligenceError, QUERY_PROPERTIES, encoded, normalize
+
 ADAPTER_VERSION = "0.1.0"
 DEFAULT_REPO_CONTROL_URL = "http://127.0.0.1:8765"
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -265,6 +267,24 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
     },
 ]
 
+TOOL_INVENTORY.append({
+    "name": "repo_intelligence",
+    "description": (
+        "Bounded static repository structure: stats/freshness, symbol lookup, callers/callees, "
+        "filtered neighbors/imports/references, likely tests/reverse impact, lexical context and generic "
+        "relationship paths (NOT call chains). No build, arbitrary paths/tools, Git or lifecycle authority."
+    ),
+    "inputSchema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["expected_repository_key", "expected_generation"],
+        "properties": {
+            **QUERY_PROPERTIES,
+            "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+            "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+        },
+    },
+})
+
 TOOL_MAP: dict[str, dict[str, Any]] = {tool["name"]: tool for tool in TOOL_INVENTORY}
 SUBMISSION_TOOL_TYPES = {
     "architect_submit_prompt_draft": "PROMPT",
@@ -288,6 +308,24 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
     unknown_keys = provided_keys - allowed_props
     if unknown_keys:
         raise AdapterValidationError(f"Unknown arguments for {tool_name}: {sorted(unknown_keys)}")
+
+    if tool_name == "repo_intelligence":
+        for key in ("expected_repository_key", "expected_generation"):
+            if key not in arguments:
+                raise AdapterValidationError(f"Missing required argument {key!r}")
+        try:
+            normalized = normalize({k: v for k, v in arguments.items() if k in QUERY_PROPERTIES})
+        except IntelligenceError as exc:
+            raise AdapterValidationError(str(exc)) from exc
+        key, generation = arguments["expected_repository_key"], arguments["expected_generation"]
+        if not isinstance(key, str) or not 1 <= len(key) <= 64:
+            raise AdapterValidationError("Invalid repository key.")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise AdapterValidationError("Invalid registry generation.")
+        return "/api/architect/v1/intelligence", {
+            "expected_repository_key": key, "expected_generation": str(generation),
+            "request": json.dumps(normalized, separators=(",", ":")),
+        }
 
     query_params: dict[str, str] = {}
     if "expected_repository_key" in arguments:
@@ -459,7 +497,13 @@ def execute_get(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status_code = resp.status
-            body = resp.read().decode("utf-8")
+            if path == "/api/architect/v1/intelligence":
+                raw = resp.read(65537)
+                if len(raw) > 65536:
+                    return 502, {"error": {"code": "intelligence_response_oversized", "message": "Upstream exceeded the intelligence byte cap."}}
+                body = raw.decode("utf-8")
+            else:
+                body = resp.read().decode("utf-8")
             try:
                 data = json.loads(body)
             except json.JSONDecodeError:
@@ -727,7 +771,11 @@ def handle_rpc_request(
         )
 
         is_error = status_code >= 400
-        content_text = json.dumps(response_data, indent=2)
+        if tool_name == "repo_intelligence":
+            is_error = is_error or response_data.get("outcome") not in {"OK", "TRUNCATED"}
+            content_text = encoded(response_data).decode("ascii")
+        else:
+            content_text = json.dumps(response_data, indent=2)
 
         return {
             "jsonrpc": "2.0",

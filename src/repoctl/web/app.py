@@ -13,6 +13,9 @@ from werkzeug.exceptions import HTTPException
 from ..analysis.manager import AnalysisError, analyze_comparison
 from ..compare.manager import compare_snapshots
 from ..context.generator import build_and_publish_context
+from ..intelligence import measurements as intelligence_measurements
+from ..intelligence.provider import IntelligenceError
+from ..intelligence.service import artifact_root, build_graph, encoded, graph_status, intelligence_query
 from ..scanner.core import DEFAULT_STATE_ROOT, run_scan_with_artifacts
 from ..scanner.git_ops import ScanError
 from ..snapshot.manager import create_snapshot
@@ -714,6 +717,103 @@ def create_web_app(
                 "The active repository changed; refresh Repo Control status and retry.",
                 409,
             )
+
+    @app.errorhandler(IntelligenceError)
+    def _handle_intelligence_error(err: IntelligenceError):
+        if request.path.startswith(("/api/architect/", "/api/coder/")):
+            return _architect_json_response(
+                {"contract_version": "1", "error": {"code": "intelligence_failed", "message": str(err)}}, 400
+            )
+        return render_template(
+            "error.html", error_code="intelligence_failed", error_message=str(err),
+            mutation_note="No Git or milestone lifecycle action was performed.",
+        ), 400
+
+    @app.get("/api/architect/v1/intelligence")
+    @app.get("/api/coder/v1/intelligence")
+    def repository_intelligence_api():
+        if set(request.args) != {"expected_repository_key", "expected_generation", "request"}:
+            raise IntelligenceError("Intelligence requires repository/generation preconditions and a bounded request.")
+        raw = architect_query_value("request", maximum_length=4096)
+        key = architect_query_value("expected_repository_key", maximum_length=64)
+        generation = architect_query_value("expected_generation", maximum_length=12)
+        try:
+            arguments = json.loads(raw)
+            expected = int(generation)
+        except (ValueError, TypeError) as exc:
+            raise IntelligenceError("Invalid intelligence request or generation.") from exc
+        with repository_action_lock:
+            dispatch_preconditions({"expected_repository_key": key, "expected_generation": expected})
+            payload = intelligence_query(
+                current_repository(), effective_state_root, arguments,
+                consumer="Coder" if request.path.startswith("/api/coder/") else "Architect",
+                registry_generation=g.repository_registry_generation,
+            )
+            dispatch_preconditions({"expected_repository_key": key, "expected_generation": expected})
+        response = Response(encoded(payload), mimetype="application/json")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/coder/v1/intelligence/rating")
+    def coder_intelligence_rating():
+        if request.content_length is None or request.content_length > 2048:
+            raise IntelligenceError("Rating requires a bounded JSON body.")
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {
+            "expected_repository_key", "expected_generation", "use_id", "rating", "inspected",
+        }:
+            raise IntelligenceError("Invalid rating fields.")
+        with repository_action_lock:
+            dispatch_preconditions(payload)
+            intelligence_measurements.rate(
+                artifact_root(current_repository(), effective_state_root),
+                payload["use_id"], payload["rating"], payload["inspected"],
+            )
+        return _architect_json_response({"outcome": "OK"})
+
+    @app.get("/intelligence")
+    def intelligence_page():
+        root = artifact_root(current_repository(), effective_state_root)
+        try:
+            status = graph_status(current_repository(), root)
+        except (IntelligenceError, ScanError, OSError, ValueError, KeyError) as exc:
+            status = {"state": "FAILED", "error": str(exc)}
+        return render_template(
+            "intelligence.html", intelligence_status=status,
+            measurements=intelligence_measurements.summary(root), ratings=intelligence_measurements.RATINGS,
+        )
+
+    def intelligence_form_preconditions() -> None:
+        _require_csrf()
+        require_current_repository_selection()
+        if (request.form.get("repository_key") != current_repository().key
+            or request.form.get("repository_generation") != str(g.repository_registry_generation)):
+            raise IntelligenceError("Repository selection changed; reload the intelligence page and retry.")
+
+    @app.post("/intelligence/build")
+    def intelligence_build():
+        with repository_action_lock:
+            intelligence_form_preconditions()
+            if request.form.get("approve") != "yes":
+                raise IntelligenceError("Explicit Product Owner graph build approval is required.")
+            status = build_graph(current_repository(), effective_state_root)
+        flash(f"Graph build completed: {status['state']}. No Git/lifecycle action.", "success")
+        return redirect(url_for("intelligence_page"))
+
+    @app.post("/intelligence/rating")
+    def intelligence_rating():
+        with repository_action_lock:
+            intelligence_form_preconditions()
+            inspected = request.form.get("inspected", "")
+            if inspected not in {"", "yes", "no"}:
+                raise IntelligenceError("Invalid inspection flag.")
+            intelligence_measurements.rate(
+                artifact_root(current_repository(), effective_state_root),
+                request.form.get("use_id", ""), request.form.get("rating", ""),
+                None if not inspected else inspected == "yes",
+            )
+        flash("Usefulness feedback saved.", "success")
+        return redirect(url_for("intelligence_page"))
 
     def active_dispatch_milestone(milestone_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         try:

@@ -1,0 +1,2 @@
+# Dedicated external tool environment only; not an application dependency.
+graphifyy[mcp]==0.9.91

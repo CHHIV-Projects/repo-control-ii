@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Repository Intelligence Value</h2>
+  <p>Provisional Graphify integration. Static structural evidence is not runtime truth.
+     Missing relationships do not prove absence. Communities and graph viewer are excluded.</p>
+  <h3>Graph: {{ intelligence_status.state }}</h3>
+  <p>Generation: {{ intelligence_status.generation or "none" }} &middot; Built: {{ intelligence_status.built_at or "never" }}</p>
+  {% if intelligence_status.error %}<p class="flash error">{{ intelligence_status.error }}</p>{% endif %}
+  {% if intelligence_status.source %}
+  <p>{{ intelligence_status.source.file_count }} code files &middot; HEAD {{ intelligence_status.source.head }} &middot;
+     content {{ intelligence_status.source.content_hash }}</p>
+  {% endif %}
+  <p>Queries never rebuild. Only CURRENT evidence is served. Build/refresh deliberately after source changes.</p>
+  <form method="post" action="{{ url_for('intelligence_build') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+    <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+    <label><input type="checkbox" name="approve" value="yes" required> Product Owner: approve local code-only build/refresh</label>
+    <button type="submit">Build / Refresh Graph</button>
+  </form>
+  <p>No Git or milestone lifecycle changes. Local reported-role approval, not authenticated identity.</p>
+</section>
+<section class="card">
+  <h3>At a glance</h3>
+  <p><strong>{{ measurements.uses }}</strong> recorded uses &middot; {{ measurements.rated }} rated &middot;
+     {{ measurements.unrated }} unrated. Ratings are optional; percentages below use rated uses only.</p>
+  <p>Median / p95 query latency: {{ measurements.median_latency_ms if measurements.median_latency_ms is not none else "n/a" }}
+     / {{ measurements.p95_latency_ms if measurements.p95_latency_ms is not none else "n/a" }} ms.
+     Typical response: {{ measurements.median_response_bytes if measurements.median_response_bytes is not none else "n/a" }} bytes.</p>
+  <p>Truncated: {{ measurements.truncated }} / {{ measurements.uses }} &middot;
+     Ambiguous: {{ measurements.ambiguous }} / {{ measurements.uses }}</p>
+  <p class="{% if measurements.misleading_ever %}flash error{% endif %}">
+    <strong>MISLEADING ever reported: {{ measurements.misleading_ever }}</strong>.
+    This flag remains visible even if a rating is later changed.</p>
+  {% if measurements.misleading_uses %}
+  <details open><summary>Uses requiring misleading-result review</summary>
+    <ul>{% for row in measurements.misleading_uses %}
+      <li>{{ row.id }} &middot; {{ row.timestamp }} &middot; {{ row.operation }} &middot; {{ row.consumer }} &middot; current rating {{ row.rating }}</li>
+    {% endfor %}</ul>
+    {% if measurements.omitted_misleading_uses %}<p>{{ measurements.omitted_misleading_uses }} older flagged uses omitted here, retained in measurements.</p>{% endif %}
+  </details>
+  {% endif %}
+  <table>
+    <thead><tr><th>Usefulness</th><th>Count</th><th>% of rated uses</th></tr></thead>
+    <tbody>{% for row in measurements.ratings %}
+    <tr><td>{{ row.rating }}</td><td>{{ row.count }}</td><td>{{ "%.1f"|format(row.percent) }}%</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  <h3>Value and noise by operation</h3>
+  <table>
+    <thead><tr><th>Operation</th><th>Uses</th><th>Ratings</th><th>Outcomes</th><th>Misleading ever</th></tr></thead>
+    <tbody>{% for row in measurements.operations %}
+    <tr><td>{{ row.operation }}</td><td>{{ row.uses }}</td><td>{{ row.ratings }}</td>
+      <td>{{ row.outcomes }}</td><td>{{ row.misleading_ever }}</td></tr>
+    {% else %}<tr><td colspan="5">No measured uses yet. Targeted Architect/Coder queries create records.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+<section class="card">
+  <h3>Comparative tasks: control &rarr; intelligence first</h3>
+  <p>Each row states its methodology. Bytes are not model tokens. Mechanical replay time is not human reasoning time.
+     Inspect correctness and unsupported cases alongside any savings; no automatic adoption score.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files inspected</th><th>Source bytes read</th><th>Total evidence bytes</th>
+      <th>Interactions</th><th>Elapsed ms</th><th>Assessment / method</th></tr></thead>
+    <tbody>{% for row in measurements.benchmarks %}
+    <tr><td>{{ row.task }}</td><td>{{ row.control.files }} &rarr; {{ row.graphify.files }}</td>
+      <td>{{ row.control.source_bytes }} &rarr; {{ row.graphify.source_bytes }}</td>
+      <td>{{ row.control.evidence_bytes }} &rarr; {{ row.graphify.evidence_bytes }}</td>
+      <td>{{ row.control.interactions }} &rarr; {{ row.graphify.interactions }}</td>
+      <td>{{ row.control.elapsed_ms }} &rarr; {{ row.graphify.elapsed_ms }}</td>
+      <td>{{ row.assessment }}<br>{{ row.method }}</td></tr>
+    {% else %}<tr><td colspan="7">No comparative tasks recorded.</td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+<section class="card">
+  <h3>Recent uses and optional feedback (latest 30)</h3>
+  <p>Analytics retain no query text, source bodies or raw evidence. Follow-up source inspection is unknown unless reported.</p>
+  {% for row in measurements.recent %}
+  <details>
+    <summary>{{ row.timestamp }} &middot; {{ row.consumer }} &middot; {{ row.operation }} &middot; {{ row.outcome }} &middot;
+      {{ row.response_bytes }} B &middot; {{ row.rating or "UNRATED" }}{% if row.misleading_ever %} &middot; MISLEADING EVER{% endif %}</summary>
+    <p>Use {{ row.id }} &middot; Generation {{ row.generation or "none" }} &middot;
+       Source inspected: {{ "unknown" if row.inspected is none else ("yes" if row.inspected else "no") }}</p>
+    <form method="post" action="{{ url_for('intelligence_rating') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+      <input type="hidden" name="use_id" value="{{ row.id }}">
+      <label>Rating <select name="rating">{% for rating in ratings %}
+        <option{% if row.rating == rating %} selected{% endif %}>{{ rating }}</option>{% endfor %}</select></label>
+      <label>Follow-up source inspection <select name="inspected">
+        <option value="">Unknown / unchanged</option><option value="yes">Required</option><option value="no">Not required</option>
+      </select></label>
+      <button type="submit">Save feedback</button>
+    </form>
+  </details>
+  {% endfor %}
+</section>
+{% endblock %}

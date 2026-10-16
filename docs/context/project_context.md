@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current branch at reconciliation:** `arc/m004-repository-intelligence` (verify live Git state before work)
@@ -513,7 +513,7 @@ Desired information includes:
 - changed structural relationships;
 - relevant neighborhood around a symbol or subsystem.
 
-M004.000 accepted Graphify for a bounded POC, not production adoption. Repository intelligence remains a replaceable specialized subsystem and is not integrated. Its accuracy, freshness, offline behavior, and Flask/template coverage remain unverified POC questions.
+M004.001 accepted the Graphify 0.9.91 code-only POC: 19/20 supported checks, 27/27 bounded audited assertions, but only 1/5 Flask/template/browser cross-layer checks. M004.002 adds a provisional replaceable-provider integration with bounded shared Architect/Coder evidence and a Product Owner value-review page. It does not establish unconditional production adoption or complete runtime coverage.
 
 A repository-intelligence engine should ideally support both:
 
@@ -860,7 +860,7 @@ Current investigation areas:
 |---|---|
 | Agent procedure | Agent Skills |
 | Coding restraint | Ponytail as optional skill |
-| Repository intelligence | Graphify accepted for POC only; no production integration |
+| Repository intelligence | Graphify 0.9.91 provisional integration and value measurements under M004.002; acceptance pending |
 | Model gateway | LiteLLM, OmniRoute |
 | Coding agent | Copilot, Codex, Cline, OpenCode, Aider, Goose, OpenHands |
 
@@ -1012,13 +1012,15 @@ M003 — Workflow Orchestration capabilities through M003.012  ACCEPTED / CLOSED
   ├─ M003.011: Bounded Architect Dispatch Transport           CLOSED
   └─ M003.012: Single-User Workflow Compression               CLOSED (limited live coverage)
 M004.000 — Graphify Architecture / Tool-Fit Reconnaissance    CLOSED; ADOPT FOR POC
+M004.001 — Local Graphify Proof of Concept                   CLOSED
+M004.002 — Graphify Integration and Value Measurement        PROVISIONAL; ACCEPTANCE PENDING
 ```
 
 Remaining capability areas are not a prescribed implementation sequence:
 
 ```text
 Agent Procedure / Skills            NOT IMPLEMENTED
-Repository Intelligence             POC ONLY; NOT INTEGRATED
+Repository Intelligence             PROVISIONAL INTEGRATION; VALUE UNDER MEASUREMENT
 Deeper Architect / Coder Integration DEFERRED
 Model Gateway                       DEFERRED
 ```
@@ -1049,7 +1051,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M003.013 reconciles governing documentation with accepted capabilities. Further implementation requires its own approved prompt; this reconciliation does not prescribe a Graphify or Agent Skills roadmap.
+The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M003.013 documentation reconciliation and M004.001 POC are CLOSED. M004.002 integration remains provisional pending acceptance and value review; this does not authorize an Agent Skills roadmap.
 
 ---
 
@@ -1081,6 +1083,7 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 - OpenAI `tunnel-client` daemon running as persistent systemd service `repo-control-architect-tunnel.service`;
 - custom stdio JSON-RPC 2.0 adapter `repoctl mcp-architect`;
 - 10 existing read-only evidence tools remain mapped to Repo Control's loopback GET endpoints;
+- provisional `repo_intelligence` adds bounded structural evidence and operational use measurements (15 total tools including dispatch transport);
 - bounded `PROMPT`, `INSTRUCTION`, and `RESPONSE` proposal tools use fixed POST endpoints; `repo_dispatches` provides bounded status/content readback;
 - Product Owner approval is performed only in the Repo Control browser UI; pending content is not Coder-authoritative, and prompt approval creates only a canonical artifact under the configured milestone root;
 - Repo Control strictly bound to `127.0.0.1:8765` with zero LAN or public exposure;
@@ -1091,9 +1094,9 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 
 Coding agents consume the active milestone prompt, standing document references, and applicable Product Owner-approved Architect INSTRUCTION/RESPONSE dispatches through local `repoctl coder-context`; generated Coder Handoff Packets remain a fallback. Local bounded commands submit questions, bugs, test evidence, and closeout. No Coder MCP is implemented. Coding agents remain strictly forbidden from executing Git mutations.
 
-## 20.5 Repository Intelligence Engine (POC Only)
+## 20.5 Repository Intelligence Engine (Provisional Integration)
 
-M004.000 accepted Graphify for POC, not production adoption. Architect and Coder are intended to consume the same underlying intelligence source; no graph engine is integrated.
+M004.002 exposes the same bounded structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`, using the server-selected allowlisted repository. Explicit Product Owner browser approval builds/refreshes external graph state; ordinary queries never rebuild. CURRENT evidence includes generation/source identity and normalized outcomes. The `/intelligence` page shows freshness, use ratings, sticky misleading flags and comparative task metrics. Communities/viewer and semantic/network operations remain excluded; template/browser gaps remain unsupported.
 
 ## 20.6 Agent Skills (Not Implemented)
 
@@ -1197,7 +1200,7 @@ verified live read-only Architect evidence operations plus Product Owner-gated d
 Product Owner acceptance of M003 capabilities through M003.012;
 local bounded Coder context/status and workflow submissions without Coder MCP;
 phase-aware polling UX and compressed Product Owner actions with distinct ordered events;
-M004.000 acceptance of Graphify for POC only, with no production integration.
+M004.001 accepted Graphify POC; M004.002 provisional bounded integration with value measurements, pending acceptance.
 ```
 
 Subsequent enhancements must preserve the accepted Product Owner, Architect, Coder, lifecycle, and Git authority boundaries. Neither dispatch approval nor lifecycle/Coder event recording silently mutates Git.

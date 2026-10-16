@@ -100,6 +100,23 @@ def build_parser() -> argparse.ArgumentParser:
     coder_status_parser.add_argument("--state-root", help="Explicit state root override")
     coder_status_parser.add_argument("--milestone-root", help="Explicit milestone root override")
 
+    from .intelligence.service import DEFAULT_BOUNDS, OPERATIONS
+    from .intelligence.measurements import RATINGS
+    intelligence_parser = subparsers.add_parser(
+        "coder-intelligence", help="Targeted static structural evidence for the server-selected allowlisted repository"
+    )
+    intelligence_parser.add_argument("operation", choices=OPERATIONS, nargs="?", default="stats")
+    intelligence_parser.add_argument("query", nargs="?", default="")
+    intelligence_parser.add_argument("--target", default="")
+    intelligence_parser.add_argument("--direction", choices=["incoming", "outgoing", "both"], default="both")
+    intelligence_parser.add_argument("--relation", action="append", dest="relations", default=[])
+    for key, default in DEFAULT_BOUNDS.items():
+        intelligence_parser.add_argument("--" + key.replace("_", "-"), type=int, default=default)
+    rating_parser = subparsers.add_parser("coder-intelligence-rate", help="Optional usefulness/inspection feedback for a completed use")
+    rating_parser.add_argument("use_id")
+    rating_parser.add_argument("rating", choices=RATINGS)
+    rating_parser.add_argument("--inspected", choices=["yes", "no"])
+
     coder_question_parser = subparsers.add_parser(
         "coder-question", help="Submit a bounded question or blocker from the Coder"
     )
@@ -498,6 +515,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"execution_dir: {result['execution_dir']}")
         print(f"reused_existing: {result['reused_existing']}")
         return 0
+
+    if args.command in {"coder-intelligence", "coder-intelligence-rate"}:
+        from .intelligence import client
+        from .intelligence.provider import IntelligenceError
+        from .intelligence.service import QUERY_PROPERTIES, encoded
+        try:
+            if args.command == "coder-intelligence":
+                result = client.query({key: getattr(args, key) for key in QUERY_PROPERTIES})
+            else:
+                result = client.rate(args.use_id, args.rating, None if args.inspected is None else args.inspected == "yes")
+        except IntelligenceError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(encoded(result).decode("ascii"))
+        return 0 if result.get("outcome", "OK") in {"OK", "TRUNCATED"} else 2
 
     if args.command == "coder-context":
         from .workflow.coder_interface import (

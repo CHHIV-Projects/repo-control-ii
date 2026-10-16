@@ -43,12 +43,13 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "architect_submit_prompt_draft",
         "architect_submit_instruction_draft",
         "architect_submit_response_draft",
+        "repo_intelligence",
     }
 
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}
         self.assertEqual(advertised_names, self.EXPECTED_TOOLS)
-        self.assertEqual(len(TOOL_INVENTORY), 14)
+        self.assertEqual(len(TOOL_INVENTORY), 15)
 
     def test_schemas_forbid_additional_properties(self):
         for tool in TOOL_INVENTORY:
@@ -204,7 +205,7 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         resp = handle_rpc_request(req, "http://127.0.0.1:8765")
         self.assertEqual(resp["id"], 2)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 14)
+        self.assertEqual(len(tools), 15)
 
     def test_submission_tools_are_fixed_and_typed(self):
         path, payload = validate_submission_call(

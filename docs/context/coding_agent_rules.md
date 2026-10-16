@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  
@@ -914,6 +914,8 @@ When repository intelligence is available:
 - verify critical findings against code when needed.
 
 Repository intelligence is evidence that supports implementation and review.
+
+The provisional normal surface is `repoctl coder-intelligence <operation> [query]`, backed by the same server-selected allowlisted repository, generation and bounded contract as Architect `repo_intelligence`. Use `stats` to inspect freshness; do not append graphs to `coder-context`. Queries never build/refresh. Product Owner approval on the Intelligence Value page authorizes a deliberate build, not Git/lifecycle mutation. Do not treat a missing/stale/failed graph or a missing edge as a successful current answer. Optional `coder-intelligence-rate` reports usefulness and whether source inspection was required. Direct Graphify is diagnostic fallback only; never run `graphify install`, hooks, cloud, semantic or PR operations.
 
 ---
 

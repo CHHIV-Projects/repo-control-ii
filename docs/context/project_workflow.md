@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -26,7 +26,7 @@ It defines the working relationship among:
 - **governing project documents**
 - **milestone artifacts**
 - **test and validation tooling**
-- **future repository-intelligence and Agent Skills layers**
+- **provisional repository-intelligence and future Agent Skills layers**
 
 The workflow exists to keep development milestone-driven, bounded, understandable, evidence-based, recoverable, resistant to scope drift and mixed commits, explicit about authority, efficient in AI context usage, portable across coding agents, durable across chat/tool transitions, and suitable for incremental automation.
 
@@ -1349,7 +1349,11 @@ Until Agent Skills are implemented and validated, `coding_agent_rules.md` remain
 
 Repository intelligence should provide deterministic structural evidence for targeted questions such as what calls a function, what tests cover a module, what depends on a class, and what changed structurally.
 
-M004.000 is accepted and CLOSED with Graphify accepted for POC only, not production integration. Architect and Coder are intended to consume the same replaceable underlying intelligence source; this does not authorize builds or integration without a separate approved prompt.
+M004.001 accepted the bounded Graphify POC. M004.002 implements provisional shared structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`; it remains subject to its own acceptance and measured value review.
+
+The Product Owner deliberately builds/refreshes from the Intelligence Value page. Queries have no refresh, Git or lifecycle authority. Evidence is served only from CURRENT generations with deterministic source identity; stale/failed/missing/incompatible states are explicit. After source edits, request a deliberate refresh rather than silently treating old evidence as current.
+
+Use targeted operations; inspect source when correctness requires it, especially template/browser/runtime relationships. Optional USEFUL/PARTIAL/NO_VALUE/MISLEADING/UNSUPPORTED ratings and follow-up inspection feedback appear on the same page or through `coder-intelligence-rate`. MISLEADING flags remain visible after rating changes. Comparative metrics use labeled byte counts and mechanical replay times, not fabricated token precision or human-effort claims. Intelligence does not replace project authority.
 
 ---
 
@@ -1443,7 +1447,7 @@ approved applicable Architect dispatches in local Coder context
 
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
-- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for 10 unchanged read-only evidence tools, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
+- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for 10 unchanged read-only evidence tools plus provisional bounded `repo_intelligence` (also recording use metrics), bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
 - **Coder (VS Code):** Co-located Coders use the local CLI for authoritative prompt, standing references, authorization, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
@@ -1535,11 +1539,11 @@ accepted six-state lifecycle (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLO
 on-demand Coder handoff packets and Architect review packets
 Architect JSON API on loopback with read-only evidence and fixed pending-proposal endpoints
 persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
-10 read-only evidence MCP tools plus bounded dispatch submission and readback
+11 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 Agent Skills not yet implemented
-repository intelligence not integrated; Graphify accepted for POC only (M004.000)
+repository intelligence provisional under M004.002; M004.001 POC CLOSED; value and acceptance remain explicit gates
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)
 ```

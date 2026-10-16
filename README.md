@@ -88,6 +88,123 @@ Current primary pages and capabilities:
 - Git Review provides explicitly selected batch stage, unstage, and restore actions (up to 256 paths) plus staged-set local commit, through preview, confirmation, fresh-state revalidation, and post-action verification.
 - The Branches view provides confirmed local branch create/switch/safe-delete, configured-remote fetch/push, first-push upstream setup, and fast-forward-only update. Remote operations are bounded, non-interactive, and use configured remotes only; Push is non-force and verifies the actual remote branch tip after success.
 - Workflow remains available as a read-only historical artifact view, but is no longer in primary navigation; its legacy snapshot/stage/commit POST actions are disabled.
+- Intelligence Value shows provisional structural evidence freshness, deliberate Product Owner builds, use ratings and comparative measurements.
+
+## Repository intelligence (M004.002, provisional)
+
+Graphify 0.9.91 is an external, replaceable code-only engine, not an application
+dependency or source of project authority. Provision once as the service user:
+
+```bash
+python3 -m venv ~/.local/share/repoctl-tools/graphify-0.9.91/venv
+~/.local/share/repoctl-tools/graphify-0.9.91/venv/bin/python -m pip install -r tools/graphify-requirements.txt
+```
+
+This installation contacts package indexes. Engine execution is separate: Linux
+`libseccomp.so.2` must be available, and missing/failed network isolation fails
+closed. Children inherit denied socket/connect/listener/io_uring operations,
+an isolated HOME/config/cache/temp directory and a fixed credential-free
+environment. This is not a general filesystem sandbox. No `graphify install`,
+hooks, application-venv package, cloud, semantic/model processing or new service
+is used.
+
+After deploying code, the Product Owner restarts the existing Repo Control and
+Architect tunnel services using their normal administrative procedure. The MCP
+inventory is now **15 tools**. Verify local `tools/list`; ChatGPT may also require
+an explicit custom-app refresh (a Linux service restart alone may not refresh
+its catalog). No new listener or systemd unit is required.
+
+Open **Intelligence Value** (`/intelligence`), review repository identity, and
+explicitly approve **Build / Refresh Graph**. This copies only supported
+nonignored tracked/untracked code into external state, then removes the source
+copy after extraction. Source scope excludes `.git`, virtual environments,
+dependencies and common generated directories; current suffixes and limits are
+in `intelligence.service.OPTIONS`. The first subset covers Python/JS and other
+listed code extensions, not HTML/Jinja/CSS. Untracked eligible code is included.
+Files must be regular, nonsymlinked and at most 2 MiB; the scope is limited to
+10,000 files / 64 MiB. Unsafe/oversized eligible input fails explicitly;
+extensions outside the declared scope are not indexed.
+
+Graph identity includes source-content hashes, branch/HEAD, scope/options,
+producer/schema, generation, build time and graph hash. States are MISSING,
+BUILDING, CURRENT, STALE, FAILED and INCOMPATIBLE. Only CURRENT evidence is served;
+queries never refresh and do not change Git or lifecycle. Interrupted builds
+require explicit retry; failed builds never silently fall back to old evidence.
+Builds are full extracts of a stable disposable snapshot; measured POC refresh
+cost did not justify incremental snapshot/manifest complexity here.
+
+Architect uses `repo_intelligence` with `expected_repository_key` and
+`expected_generation`. Local Coder uses the same running loopback service and
+server-selected allowlisted repository, **not the shell's current directory**:
+
+```bash
+repoctl coder-intelligence stats
+repoctl coder-intelligence lookup get_coder_context
+repoctl coder-intelligence callers src/repoctl/workflow/coder_interface.py::get_coder_context
+repoctl coder-intelligence callees get_coder_context
+repoctl coder-intelligence imports src/repoctl/workflow/coder_interface.py
+repoctl coder-intelligence neighbors get_coder_context --direction incoming --relation calls
+repoctl coder-intelligence tests get_authorization_status
+repoctl coder-intelligence impact get_authorization_status --depth 2
+repoctl coder-intelligence context "architect dispatch" --max-nodes 20 --max-edges 30
+repoctl coder-intelligence path get_coder_context --target get_authorization_status --depth 4
+repoctl coder-intelligence-rate <use_id> USEFUL --inspected no
+```
+
+Commands print compact JSON. Exit 0 means OK/TRUNCATED; other outcomes return 2
+with explicit JSON (transport/invalid input errors use stderr). Ambiguity returns
+candidates; narrow with a node ID or repository-relative `file::symbol`.
+Callers/callees filter actual `calls` evidence with true stored direction.
+Impact/tests are native reverse-neighborhood candidates, not coverage promises.
+Lexical context can be noisy. Generic paths retain native text; structured counts
+cover endpoints only, not text interior; paths may traverse containment and are
+**not call chains**. Missing paths are INCONCLUSIVE. Community/viewer, PR,
+semantic operations, arbitrary tools/paths, and query-driven builds are excluded.
+
+Defaults / hard maxima:
+
+| Bound | Default | Maximum |
+|---|---:|---:|
+| JSON response bytes | 49,152 | 65,536 |
+| Nodes | 60 | 120 |
+| Relationships | 120 | 240 |
+| Depth / path hops | 2 | 4 |
+| Query budget, seconds | 5 | 10 |
+
+The smallest response budget is 4,096 bytes. Node/edge omissions, truncation,
+ambiguity and failures are explicit. Native process output is independently
+capped at 2 MiB stdout / 64 KiB stderr, with process-group termination on timeout
+or overflow. Graphs are capped at 24 MiB; builds have a 90-second process timeout.
+Child resource limits are per process, not aggregate process-tree memory.
+Freshness/serialization is checked against the query budget; filesystem/Git and
+measurement persistence overhead can extend end-to-end wall time. Native MCP
+`isError=false` is not used: the pinned bridge uses tested native library helpers
+and a narrow prefix contract for path outcomes, never a broad graph-text parser.
+The byte budget covers the compact normalized JSON evidence (identical Coder
+output / Architect tool text), excluding CLI newline and MCP protocol framing.
+
+State is under `~/.local/share/repoctl/intelligence/<repository_id>` (or the app's
+configured state root), independently of scanner-republished artifacts.
+Two graph generations are retained after builds; the
+active manifest selects one. Queries cannot select arbitrary artifacts.
+Measurements retain at most 10,000 uses in bounded SQLite state; capacity failures
+are explicit and require operator review/archive rather than silent dropping.
+Do not delete or replace the database while the service is using it.
+
+The review page shows totals/unrated uses, percentages **of rated uses**, median/
+nearest-rank p95 latency, median response bytes, truncation/ambiguity, operation
+breakdowns, optional source-inspection feedback and comparative tasks. A
+MISLEADING flag remains visible even after re-rating. Analytics store no query
+text, source bodies or full evidence. Ratings are optional, not automatic truth.
+They can be entered on the page or with the local feedback command.
+
+Comparative benchmarks are small trusted local records through
+`intelligence.measurements.add_benchmark`, not an arbitrary remote ingestion
+endpoint. Each task stores control/intelligence-first files, source/evidence
+bytes, interactions and mechanical elapsed milliseconds plus methodology and
+assessment. At most 100 tasks are retained. These are not exact model tokens,
+blind experiments or measurements of human reasoning time; use them alongside
+normal-use ratings before deciding to retain, augment or replace the engine.
 
 In repository-registry mode, each `[repositories.<key>]` entry may set a
 repository-relative `milestone_root` (for example, `docs/milestones` or
