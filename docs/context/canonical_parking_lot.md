@@ -608,6 +608,38 @@ If ever implemented, Coder MCP must strictly adhere to the same Model B bounded 
 
 ---
 
+## GIT-001 — Browser Git Merge Support
+
+### Status
+
+Deferred
+
+### Summary
+
+Add a bounded Repo Control merge action for the common arc-closeout workflow, starting with safe fast-forward-only merge into the current branch.
+
+### Why It Is Parked
+
+Merge implementation is outside M005.000 reconnaissance and requires separately approved Git-control scope.
+
+### Trigger for Reconsideration
+
+Revisit when the Product Owner prioritizes browser support for the arc-closeout merge workflow.
+
+### Likely Scope
+
+Browser review and confirmation, Product Owner authorization, clean/divergence preflight checks, and a bounded fast-forward-only action into the current branch.
+
+### Dependencies
+
+Existing Git evidence, explicit mutation authorization, and separately approved implementation and validation.
+
+### Notes
+
+Preserve explicit review before mutation and the existing Coder no-Git-mutation boundary. No automatic conflict resolution. Consider non-fast-forward merge or conflict handling only as later expansion if justified.
+
+---
+
 # 23. Entry Template
 
 Copy this section when creating a new Parking Lot item:
