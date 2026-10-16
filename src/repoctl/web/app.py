@@ -48,7 +48,10 @@ from ..workflow.lifecycle import (
     WorkflowRecordError,
     load_milestone_workflow,
     record_milestone_event,
+    record_milestone_action,
+    waiting_resolution,
 )
+from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
     MAX_PACKET_BYTES,
@@ -96,6 +99,9 @@ _PHASE_ACTIONS = {
     "CLOSED": (),
 }
 _SUMMARY_PATTERNS = {
+    "approve_and_start": "Approve & Start {milestone}",
+    "resolve_and_resume": "Resolve {related} and resume {milestone}",
+    "accept_and_close": "Accept & Close {milestone}",
     "prompt_approved": "Approve {milestone} prompt",
     "implementation_started": "Start {milestone} implementation",
     "question_submitted": "Question about {milestone}",
@@ -180,6 +186,27 @@ def _decorate_milestone_workflow(
         for event_type in _PHASE_ACTIONS.get(workflow.get("phase"), ())
         if event_type in available_actions
     ]
+    combined = {
+        "PLANNING": ("approve_and_start", "Approve & Start"),
+        "REVIEW": ("accept_and_close", "Accept & Close"),
+    }.get(workflow["phase"])
+    workflow["resolution_event_type"] = None
+    workflow["blocking_question_id"] = None
+    if workflow["phase"] == "WAITING" and "implementation_resumed" not in available_actions:
+        resolution_type, blocking_id = waiting_resolution(workflow)
+        workflow["resolution_event_type"] = resolution_type
+        workflow["blocking_question_id"] = blocking_id
+        combined = ("resolve_and_resume", "Resolve & Resume")
+    if combined:
+        replaced = {"prompt_approved", "acceptance_recorded", "milestone_closed"}
+        workflow["ui_events"] = [combined] + [
+            item for item in workflow["ui_events"] if item[0] not in replaced
+        ]
+    workflow["action_explanations"] = {
+        "approve_and_start": "Approve the prompt, then start implementation. Two distinct events are saved together; result: IN_PROGRESS.",
+        "resolve_and_resume": "Record the answer or escalation resolution, optionally approve a distinct binding lock-in, then resume. All events are saved together; result: IN_PROGRESS.",
+        "accept_and_close": "Record Product Owner acceptance, then close the milestone. Distinct events are saved together; result: CLOSED.",
+    }
     workflow["ui_state_version"] = ":".join(
         (
             workflow.get("phase", ""),
@@ -218,6 +245,18 @@ def _decorate_milestone_workflow(
                 milestone=milestone_id,
                 related=events[0]["display_alias"],
             )
+    blocking_id = workflow["blocking_question_id"]
+    for item in workflow["related_items"]:
+        if item["event_id"] == blocking_id and item["actions"] == "answer_recorded":
+            item["actions"] += ",resolve_and_resume"
+            workflow["default_related_event_ids"]["resolve_and_resume"] = blocking_id
+    related_label = next(
+        (item["display_alias"] for item in workflow["related_items"] if item["event_id"] == blocking_id),
+        f"{milestone_id} {workflow.get('waiting_category') or 'blocking condition'}",
+    )
+    workflow["default_summaries"]["resolve_and_resume"] = _SUMMARY_PATTERNS["resolve_and_resume"].format(
+        milestone=milestone_id, related=related_label,
+    )
     return workflow
 
 
@@ -1510,7 +1549,7 @@ def create_web_app(
     @app.post("/milestones/workflow/event")
     def record_milestone_workflow_event():
         require_mutation_request()
-        with repository_action_lock:
+        with repository_action_lock, STATE_ARTIFACT_LOCK:
             require_current_repository_selection()
             submitted_repository = request.form.get("repository_key", "")
             submitted_generation = request.form.get("repository_generation", "")
@@ -1561,23 +1600,45 @@ def create_web_app(
                     "The milestone lifecycle changed since this form was rendered. Refresh before submitting.",
                     status_code=409,
                 )
-            try:
-                record_milestone_event(
-                    repository.path,
-                    effective_state_root,
-                    repository.milestone_root,
-                    selection["selection"],
-                    event_type=request.form.get("event_type", ""),
-                    summary=request.form.get("summary", ""),
-                    actor_role=request.form.get("actor_role", ""),
-                    po_approved=request.form.get("po_approved") == "yes",
-                    waiting_category=request.form.get("waiting_category") or None,
-                    waiting_reason=request.form.get("waiting_reason") or None,
-                    related_event_id=request.form.get("related_event_id") or None,
-                    bug_scope=request.form.get("bug_scope") or None,
-                    evidence_source=request.form.get("evidence_source") or None,
-                    result=request.form.get("result") or None,
+            submitted_count = request.form.get("expected_event_count")
+            if submitted_count is not None and submitted_count != str(workflow["event_count"]):
+                raise WebUIError(
+                    "stale_workflow_events",
+                    "Workflow events changed since this form was rendered. Refresh before submitting.",
+                    status_code=409,
                 )
+            try:
+                action = request.form.get("event_type", "")
+                if action in {"approve_and_start", "resolve_and_resume", "accept_and_close"}:
+                    if submitted_count is None:
+                        raise WorkflowRecordError("Refresh to load the current workflow event count.")
+                    record_milestone_action(
+                        repository.path, effective_state_root, repository.milestone_root,
+                        selection["selection"],
+                        action=action,
+                        summary=request.form.get("summary", ""),
+                        expected_phase=workflow["phase"],
+                        expected_event_count=workflow["event_count"],
+                        related_event_id=request.form.get("related_event_id") or None,
+                        lock_in_summary=request.form.get("lock_in_summary") or None,
+                    )
+                else:
+                    record_milestone_event(
+                        repository.path,
+                        effective_state_root,
+                        repository.milestone_root,
+                        selection["selection"],
+                        event_type=action,
+                        summary=request.form.get("summary", ""),
+                        actor_role="product_owner",
+                        po_approved=True,
+                        waiting_category=request.form.get("waiting_category") or None,
+                        waiting_reason=request.form.get("waiting_reason") or None,
+                        related_event_id=request.form.get("related_event_id") or None,
+                        bug_scope=request.form.get("bug_scope") or None,
+                        evidence_source=request.form.get("evidence_source") or None,
+                        result=request.form.get("result") or None,
+                    )
             except WorkflowRecordError as exc:
                 inventory = discover_milestones(repository.path, repository.milestone_root)
                 workflow = load_milestone_workflow(

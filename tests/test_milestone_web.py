@@ -9,6 +9,8 @@ from pathlib import Path
 
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.app import create_web_app
+from repoctl.workflow.lifecycle import load_milestone_workflow
+from repoctl.workflow.milestones import load_milestone_selection
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -72,7 +74,109 @@ def _csrf(client) -> str:
 
 
 class MilestoneWebTests(unittest.TestCase):
-    def test_lifecycle_is_shown_and_product_owner_approval_is_explicit(self) -> None:
+    def test_combined_browser_cycle_staleness_errors_and_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            state_root = root / "state"
+            client = create_web_app(
+                repository_registry_path=_registry(root, first, second),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post("/milestones/select", data={
+                "csrf_token": csrf, "repository_key": "first",
+                "repository_generation": "0", "milestone_id": "R003.01",
+            })
+            candidate = load_milestone_selection(first, state_root)["selection"]
+
+            def workflow():
+                selected = load_milestone_selection(first, state_root)["selection"]
+                return load_milestone_workflow(first, state_root, "docs/milestones", selected)
+
+            def data(action, **fields):
+                current = workflow()
+                return {
+                    "csrf_token": csrf, "repository_key": "first",
+                    "repository_generation": "0", "milestone_id": "R003.01",
+                    "prompt_path": candidate["prompt_path"],
+                    "expected_phase": current["phase"],
+                    "expected_event_count": str(current["event_count"]),
+                    "event_type": action, "summary": "Controlled browser action",
+                    **fields,
+                }
+
+            start = data("approve_and_start", actor_role="coder", po_approved="no")
+            no_csrf = client.post("/milestones/workflow/event", data={**start, "csrf_token": ""})
+            self.assertEqual(no_csrf.status_code, 400)
+            self.assertEqual(workflow()["event_count"], 0)
+            self.assertEqual(client.post("/milestones/workflow/event", data=start).status_code, 302)
+            self.assertEqual(workflow()["phase"], "IN_PROGRESS")
+            self.assertEqual(
+                [event["actor_role"] for event in workflow()["event_history"]],
+                ["product_owner", "product_owner"],
+            )
+            self.assertEqual(client.post("/milestones/workflow/event", data=start).status_code, 409)
+            self.assertEqual(client.post("/milestones/workflow/event", data=data(
+                "question_submitted", waiting_category="blocker", waiting_reason="Need answer",
+            )).status_code, 302)
+            waiting = client.get("/milestones").get_data(as_text=True)
+            self.assertIn("Resolve &amp; Resume", waiting)
+            self.assertIn("R003.01 Q1", waiting)
+            self.assertIn("Resolve R003.01 Q1 and resume R003.01", waiting)
+            question_id = workflow()["open_questions"][0]["event_id"]
+            self.assertRegex(waiting, rf'<option value="{question_id}"[^>]*selected')
+            sidecar = first / workflow()["sidecar_path"]
+            before = sidecar.read_bytes()
+            invalid = client.post("/milestones/workflow/event", data=data(
+                "resolve_and_resume", related_event_id="wrong",
+                summary="Preserve this entered answer", lock_in_summary="Preserve binding text",
+            ))
+            self.assertEqual(invalid.status_code, 400)
+            invalid_text = invalid.get_data(as_text=True)
+            self.assertIn("Preserve this entered answer", invalid_text)
+            self.assertIn("Preserve binding text", invalid_text)
+            self.assertEqual(sidecar.read_bytes(), before)
+            stale = data("resolve_and_resume", related_event_id=question_id)
+            self.assertEqual(client.post("/milestones/workflow/event", data=data(
+                "test_result_recorded", evidence_source="controlled", result="PASS",
+            )).status_code, 302)
+            before = sidecar.read_bytes()
+            self.assertEqual(client.post("/milestones/workflow/event", data=stale).status_code, 409)
+            self.assertEqual(sidecar.read_bytes(), before)
+            self.assertEqual(client.post("/milestones/workflow/event", data=data(
+                "resolve_and_resume", related_event_id=question_id, lock_in_summary="Binding test choice",
+            )).status_code, 302)
+            self.assertEqual(workflow()["phase"], "IN_PROGRESS")
+            self.assertEqual(
+                [event["event_type"] for event in workflow()["event_history"][-3:]],
+                ["answer_recorded", "lock_in_approved", "implementation_resumed"],
+            )
+            (first / "docs/milestones/R003.01_test_closeout.md").write_text("# Closeout\n", encoding="utf-8")
+            self.assertEqual(client.post("/milestones/workflow/event", data=data("closeout_submitted")).status_code, 302)
+            review = client.get("/milestones").get_data(as_text=True)
+            self.assertIn("Accept &amp; Close", review)
+            self.assertNotIn('name="actor_role"', review)
+            self.assertNotIn('name="po_approved"', review)
+            self.assertEqual(client.post("/milestones/workflow/event", data=data("accept_and_close")).status_code, 302)
+            self.assertEqual(workflow()["phase"], "CLOSED")
+            self.assertEqual(
+                [event["event_type"] for event in workflow()["event_history"][-2:]],
+                ["acceptance_recorded", "milestone_closed"],
+            )
+            self.assertNotIn("data-workflow-form", client.get("/milestones").get_data(as_text=True))
+            git_log = subprocess.run(
+                ["git", "-C", str(first), "log", "--format=%s"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(git_log, "initial")
+            index_changes = subprocess.run(
+                ["git", "-C", str(first), "diff", "--cached", "--name-only"], check=True, capture_output=True, text=True,
+            ).stdout
+            self.assertEqual(index_changes, "")
+
+    def test_deliberate_browser_action_authorizes_approve_and_start(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = _repo(root, "first", "R003.01")
@@ -99,7 +203,7 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIn("Product Owner: review the prompt", text)
             self.assertIn("not authenticated", text)
             self.assertIn("MILESTONE WORKFLOW — EXPLICIT ACTIONS", text)
-            self.assertIn('data-summary="Approve R003.01 prompt"', text)
+            self.assertIn('data-summary="Approve &amp; Start R003.01"', text)
             self.assertIn('name="expected_phase" value="PLANNING"', text)
             self.assertIn("Action available in PLANNING", text)
             self.assertNotIn('value="question_submitted"', text)
@@ -110,29 +214,20 @@ class MilestoneWebTests(unittest.TestCase):
                 "repository_generation": "0",
                 "milestone_id": "R003.01",
                 "prompt_path": "docs/milestones/R003.01_test_prompt.md",
-                "event_type": "prompt_approved",
+                "event_type": "approve_and_start",
                 "summary": "Prompt reviewed and approved.",
                 "actor_role": "product_owner",
                 "expected_phase": "PLANNING",
+                "expected_event_count": "0",
             }
-            refused = client.post("/milestones/workflow/event", data=data)
-            self.assertEqual(refused.status_code, 400)
-            refused_text = refused.get_data(as_text=True)
-            self.assertIn("Select Product Owner and explicitly confirm", refused_text)
-            self.assertIn("Prompt reviewed and approved.", refused_text)
-            self.assertIn('name="po_approved" value="yes"', refused_text)
-            self.assertFalse((first / "docs/milestones/R003.01_test_workflow.md").exists())
-            data["actor_role"] = "coder"
-            data["po_approved"] = "yes"
-            wrong_actor = client.post("/milestones/workflow/event", data=data)
-            self.assertEqual(wrong_actor.status_code, 400)
-            self.assertRegex(wrong_actor.get_data(as_text=True), r'value="coder"\s+selected')
-            self.assertFalse((first / "docs/milestones/R003.01_test_workflow.md").exists())
-
-            data["actor_role"] = "product_owner"
+            self.assertNotIn('name="actor_role"', text)
+            self.assertNotIn('name="po_approved"', text)
+            data.pop("actor_role")
             accepted = client.post("/milestones/workflow/event", data=data)
             self.assertEqual(accepted.status_code, 302)
-            self.assertIn("Lifecycle: READY", client.get("/milestones").get_data(as_text=True))
+            active = client.get("/milestones").get_data(as_text=True)
+            self.assertIn("Lifecycle: IN_PROGRESS", active)
+            self.assertIn("Events recorded:</strong> 2", active)
             stale_phase = client.post(
                 "/milestones/workflow/event",
                 data={
@@ -297,7 +392,7 @@ class MilestoneWebTests(unittest.TestCase):
 
             assert_actions(
                 page_text(),
-                {"prompt_approved", "decision_recorded", "lock_in_approved"},
+                {"approve_and_start", "decision_recorded", "lock_in_approved"},
                 {"implementation_started", "question_submitted"},
             )
             self.assertEqual(
@@ -329,12 +424,12 @@ class MilestoneWebTests(unittest.TestCase):
             waiting = page_text()
             assert_actions(
                 waiting,
-                {"answer_recorded", "decision_recorded"},
+                {"resolve_and_resume", "answer_recorded", "decision_recorded"},
                 {"question_submitted", "implementation_resumed"},
             )
 
             answer_option = re.search(
-                r'<option value="([^"]+)"\s+data-actions="answer_recorded"',
+                r'<option value="([^"]+)"\s+data-actions="answer_recorded(?:,resolve_and_resume)?"',
                 waiting,
             )
             self.assertIsNotNone(answer_option)
@@ -372,7 +467,7 @@ class MilestoneWebTests(unittest.TestCase):
             review = page_text()
             assert_actions(
                 review,
-                {"acceptance_recorded", "correction_requested", "review_requested"},
+                {"accept_and_close", "correction_requested", "review_requested"},
                 {"milestone_closed"},
             )
             self.assertEqual(
@@ -384,7 +479,7 @@ class MilestoneWebTests(unittest.TestCase):
                 ).status_code,
                 302,
             )
-            assert_actions(page_text(), {"milestone_closed"})
+            assert_actions(page_text(), {"accept_and_close"})
             self.assertEqual(
                 submit(
                     "REVIEW",
@@ -523,7 +618,7 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIn("No milestone selected", first_text)
             self.assertIn("R003.01", first_text)
             self.assertIn("First Repository", first_text)
-            self.assertIn("separate explicit workflow events", first_text)
+            self.assertIn("preserving distinct workflow events", first_text)
             self.assertIn(">Milestone</a>", first_text)
 
             csrf = _csrf(client)

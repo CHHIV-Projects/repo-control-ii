@@ -18,20 +18,23 @@
       bug_classified: ["related_event_id", "bug_scope"],
       bug_fixed: ["related_event_id"],
       test_result_recorded: ["evidence_source", "result"],
-      prompt_approved: ["po_approved"],
-      lock_in_approved: ["po_approved"],
-      acceptance_recorded: ["po_approved"],
-      milestone_closed: ["po_approved"],
     };
 
     function updateActionFields(updateDefault = false) {
       const selectedAction = action.value;
+      const explanation = form.querySelector("#workflow-action-explanation");
+      const submit = form.querySelector("#workflow-submit");
+      if (explanation) explanation.textContent = action.selectedOptions[0]?.dataset.explanation || "";
+      if (submit) submit.textContent = selectedAction ? action.selectedOptions[0].textContent.trim() : "Record workflow event";
       actionGroups.forEach((group) => {
         const visible = group.dataset.events.split(",").includes(selectedAction);
         group.hidden = !visible;
         group.querySelectorAll("input, select, textarea").forEach((field) => {
           field.disabled = !visible;
           field.required = visible && (requiredFields[selectedAction] || []).includes(field.name);
+          if (visible && selectedAction === "resolve_and_resume" && field.name === "related_event_id") {
+            field.required = true;
+          }
         });
       });
 
@@ -90,7 +93,6 @@
       }
     });
 
-    if (summary.value) summary.dataset.edited = "true";
     updateActionFields(false);
   }
 
@@ -116,6 +118,7 @@
       replacement.innerHTML = markup.trim();
       const nextRoot = replacement.content.querySelector(rootSelector);
       if (!nextRoot) throw new Error("Refresh response did not contain the workflow panel.");
+      if (root.dataset.stale === "true") return;
       const notice = root.querySelector("#milestone-refresh-notice");
       notice.hidden = true;
       notice.textContent = "";

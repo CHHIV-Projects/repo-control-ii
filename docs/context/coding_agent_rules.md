@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project-wide rules for coding agents  
-**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current workflow baseline:** `docs/context/project_workflow.md`  
@@ -207,6 +207,8 @@ CLOSED
 ```
 
 Coding agents must respect lifecycle state.
+
+The single-user Product Owner browser offers Approve & Start, Resolve & Resume, and Accept & Close. These deliberately authorized actions persist distinct ordered events together; they do not collapse lifecycle phases or grant Coder new authority. The lack of an actor dropdown or extra confirmation checkbox is UI simplification only. Coder must still verify IN_PROGRESS authorization and must never perform Product Owner approvals, resumes, acceptance, closure, or Git mutations.
 
 ## PLANNING
 

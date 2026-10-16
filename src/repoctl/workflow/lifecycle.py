@@ -506,11 +506,11 @@ def _render_sidecar(ledger: dict[str, Any]) -> str:
 def _next_action(state: dict[str, Any], candidate: dict[str, Any], open_questions: list[dict[str, Any]]) -> str:
     phase = state["phase"]
     if phase == "PLANNING":
-        return "Product Owner: review the prompt and lock-ins, then explicitly mark it READY."
+        return "Product Owner: review the prompt and lock-ins, then use Approve & Start."
     if phase == "READY":
         return "Product Owner/Coder: explicitly start the implementation handoff."
     if phase == "WAITING":
-        return "Record a valid answer, decision, or resolution, then explicitly resume implementation."
+        return "Product Owner: resolve the active blocking condition and resume implementation."
     if phase == "IN_PROGRESS":
         if open_questions:
             return "Record answers to open questions; submit the closeout for review only when ready."
@@ -626,6 +626,7 @@ def _record_milestone_event_locked(
     bug_scope: str | None = None,
     evidence_source: str | None = None,
     result: str | None = None,
+    following_events: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
     summary = summary.strip()
     if not summary or len(summary) > 2000:
@@ -786,6 +787,32 @@ def _record_milestone_event_locked(
             waiting_reason_after=reason_after,
         )
         additions.append(event)
+        for following_type, following_summary in following_events:
+            following_summary = following_summary.strip()
+            if not following_summary or any(
+                ord(char) < 32 and char not in "\n\t" for char in following_summary
+            ):
+                raise WorkflowRecordError("Event summary is required and must contain supported text.")
+            following = _new_event(
+                event_type=following_type,
+                summary=following_summary,
+                actor_role=actor_role,
+                po_approved=po_approved,
+                phase=phase_after,
+                waiting_category=category_after,
+                waiting_reason=reason_after,
+                event_fields={"binding": True} if following_type == "lock_in_approved" else {},
+            )
+            phase_after, category_after, reason_after = _apply_event(
+                phase_after, category_after, reason_after, following, events + additions,
+            )
+            following.update(
+                phase_after=phase_after,
+                waiting_category_after=category_after,
+                waiting_reason_after=reason_after,
+            )
+            _validate_event_shape(following)
+            additions.append(following)
         if len(events) + len(additions) > _MAX_EVENTS:
             raise WorkflowRecordError("Workflow record exceeds the 2000-event safety limit.")
         ledger["events"] = ledger["events"] + additions
@@ -793,6 +820,71 @@ def _record_milestone_event_locked(
         ledger["derived_state"] = _reduce_events(ledger["events"])
         _write_ledger(sidecar_path, _render_sidecar(ledger))
     return load_milestone_workflow(root, state_root, milestone_root, current_candidate)
+
+
+def waiting_resolution(workflow: dict[str, Any]) -> tuple[str, str | None]:
+    """Identify the active blocking condition, not an unrelated open question."""
+    if workflow["phase"] != "WAITING":
+        raise WorkflowRecordError("Resolve & Resume is valid only from WAITING.")
+    entry = next(
+        event for event in reversed(workflow["event_history"])
+        if event["phase_after"] == "WAITING" and event["phase_before"] != "WAITING"
+    )
+    if entry["event_type"] == "question_submitted":
+        if entry["event_id"] not in {event["event_id"] for event in workflow["open_questions"]}:
+            raise WorkflowRecordError("The blocking question is already answered; use Resume implementation.")
+        return "answer_recorded", entry["event_id"]
+    if workflow["waiting_category"] == "escalation":
+        return "escalation_resolved", None
+    raise WorkflowRecordError("The active waiting condition has no supported combined resolution.")
+
+
+def record_milestone_action(
+    repository_root: str | Path,
+    state_root: str | Path,
+    milestone_root: str,
+    candidate: dict[str, Any],
+    *,
+    action: str,
+    summary: str,
+    expected_phase: str,
+    expected_event_count: int,
+    related_event_id: str | None = None,
+    lock_in_summary: str | None = None,
+) -> dict[str, Any]:
+    """Validate the entire browser action before one atomic sidecar replacement."""
+    with STATE_ARTIFACT_LOCK:
+        workflow = _load_milestone_workflow_locked(
+            repository_root, state_root, milestone_root, candidate,
+        )
+        if workflow["phase"] != expected_phase or workflow["event_count"] != expected_event_count:
+            raise WorkflowRecordError("Workflow state changed; refresh before submitting this action.")
+        following: tuple[tuple[str, str], ...] = ()
+        if action == "approve_and_start":
+            event_type = "prompt_approved"
+            following = (("implementation_started", f"Start {candidate['milestone_id']} implementation"),)
+        elif action == "accept_and_close":
+            event_type = "milestone_closed"
+        elif action == "resolve_and_resume":
+            event_type, blocking_id = waiting_resolution(workflow)
+            if related_event_id != blocking_id:
+                raise WorkflowRecordError("Resolve & Resume must reference the active blocking question.")
+            if lock_in_summary:
+                following = (("lock_in_approved", lock_in_summary),)
+            following += (("implementation_resumed", f"Resume {candidate['milestone_id']} implementation"),)
+        else:
+            raise WorkflowRecordError("Unsupported combined milestone action.")
+        if lock_in_summary and action != "resolve_and_resume":
+            raise WorkflowRecordError("An optional lock-in is supported only by Resolve & Resume.")
+        return _record_milestone_event_locked(
+            repository_root, state_root, milestone_root, candidate,
+            event_type=event_type,
+            summary=summary,
+            actor_role="product_owner",
+            po_approved=True,
+            related_event_id=related_event_id,
+            following_events=following,
+        )
 
 
 def record_milestone_event(

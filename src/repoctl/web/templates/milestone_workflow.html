@@ -51,12 +51,13 @@
   </article>
 
   {% if workflow.phase != "CLOSED" %}
-    {% set submitted_event = request.form.get("event_type", "") %}
+    {% set primary_action = workflow.ui_events[0][0] if workflow.ui_events else "" %}
+    {% set submitted_event = request.form.get("event_type", primary_action if primary_action in ["approve_and_start", "resolve_and_resume", "accept_and_close"] else "") %}
     {% set submitted_related = request.form.get("related_event_id", "") %}
-    {% set submitted_summary = request.form.get("summary", "") %}
+    {% set submitted_summary = request.form.get("summary", workflow.default_summaries.get(submitted_event, "")) %}
     <article class="card spaced-top">
       <h3>Record a meaningful workflow event</h3>
-      <p class="muted">Routine conversation need not be recorded. Role attribution is user-reported, not authenticated. Binding actions require an explicit Product Owner confirmation.</p>
+      <p class="muted">Routine conversation need not be recorded. Submitting an action is deliberate Product Owner authorization; identity is not authenticated by Repo Control.</p>
       {% if workflow.phase in ["IN_PROGRESS", "WAITING"] and not workflow.open_questions and not workflow.open_bugs and not workflow.fixable_bugs %}
         <p class="muted">Answer, classify, and fix actions are omitted because no eligible related question or bug is open.</p>
       {% endif %}
@@ -70,6 +71,7 @@
         <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
         <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
         <input type="hidden" name="expected_phase" value="{{ workflow.phase }}">
+        <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
 
         <label for="workflow-event-type">Action available in {{ workflow.phase }}</label>
         <select id="workflow-event-type" name="event_type" required>
@@ -77,20 +79,15 @@
           {% for event_type, event_label in workflow.ui_events %}
             <option value="{{ event_type }}"
                     data-summary="{{ workflow.default_summaries.get(event_type, '') }}"
+                    data-explanation="{{ workflow.action_explanations.get(event_type, 'Record this event as the Product Owner; lifecycle prerequisites are checked by the server.') }}"
                     {% if event_type == submitted_event %}selected{% endif %}>{{ event_label }}</option>
           {% endfor %}
         </select>
 
-        <label for="workflow-actor">Reported actor context (not verified)</label>
-        <select id="workflow-actor" name="actor_role" required>
-          {% for actor_role, actor_label in workflow.actors %}
-            <option value="{{ actor_role }}"
-                    {% if request.form.get("actor_role", "product_owner") == actor_role %}selected{% endif %}>{{ actor_label }}</option>
-          {% endfor %}
-        </select>
+        <p id="workflow-action-explanation">{{ workflow.action_explanations.get(submitted_event, "") }}</p>
 
         <label for="workflow-summary">Editable summary / question / decision</label>
-        <textarea id="workflow-summary" name="summary" maxlength="2000" required>{{ submitted_summary }}</textarea>
+        <textarea id="workflow-summary" name="summary" maxlength="2000" required{% if request.form.get("summary") %} data-edited="true"{% endif %}>{{ submitted_summary }}</textarea>
 
         <div data-events="question_submitted,escalation_opened,bug_classified">
           <label for="waiting-category">Waiting category (when pausing for a question or blocker)</label>
@@ -104,7 +101,7 @@
           <textarea id="waiting-reason" name="waiting_reason" maxlength="1000">{{ request.form.get("waiting_reason", "") }}</textarea>
         </div>
 
-        <div data-events="answer_recorded,bug_classified,bug_fixed">
+        <div data-events="answer_recorded,bug_classified,bug_fixed{% if workflow.blocking_question_id %},resolve_and_resume{% endif %}">
           <label for="related-event">Related open question or discovered bug</label>
           <select id="related-event" name="related_event_id">
             <option value="">Choose a related item</option>
@@ -135,13 +132,11 @@
           <input id="event-result" name="result" maxlength="1000" type="text" value="{{ request.form.get('result', '') }}">
         </div>
 
-        <div data-events="prompt_approved,lock_in_approved,acceptance_recorded,milestone_closed">
-          <label class="checkbox-label">
-            <input type="checkbox" name="po_approved" value="yes"{% if request.form.get("po_approved") == "yes" %} checked{% endif %}>
-            I explicitly confirm this as the Product Owner (identity is not authenticated by Repo Control).
-          </label>
+        <div data-events="resolve_and_resume">
+          <label for="lock-in-summary">Optional binding lock-in (leave blank for none)</label>
+          <textarea id="lock-in-summary" name="lock_in_summary" maxlength="2000">{{ request.form.get("lock_in_summary", "") }}</textarea>
         </div>
-        <button type="submit">Record workflow event</button>
+        <button type="submit" id="workflow-submit">{% if submitted_event %}{% for event_type, event_label in workflow.ui_events %}{% if event_type == submitted_event %}{{ event_label }}{% endif %}{% endfor %}{% else %}Record workflow event{% endif %}</button>
       </form>
     </article>
   {% endif %}

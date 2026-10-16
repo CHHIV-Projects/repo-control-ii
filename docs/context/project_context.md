@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current branch:** `main`
@@ -728,7 +728,7 @@ The M003 Workflow Orchestration arc was created to replace manual copy/paste wit
 
 # 11. Operational Workflow Model (M003 Baseline)
 
-With M003.011 implementation in progress and formal acceptance pending, the evolving standard operational workflow is:
+With M003.011 closed and M003.012 introducing compressed single-user browser actions, the operational workflow is:
 
 ```text
 Product Owner & Architect (ChatGPT)
@@ -741,12 +741,13 @@ Product Owner & Architect (ChatGPT)
 
 Product Owner
 → reviews prompt and lock-ins in Repo Control UI
-→ explicitly confirms transition: PLANNING → READY
+→ deliberately submits Approve & Start: PLANNING → READY → IN_PROGRESS
+  (prompt_approved and implementation_started remain distinct ordered events)
 
 Coder (VS Code / Coding Agent)
 → preflight inspection (read-only git status, diff, log)
 → reviews prompt, coding_agent_rules.md, and project architecture (or Coder Handoff Packet)
-→ Product Owner records transition: READY → IN_PROGRESS
+→ confirms IN_PROGRESS authorization before implementation
 → performs bounded implementation and tests (strictly no Git mutations)
 
     ↕ iterative milestone loop
@@ -764,7 +765,7 @@ Coder
 → completes validation and executes test suite
 → writes structured closeout artifact (M<arc>.<seq>_<name>_closeout.md)
 → reports final read-only Git status
-→ Product Owner records transition: IN_PROGRESS → REVIEW
+→ submits the closeout through coder-closeout: IN_PROGRESS → REVIEW
 
 Architect (ChatGPT)
 → queries Repo Control via read-only evidence MCP tools:
@@ -780,10 +781,13 @@ Architect (ChatGPT)
 Product Owner
 → reviews Architect recommendation
 → performs guarded Git staging, commit, and push via Repo Control UI (or manual Git)
-→ explicitly records acceptance and transition: REVIEW → CLOSED
+→ deliberately submits Accept & Close: REVIEW → CLOSED
+  (acceptance_recorded and milestone_closed remain distinct ordered events)
 ```
 
 The iterative exchange between prompt and closeout is intentional.
+
+In WAITING, Resolve & Resume records the active question answer or escalation resolution, an optional distinct binding lock-in, and implementation_resumed in one atomic sidecar update. Normal lifecycle browser actions use a fixed reported Product Owner context: no actor dropdown or extra confirmation checkbox. The deliberate action button is authorization, not authenticated identity. Polling, edited-form stale protection, and the separate Architect dispatch approval boundary remain intact.
 
 The prompt begins the milestone, but the active milestone may evolve through controlled questions, answers, clarifications, escalation decisions, bug classifications, validation findings, and approved lock-ins.
 

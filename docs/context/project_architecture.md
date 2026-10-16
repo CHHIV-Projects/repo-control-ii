@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
@@ -731,6 +731,14 @@ git_disposition_recorded
 Each event records an ISO-8601 timestamp, event type, summary, optional actor, and optional structured metadata (such as blocking status or condition keys).
 
 This event model preserves a full audit trail of questions, answers, bug classifications, test outcomes, and binding decisions without requiring an opaque database or losing transparency.
+
+## Single-User Browser Action Compression
+
+Approve & Start records prompt_approved followed by implementation_started; Resolve & Resume records the active condition's answer/resolution, an optional distinct lock_in_approved, then implementation_resumed; Accept & Close records acceptance_recorded followed by milestone_closed. A valid immediately preceding acceptance may be reused by closure, preserving existing ledger semantics.
+
+The authoritative lifecycle primitives validate the complete sequence in memory before one bounded, atomic sidecar replacement. Failure of any constituent event, event/byte limit, or persistence leaves the prior sidecar intact. Repository/selection, phase, and event-count preconditions reject stale browser submissions. READY remains a real intermediate event phase even when Approve & Start passes through it in one deliberate action.
+
+Normal lifecycle browser actions hardcode reported Product Owner attribution and approval; the submit button authorizes the action without an actor selector or additional confirmation checkbox. This is single-user UI simplification, not authentication or delegated Architect/Coder authority. Existing individual lifecycle primitives remain available for compatibility. Architect proposal approval/save remains separate and cannot start or resume lifecycle work. Server-authoritative polling and edited-form stale protection remain unchanged.
 
 ---
 

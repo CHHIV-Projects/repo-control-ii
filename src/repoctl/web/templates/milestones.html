@@ -6,7 +6,7 @@
   <p><strong>Repository:</strong> {{ repository_name }}</p>
   <p class="muted">{{ repository_root }}</p>
   <p><strong>Configured milestone root:</strong> <code>{{ milestone_root }}/</code></p>
-  <p class="muted">Selection identifies a prompt. Lifecycle, approval, acceptance, and closure require separate explicit workflow events.</p>
+  <p class="muted">Selection identifies a prompt. Approve &amp; Start, Resolve &amp; Resume, and Accept &amp; Close combine deliberate Product Owner actions while preserving distinct workflow events.</p>
 
   {% if selection.status == "selected" %}
     <article class="card spaced-top">

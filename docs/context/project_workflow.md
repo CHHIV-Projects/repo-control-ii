@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; Workflow Orchestration implemented through M003.011 (bounded Architect dispatch implementation in progress; formal milestone acceptance pending)
+**Project phase:** Git Control complete; M003.011 CLOSED; M003.012 single-user workflow compression implementation (formal milestone acceptance pending)
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -737,6 +737,14 @@ REVIEW → CLOSED
 
 Do not infer transitions from prompt existence, closeout existence, Git cleanliness, commits, pushes, or passing tests.
 
+The normal single-user browser actions combine deliberate operator submissions, not event semantics:
+
+- **Approve & Start** (PLANNING): prompt_approved, then implementation_started; result IN_PROGRESS.
+- **Resolve & Resume** (WAITING): answer the active blocking question or resolve the active escalation, optionally record a separate binding lock-in, then implementation_resumed; result IN_PROGRESS. An unrelated open question cannot resolve the active blocker. If a resolution was already separately recorded, the existing Resume action remains available.
+- **Accept & Close** (REVIEW): acceptance_recorded, then milestone_closed; result CLOSED. An immediately preceding acceptance can be reused without duplicating it.
+
+All constituent events are validated before one atomic sidecar replacement; no partial advancement is saved. The server checks repository selection, milestone identity, expected phase, and event count. Approval/start and acceptance/closure do not mutate Git. A service restart/reload and one page refresh to load changed JavaScript are required before live browser acceptance of runtime changes.
+
 ---
 
 # 28. Workflow Event Model
@@ -814,6 +822,8 @@ Explicit Product Owner action is required for at least:
 - other consequential Git mutations.
 
 Repo Control currently records actor role as reported context. It does not claim cryptographic role authentication.
+
+For normal lifecycle browser actions the reported actor is fixed to Product Owner. The deliberate submit button provides authorization, so no actor dropdown or extra Product Owner confirmation checkbox is shown or required. Summaries retain deterministic editable defaults; irrelevant structured fields are hidden, and entered answer/lock-in text survives validation errors. Existing polling still refreshes untouched forms automatically and preserves/blocks edited forms when workflow state becomes stale. Git-action confirmation controls and Architect dispatch approval rules are not changed.
 
 ---
 
