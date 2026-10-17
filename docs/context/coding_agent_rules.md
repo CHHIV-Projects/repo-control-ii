@@ -921,20 +921,22 @@ The provisional normal surface is `repoctl coder-intelligence <operation> [query
 
 # 31. Agent Skills Rules
 
-Repo Control II intends to use Agent Skills as the reusable procedure layer.
+M005.002 proposes adopting these reusable operating-procedure helpers (Product Owner acceptance is pending review):
 
-Until skills are implemented and validated, this document remains the standing rule source.
+| Skill | Invoke explicitly when |
+|---|---|
+| `.agents/skills/repo-control-validation-closeout/SKILL.md` (`repo-control-validation-closeout`) | Beginning proportionate validation, evidence recording, closeout preparation or review submission |
+| `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md` (`repo-control-blocker-bug-escalation`) | A genuine blocker/question or defect needs bounded escalation |
 
-When skills are introduced:
+Explicit invocation is the normal reliable SOP. Implicit activation may assist but is never relied on for mandatory behavior. If a skill is unavailable, follow this document and the active prompt directly; a skill is a convenience, not a prerequisite.
 
-- keep skills modular;
-- use progressive disclosure;
-- avoid copying entire project documents into skills;
-- keep milestone-specific scope in the milestone prompt;
-- keep durable project rules either here or in appropriately scoped skills;
-- avoid conflicting duplicate instructions.
+This document and other governing documents remain canonical policy. The active prompt and approved binding lock-ins determine task scope and acceptance. Skills are concise derived procedures; they do not override Product Owner direction, authorize Git mutations, grant lifecycle/Product Owner authority, or replace Repo Control enforcement.
 
-A skill does not override Product Owner direction or the active milestone.
+- Keep skills small and instruction-only unless separately approved.
+- Preserve mandatory context-reading, authorization, stop and Git rules here.
+- Do not copy whole governing documents into skills or silently remove rules to claim context savings.
+- Review skills when their governing procedure or CLI contract changes; avoid conflicting duplicate policy.
+- Implicit activation is advisory, not an authority or approval mechanism.
 
 ---
 

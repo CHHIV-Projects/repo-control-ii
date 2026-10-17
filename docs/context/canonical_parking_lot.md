@@ -606,6 +606,9 @@ Requires a clear use case for non-local Coder execution that cannot be served by
 
 If ever implemented, Coder MCP must strictly adhere to the same Model B bounded write boundary established in M003.009: hardcoded `actor_role="coder"`, `po_approved=False`, strictly non-authoritative event types, zero Git mutation authority, and zero caller-selectable generic event submission.
 
+WORKFLOW-004 — Closeout Final-Status / Workflow-Sidecar Self-Invalidation
+Investigate and fix the lifecycle timing problem where coder-closeout submission updates the tracked workflow sidecar after the closeout's final Git-status snapshot is prepared, causing the closeout to become stale immediately upon entering REVIEW. The solution should preserve an accurate audit trail without requiring a correction loop merely to report lifecycle-generated sidecar changes. Consider distinguishing pre-submission Git status from review-time workflow state, or generating/surfacing authoritative current status outside the static closeout.
+
 ---
 
 ## GIT-001 — Browser Git Merge Support
@@ -637,6 +640,38 @@ Existing Git evidence, explicit mutation authorization, and separately approved 
 ### Notes
 
 Preserve explicit review before mutation and the existing Coder no-Git-mutation boundary. No automatic conflict resolution. Consider non-fast-forward merge or conflict handling only as later expansion if justified.
+
+---
+
+## UX-001 — WAITING Resolution Rejects Pasted Control Characters
+
+### Status
+
+Deferred
+
+### Summary
+
+Investigate recurring rejection of pasted event-summary text while resolving a WAITING condition (`Event summary contains unsupported control characters`).
+
+### Why It Is Parked
+
+M005.002 is limited to Agent Skills SOP adoption. The reported cause—carriage returns in CRLF-pasted text—is plausible but not yet reproduced or confirmed.
+
+### Trigger for Reconsideration
+
+Revisit when browser WAITING-resolution friction is prioritized for a focused reproduction and bounded UX fix.
+
+### Likely Scope
+
+Reproduce pasted CR, CRLF, LF, and tab behavior across the browser input and workflow validation boundary; then determine whether UI normalization or validation changes are appropriate.
+
+### Dependencies
+
+A reproducible case and explicit implementation scope before changing validation behavior.
+
+### Notes
+
+Do not weaken lifecycle event validation or accept arbitrary control characters without review. No fix is authorized by this note.
 
 ---
 

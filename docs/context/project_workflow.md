@@ -1339,9 +1339,16 @@ Future optimization should reduce repeated standing content, preserve authoritat
 
 # 58. Agent Skills
 
-Agent Skills remain the intended reusable procedure layer.
+The repository-local explicit SOP helpers proposed by M005.002 for Product Owner review are:
 
-Until Agent Skills are implemented and validated, `coding_agent_rules.md` remains the standing Coder procedure source.
+```text
+.agents/skills/repo-control-validation-closeout/SKILL.md
+.agents/skills/repo-control-blocker-bug-escalation/SKILL.md
+```
+
+Invoke validation/closeout when validation and review preparation begin; invoke blocker/bug escalation only for a genuine question, blocker or defect. Explicit invocation is the normal procedure. Implicit selection may assist but is not relied on for mandatory behavior.
+
+`coding_agent_rules.md`, the other governing documents, active milestone prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize Git, lifecycle or Product Owner actions. If a skill does not load, follow the canonical documents directly. Do not reduce mandatory context under this SOP.
 
 ---
 

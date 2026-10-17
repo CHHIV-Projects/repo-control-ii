@@ -472,20 +472,20 @@ Primary concerns:
 Current preferred direction:
 
 - use the Agent Skills standard;
-- create Repo Control II-specific skills;
+- use the two Repo Control II SOP helpers proposed in M005.002, pending Product Owner acceptance;
 - keep skills modular and progressively disclosed;
-- avoid giant always-loaded instruction blocks.
+- explicitly invoke a helper at its relevant procedure boundary; implicit activation is advisory only;
+- preserve governing documents as authority and do not shorten mandatory context under this SOP.
 
 Potential early skills include:
 
 ```text
-repo-control-preflight
 milestone-reconnaissance
 milestone-implementation
-milestone-validation
-milestone-closeout
 git-readonly-inspection
 ```
+
+Proposed helpers are `.agents/skills/repo-control-validation-closeout/SKILL.md` and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md`. If accepted, invoke validation/closeout when that phase begins; invoke blocker/bug escalation only for genuine questions, blockers or defects. Skills do not authorize Git, lifecycle or Product Owner actions. `repo-control-preflight` is deferred because existing mandatory Coder context and rules already define startup authorization and read-only preflight.
 
 Ponytail may be evaluated as an optional coding-behavior skill focused on avoiding unnecessary abstractions and overengineering.
 
