@@ -86,4 +86,4 @@ Read only applicable broader context. The active prompt, approved lock-ins, and 
 
 ## 7. Current SOP Status
 
-M005.002 was accepted and closed: `repo-control-validation-closeout` and `repo-control-blocker-bug-escalation` are the accepted explicit SOP helpers. M005.003 adds `repo-control-implementation` as a candidate for Product Owner review; until accepted, its procedure is available for this authorized POC, not a new standing approval. Existing and proposed Skills do not introduce a custom loader, catalog, runtime, or permission boundary.
+M005.002 and M005.003 were accepted and closed. The accepted explicit SOP catalog is `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`. M005.004 is reconciling governing documents and preparing the M005 arc for Product Owner Git completion/merge and planned development pause. Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, or permission framework is integrated.

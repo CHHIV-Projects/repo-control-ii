@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; M003 capabilities through M003.012 accepted and CLOSED; M004.000 reconnaissance accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
 **Current status:** Packet-context optimization and future Coder MCP remain deferred; completed phase-aware UX and action compression are not backlog
@@ -521,43 +521,41 @@ Growth alone is not a sign of good planning.
 
 ### Status
 
-Deferred — Near-Term Candidate (Partially Superseded for Live Architect by MCP Tunnel)
+Deferred — fallback/export packet assembly only; live co-located Coder work uses the accepted local CLI, compact bootstrap, and Skills
 
 ### Summary
 
 Optimize context size and avoid repeating standing documents in Coder Handoff Packets and fallback Architect Review Packets while preserving authoritative instructions, binding decisions, deterministic evidence, and explicit source references.
 
-Note: With the operational acceptance of M003.006 (Secure MCP Tunnel), live Architect review sessions no longer rely on large monolithic review packets; ChatGPT queries individual endpoints on demand. However, manual Architect Review Packets remain supported as an operational fallback, and Coder Handoff Packets still bundle full prompts and standing rules.
+Live Architect review uses the accepted Secure MCP Tunnel and retrieves evidence on demand. Co-located Coder work normally uses `coder-context`, the compact always-loaded `coding_agent_rules.md` bootstrap, and the three accepted repository-local Agent Skills rather than a full handoff packet. Manual Architect Review Packets and Coder Handoff Packets remain available as fallback/export mechanisms, especially for disconnected or external use.
 
 ### Why It Is Parked
 
-The initial implementation deliberately favored correctness and completeness over aggressive context reduction.
-
-Architect live evidence retrieval uses the MCP tunnel, while co-located Coders use `coder-context`/`coder-status` and bounded local submissions. Full packets remain fallbacks/exports; optimizing their size is still unimplemented. Agent Skills may provide progressive disclosure, but no Skills implementation or schedule is established here.
+Native Agent Skills are implemented and accepted, and `coding_agent_rules.md` has been reduced to a compact authority/bootstrap layer. The remaining question is whether/how fallback packet assembly can use explicit references and progressive disclosure while preserving authoritative content, source provenance, and usability for disconnected or external Coders.
 
 ### Trigger for Reconsideration
 
-Revisit when real packet usage or separately approved Agent Skills work justifies evaluating:
+Revisit when real fallback packet use or a concrete external/disconnected Coder need justifies evaluating:
 
-- whether Agent Skills replace standing document embedding in Coder packets;
-- which prompt sections and rules are essential in Coder packets versus referenceable;
+- which prompt, bootstrap, Skill, and approved-decision content must be embedded versus referenced in Coder packets;
 - whether fallback Architect Review Packets need a compact mode;
-- token-efficiency metrics and context window limits for coding agents.
+- how to make references and progressive disclosure usable when packet recipients cannot query the local CLI or load repository Skills;
+- packet-size/context metrics when real use can be observed.
 
 ### Likely Scope
 
 ```text
 Coder handoff packet assembly policy
 fallback Architect packet inclusion rules
-progressive disclosure via Agent Skills
-source-reference strategy
-packet size and token-efficiency metrics
+reference/provenance strategy for canonical prompts, bootstrap, Skills, and decisions
+progressive disclosure compatible with fallback/export recipients
+packet size/context metrics based on real use
 optional compact/full packet modes if justified
 ```
 
 ### Dependencies
 
-Useful evidence should come from real Coder/packet usage and any separately approved Agent Skills design.
+Useful evidence should come from real fallback packet usage and a concrete recipient/use case. The native Skill catalog and compact bootstrap are accepted current procedure, not pending work or authorization to optimize packet assembly.
 
 ### Notes
 
@@ -606,8 +604,31 @@ Requires a clear use case for non-local Coder execution that cannot be served by
 
 If ever implemented, Coder MCP must strictly adhere to the same Model B bounded write boundary established in M003.009: hardcoded `actor_role="coder"`, `po_approved=False`, strictly non-authoritative event types, zero Git mutation authority, and zero caller-selectable generic event submission.
 
-WORKFLOW-004 — Closeout Final-Status / Workflow-Sidecar Self-Invalidation
-Investigate and fix the lifecycle timing problem where coder-closeout submission updates the tracked workflow sidecar after the closeout's final Git-status snapshot is prepared, causing the closeout to become stale immediately upon entering REVIEW. The solution should preserve an accurate audit trail without requiring a correction loop merely to report lifecycle-generated sidecar changes. Consider distinguishing pre-submission Git status from review-time workflow state, or generating/surfacing authoritative current status outside the static closeout.
+## WORKFLOW-004 — Closeout Final-Status / Workflow-Sidecar Self-Invalidation
+
+### Status
+
+Deferred
+
+### Summary
+
+Investigate and resolve the lifecycle timing problem where `coder-closeout` submission updates the tracked workflow sidecar after the closeout's final Git-status snapshot is prepared, which can make the closeout immediately stale upon entering REVIEW.
+
+### Why It Is Parked
+
+The issue concerns lifecycle/status representation and requires a separately scoped design that preserves an accurate audit trail. It is not implemented by M005.004.
+
+### Trigger for Reconsideration
+
+Revisit when Product Owner prioritizes eliminating correction loops caused solely by lifecycle-generated sidecar changes.
+
+### Likely Scope
+
+Preserve accurate reporting without requiring a correction loop merely to describe workflow-generated sidecar changes. Evaluate distinguishing pre-submission Git status from review-time authoritative status, or surfacing current Git/workflow status outside the static closeout.
+
+### Dependencies / Notes
+
+Keep closeout evidence auditable and distinguish repository status at preparation/submission from the subsequent workflow event. No fix is authorized by this entry.
 
 ---
 

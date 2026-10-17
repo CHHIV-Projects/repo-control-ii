@@ -4,12 +4,12 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
-**Current branch at reconciliation:** `arc/m004-repository-intelligence` (verify live Git state before work)
-**Current repository state:** Active, version-controlled Repo Control II repository with Git Control complete and Workflow Orchestration implemented through a persistent Architect MCP tunnel with read-only evidence and bounded, Product Owner-gated dispatch proposals
-**Current working emphasis:** Preserve the read-only Architect evidence contract while using typed dispatch proposals, explicit Product Owner approval, and local Coder CLI consumption without weakening safety or Product Owner control.
+**Current branch at reconciliation:** `arc/m005-agent-procedure` (verify live Git state before work)
+**Current repository state:** Active, version-controlled Repo Control II repository with accepted Git Control, Workflow Orchestration, bounded Repository Intelligence, and Agent Procedure capabilities
+**Current working emphasis:** Complete M005.004 documentation reconciliation; its acceptance will complete the M005 Agent Procedure arc through M005.004 and prepare the branch for Product Owner Git completion/merge and the planned development pause. The Product Owner's later discussion about applying the accepted workflow to another repository is not an implementation roadmap or current authorization.
 
 ---
 
@@ -469,26 +469,15 @@ Primary concerns:
 - environment identification;
 - targeted context reading.
 
-Current preferred direction:
+Accepted Agent Procedure baseline:
 
-- use the Agent Skills standard;
-- use the two Repo Control II SOP helpers accepted in M005.002;
-- evaluate `repo-control-implementation` as an additional explicit procedure Skill through M005.003;
-- keep skills modular and progressively disclosed;
-- explicitly invoke a helper at its relevant procedure boundary; implicit activation is advisory only;
-- preserve the Coder bootstrap and governing documents as authority; Skills do not confer permission or replace deterministic lifecycle checks.
+- the compact `coding_agent_rules.md` is the always-loaded authority and safe-start bootstrap;
+- the accepted repository-local explicit SOP Skills are `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`;
+- the Coder retrieves authoritative `coder-context`, verifies authorization and read-only repository preflight, and loads applicable Skills without requiring the Product Owner to repeat procedure;
+- explicit invocation/routing is normal; implicit activation is advisory only;
+- Skills provide reusable procedure, not permission, and do not replace deterministic lifecycle checks or Product Owner authority.
 
-Potential early skills include:
-
-```text
-milestone-reconnaissance
-milestone-implementation
-git-readonly-inspection
-```
-
-The accepted helpers are `.agents/skills/repo-control-validation-closeout/SKILL.md` and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md`. Invoke validation/closeout when that phase begins; invoke blocker/bug escalation only for genuine questions, blockers or defects. M005.003's `.agents/skills/repo-control-implementation/SKILL.md` is a POC candidate pending acceptance. Skills do not authorize scope, Git, lifecycle or Product Owner actions. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap.
-
-Ponytail may be evaluated as an optional coding-behavior skill focused on avoiding unnecessary abstractions and overengineering.
+No additional Skill family is part of the accepted catalog or current direction. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap. M005.004 prepares the M005 arc for Product Owner Git completion/merge and the planned development pause.
 
 ## 7.4 Repository Intelligence
 
@@ -514,7 +503,7 @@ Desired information includes:
 - changed structural relationships;
 - relevant neighborhood around a symbol or subsystem.
 
-M004.001 accepted the Graphify 0.9.91 code-only POC: 19/20 supported checks, 27/27 bounded audited assertions, but only 1/5 Flask/template/browser cross-layer checks. M004.002 adds a provisional replaceable-provider integration with bounded shared Architect/Coder evidence and a Product Owner value-review page. It does not establish unconditional production adoption or complete runtime coverage.
+M004.001 accepted the Graphify 0.9.91 code-only POC: 19/20 supported checks, 27/27 bounded audited assertions, but only 1/5 Flask/template/browser cross-layer checks. M004.002's accepted and CLOSED deliverable is a bounded replaceable-provider integration with shared Architect/Coder evidence and a Product Owner value-review page. Acceptance does not establish unconditional production adoption or complete runtime coverage; the recorded limitations and value/usefulness monitoring remain relevant.
 
 A repository-intelligence engine should ideally support both:
 
@@ -861,7 +850,7 @@ Current investigation areas:
 |---|---|
 | Agent procedure | Agent Skills |
 | Coding restraint | Ponytail as optional skill |
-| Repository intelligence | Graphify 0.9.91 provisional integration and value measurements under M004.002; acceptance pending |
+| Repository intelligence | M004.002 accepted and CLOSED bounded Graphify-backed integration; usefulness monitoring continues within accepted limits |
 | Model gateway | LiteLLM, OmniRoute |
 | Coding agent | Copilot, Codex, Cline, OpenCode, Aider, Goose, OpenHands |
 
@@ -1014,14 +1003,16 @@ M003 — Workflow Orchestration capabilities through M003.012  ACCEPTED / CLOSED
   └─ M003.012: Single-User Workflow Compression               CLOSED (limited live coverage)
 M004.000 — Graphify Architecture / Tool-Fit Reconnaissance    CLOSED; ADOPT FOR POC
 M004.001 — Local Graphify Proof of Concept                   CLOSED
-M004.002 — Graphify Integration and Value Measurement        PROVISIONAL; ACCEPTANCE PENDING
+M004.002 — Graphify Integration and Value Measurement        ACCEPTED / CLOSED (bounded integration and measured-value limits)
+M005.000–M005.003 — Agent Procedure reconnaissance/POCs/SOPs  ACCEPTED / CLOSED
+M005.004 — Governing Context Reconciliation / Arc Closeout    IN PROGRESS
 ```
 
 Remaining capability areas are not a prescribed implementation sequence:
 
 ```text
-Agent Procedure / Skills            NOT IMPLEMENTED
-Repository Intelligence             PROVISIONAL INTEGRATION; VALUE UNDER MEASUREMENT
+Agent Procedure / Skills            ACCEPTED through M005.003; M005.004 final reconciliation in progress
+Repository Intelligence             ACCEPTED bounded integration; usefulness monitoring may continue
 Deeper Architect / Coder Integration DEFERRED
 Model Gateway                       DEFERRED
 ```
@@ -1052,7 +1043,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M005.002 is CLOSED; M005.003 is the currently authorized Agent Procedure decomposition POC. This does not authorize work beyond its approved scope or establish a broader roadmap.
+The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M005.003 is accepted and CLOSED; M005.004 is the authorized final documentation reconciliation for the M005 Agent Procedure arc. Upon its acceptance, the arc will be ready for Product Owner Git completion/merge and planned development pause. No further feature work or implementation roadmap is implied.
 
 ---
 
@@ -1084,7 +1075,7 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 - OpenAI `tunnel-client` daemon running as persistent systemd service `repo-control-architect-tunnel.service`;
 - custom stdio JSON-RPC 2.0 adapter `repoctl mcp-architect`;
 - 10 existing read-only evidence tools remain mapped to Repo Control's loopback GET endpoints;
-- provisional `repo_intelligence` adds bounded structural evidence and operational use measurements (15 total tools including dispatch transport);
+- accepted bounded `repo_intelligence` adds structural evidence and operational use measurements (15 total tools including dispatch transport);
 - bounded `PROMPT`, `INSTRUCTION`, and `RESPONSE` proposal tools use fixed POST endpoints; `repo_dispatches` provides bounded status/content readback;
 - Product Owner approval is performed only in the Repo Control browser UI; pending content is not Coder-authoritative, and prompt approval creates only a canonical artifact under the configured milestone root;
 - Repo Control strictly bound to `127.0.0.1:8765` with zero LAN or public exposure;
@@ -1095,13 +1086,13 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 
 Coding agents consume the active milestone prompt, standing document references, and applicable Product Owner-approved Architect INSTRUCTION/RESPONSE dispatches through local `repoctl coder-context`; generated Coder Handoff Packets remain a fallback. Local bounded commands submit questions, bugs, test evidence, and closeout. No Coder MCP is implemented. Coding agents remain strictly forbidden from executing Git mutations.
 
-## 20.5 Repository Intelligence Engine (Provisional Integration)
+## 20.5 Repository Intelligence Engine (Accepted Bounded Integration)
 
-M004.002 exposes the same bounded structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`, using the server-selected allowlisted repository. Explicit Product Owner browser approval builds/refreshes external graph state; ordinary queries never rebuild. CURRENT evidence includes generation/source identity and normalized outcomes. The `/intelligence` page shows freshness, use ratings, sticky misleading flags and comparative task metrics. Communities/viewer and semantic/network operations remain excluded; template/browser gaps remain unsupported.
+M004.002 was accepted and CLOSED with a bounded Graphify-backed integration exposing structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`, using the server-selected allowlisted repository. Explicit Product Owner browser approval builds/refreshes external graph state; ordinary queries never rebuild. CURRENT evidence includes generation/source identity and normalized outcomes. The `/intelligence` page shows freshness, use ratings, sticky misleading flags and comparative task metrics. Communities/viewer and semantic/network operations remain excluded; template/browser gaps remain unsupported. Acceptance does not establish unconditional correctness, complete runtime coverage, or a blanket engine-adoption claim; usefulness monitoring may continue.
 
-## 20.6 Agent Skills (Explicit SOP Helpers)
+## 20.6 Agent Skills (Accepted Explicit SOP Catalog)
 
-M005.002 accepted two instruction-only explicit SOP helpers. M005.003 tests a compact always-loaded Coder bootstrap with one additional implementation/mode procedure Skill; that third helper remains a POC candidate until the milestone is accepted. No custom loader, catalog, runtime, or permission model is introduced.
+M005.002 and M005.003 are accepted and CLOSED. The accepted instruction-only repository-local SOP catalog is `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`. The compact Coder bootstrap is always-loaded authority and safe-start policy; explicit Skill routing is normal, while implicit activation is advisory. Skills provide procedure and confer no scope, Git, lifecycle, or Product Owner authority. Native repository-local Agent Skills are in use; no custom loader, manager, catalog, runtime, or permission framework is integrated.
 
 ## 20.7 Model Gateway (Deferred)
 
@@ -1201,7 +1192,7 @@ verified live read-only Architect evidence operations plus Product Owner-gated d
 Product Owner acceptance of M003 capabilities through M003.012;
 local bounded Coder context/status and workflow submissions without Coder MCP;
 phase-aware polling UX and compressed Product Owner actions with distinct ordered events;
-M004.001 accepted Graphify POC; M004.002 provisional bounded integration with value measurements, pending acceptance.
+M004.001 and M004.002 accepted and CLOSED; M004.002 provides bounded Graphify-backed structural evidence with value/usefulness monitoring and documented coverage limitations.
 ```
 
 Subsequent enhancements must preserve the accepted Product Owner, Architect, Coder, lifecycle, and Git authority boundaries. Neither dispatch approval nor lifecycle/Coder event recording silently mutates Git.

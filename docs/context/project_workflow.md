@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.013 and M004.001 accepted and CLOSED; M004.002 repository intelligence integration provisional, pending acceptance
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -26,7 +26,7 @@ It defines the working relationship among:
 - **governing project documents**
 - **milestone artifacts**
 - **test and validation tooling**
-- **provisional repository-intelligence and accepted explicit Agent Skills procedure helpers**
+- **accepted bounded repository-intelligence and explicit Agent Skills procedure**
 
 The workflow exists to keep development milestone-driven, bounded, understandable, evidence-based, recoverable, resistant to scope drift and mixed commits, explicit about authority, efficient in AI context usage, portable across coding agents, durable across chat/tool transitions, and suitable for incremental automation.
 
@@ -1346,13 +1346,14 @@ The accepted repository-local explicit SOP helpers are:
 ```text
 .agents/skills/repo-control-validation-closeout/SKILL.md
 .agents/skills/repo-control-blocker-bug-escalation/SKILL.md
+.agents/skills/repo-control-implementation/SKILL.md
 ```
 
-Invoke blocker/bug escalation only for a genuine material question, blocker, conflict or defect; invoke validation/closeout for validation, evidence, closeout, review submission or a bounded correction. M005.003 adds `.agents/skills/repo-control-implementation/SKILL.md` as a POC candidate for reconnaissance, implementation, documentation and tool-evaluation procedure; it becomes an accepted standing helper only after Product Owner acceptance of M005.003.
+Invoke implementation procedure after safe preflight for reconnaissance, implementation, documentation or tool evaluation; invoke blocker/bug escalation only for a genuine material question, blocker, conflict or defect; invoke validation/closeout for validation, evidence, closeout, review submission or a bounded correction.
 
-Explicit loading is the normal procedure; implicit selection may assist but is not relied on for a safety gate. The bootstrap routes by active prompt mode and procedure boundary, not by Product Owner prompting. For corrections, verify correction-mode authorization and bound the change. For approved instructions, verify applicability and priority.
+The compact `coding_agent_rules.md` is the always-loaded authority and safe-start bootstrap. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The Coder fetches authoritative context, verifies lifecycle authorization and preflight, applies the standing pre-work feedback rule, and loads applicable Skills without asking for repeated procedural boilerplate. Explicit loading/routing is normal; implicit activation is advisory only. For corrections, verify correction-mode authorization and bound the change. For approved instructions, verify applicability and priority.
 
-`coding_agent_rules.md`, other governing documents, active prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize scope, Git, lifecycle or Product Owner actions. If a skill does not load, follow the bootstrap and canonical documents directly; stop if safe procedure is unclear. Repo Control lifecycle checks and bounded submissions remain deterministic authorities. The Skills introduce no custom loader, manager, catalog, hooks or permission boundary.
+`coding_agent_rules.md`, other governing documents, active prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize scope, Git, lifecycle or Product Owner actions. If a Skill does not load, follow the bootstrap and canonical documents directly; stop if safe procedure is unclear. Repo Control lifecycle checks and bounded submissions remain deterministic authorities. Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, hooks or permission framework is integrated.
 
 ---
 
@@ -1360,7 +1361,7 @@ Explicit loading is the normal procedure; implicit selection may assist but is n
 
 Repository intelligence should provide deterministic structural evidence for targeted questions such as what calls a function, what tests cover a module, what depends on a class, and what changed structurally.
 
-M004.001 accepted the bounded Graphify POC. M004.002 implements provisional shared structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`; it remains subject to its own acceptance and measured value review.
+M004.001 and M004.002 are accepted and CLOSED. M004.002 provides bounded shared structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`; its accepted source-scope, output and runtime limitations remain in force, and usefulness monitoring may continue.
 
 The Product Owner deliberately builds/refreshes from the Intelligence Value page. Queries have no refresh, Git or lifecycle authority. Evidence is served only from CURRENT generations with deterministic source identity; stale/failed/missing/incompatible states are explicit. After source edits, request a deliberate refresh rather than silently treating old evidence as current.
 
@@ -1458,7 +1459,7 @@ approved applicable Architect dispatches in local Coder context
 
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
-- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for 10 unchanged read-only evidence tools plus provisional bounded `repo_intelligence` (also recording use metrics), bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
+- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for 10 unchanged read-only evidence tools plus accepted bounded `repo_intelligence` (also recording use metrics), bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
 - **Coder (VS Code):** Co-located Coders use the local CLI for authoritative prompt, standing references, authorization, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
@@ -1468,7 +1469,7 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-Reusable Agent Skills and packet-context optimization remain unimplemented/deferred areas; they do not prescribe the next milestone. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
+The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 is the final governing-context reconciliation; once accepted, M005 Agent Procedure work is complete through M005.004 and the arc is prepared for Product Owner Git completion/merge and planned development pause. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1553,8 +1554,9 @@ persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
 11 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
-Two explicit instruction-only Agent Skills accepted by M005.002; M005.003 decomposition/third-helper POC pending review, with no custom loader or manager
-repository intelligence provisional under M004.002; M004.001 POC CLOSED; value and acceptance remain explicit gates
+M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue
+M005.002–M005.003 Agent Procedure / three explicit Skill helpers accepted and CLOSED; M005.004 is the final context reconciliation, preparing the arc for Product Owner Git completion/merge and planned development pause once accepted
+Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, or permission framework is integrated
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)
 ```
