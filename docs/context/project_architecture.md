@@ -973,7 +973,7 @@ Responsibilities:
 - closeout requirements;
 - reminders about Git mutation boundaries, whose authority remains in governing rules and deterministic Repo Control controls.
 
-M005.002 proposes the two repository-local helpers `repo-control-validation-closeout` and `repo-control-blocker-bug-escalation` under `.agents/` as explicit SOPs; Product Owner acceptance is pending review. Explicit invocation is normal; implicit activation is advisory only. Skills derive procedure and cannot grant Git, lifecycle or Product Owner authority. `coding_agent_rules.md` and milestone authority remain canonical. No custom skill engine or Repo Control skill-management surface is introduced.
+M005.002 was accepted and closed with two repository-local explicit SOP helpers: `repo-control-validation-closeout` and `repo-control-blocker-bug-escalation`. M005.003 adds `repo-control-implementation` as a decomposition POC candidate pending acceptance of that milestone. Explicit invocation is normal; implicit activation is advisory only. Skills derive procedure and cannot grant scope, Git, lifecycle or Product Owner authority. `coding_agent_rules.md` and milestone authority remain canonical. No custom skill engine or Repo Control skill-management surface is introduced.
 
 Skills should use progressive disclosure.
 
@@ -1460,11 +1460,11 @@ Local `repoctl coder-context` and `repoctl coder-status`, plus four bounded Code
 
 Graphify 0.9.91 behind a replaceable provider and a shared bounded Architect/Coder contract. M004.001 is CLOSED; M004.002 acceptance and ongoing value assessment remain separate gates.
 
-## 29.6 Agent Skills Packaging (Explicit SOP Helpers Proposed)
+## 29.6 Agent Skills Packaging (Explicit SOP Helpers)
 
-M005.002 proposes two minimal instruction-only repository-local skills as explicit SOP helpers, pending Product Owner review: `.agents/skills/repo-control-validation-closeout/SKILL.md` and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md`. Use the former for validation/closeout and the latter for genuine blockers/bugs. Explicit invocation is normal; implicit activation is advisory, never a mandatory gate.
+M005.002 was accepted and closed with two minimal instruction-only repository-local skills as explicit SOP helpers: `.agents/skills/repo-control-validation-closeout/SKILL.md` for validation/closeout and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md` for genuine blockers/bugs. M005.003 adds `.agents/skills/repo-control-implementation/SKILL.md` as a POC candidate for milestone-mode procedures, pending its closeout acceptance. Explicit invocation is normal; implicit activation is advisory, never a mandatory gate.
 
-Governing documents, active prompts, approved binding lock-ins, Repo Control lifecycle and Product Owner authority remain canonical. Skills cannot authorize Git, lifecycle or Product Owner actions. No skill engine/catalog integration is introduced; mandatory context policy is unchanged. The proposed `repo-control-preflight` helper is deferred to avoid overlapping or replacing mandatory preflight rules.
+Governing documents, active prompts, approved binding lock-ins, Repo Control lifecycle and Product Owner authority remain canonical. Skills cannot authorize scope, Git, lifecycle or Product Owner actions. No skill engine/catalog integration is introduced. The reduced bootstrap retains context retrieval, lifecycle authorization, repository identity, read-only preflight and no-Git authority; the `repo-control-preflight` helper remains deferred because it would overlap mandatory startup procedure.
 
 ## 29.7 UI Framework (Stable Baseline)
 

@@ -26,7 +26,7 @@ It defines the working relationship among:
 - **governing project documents**
 - **milestone artifacts**
 - **test and validation tooling**
-- **provisional repository-intelligence and future Agent Skills layers**
+- **provisional repository-intelligence and accepted explicit Agent Skills procedure helpers**
 
 The workflow exists to keep development milestone-driven, bounded, understandable, evidence-based, recoverable, resistant to scope drift and mixed commits, explicit about authority, efficient in AI context usage, portable across coding agents, durable across chat/tool transitions, and suitable for incremental automation.
 
@@ -1337,18 +1337,22 @@ Future optimization should reduce repeated standing content, preserve authoritat
 
 # Part X — External Tool Workflow
 
-# 58. Agent Skills
+# 58. Agent Skills and Minimal Coder Handoff
 
-The repository-local explicit SOP helpers proposed by M005.002 for Product Owner review are:
+The Coder bootstrap is the always-loaded authority/safe-start layer. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The notification is not authorization or task scope by itself: the Coder retrieves authoritative `coder-context`, verifies repository/branch/lifecycle/authorization, applies the standing pre-work feedback rule, and loads applicable Skills without requiring the Product Owner to name them.
+
+The accepted repository-local explicit SOP helpers are:
 
 ```text
 .agents/skills/repo-control-validation-closeout/SKILL.md
 .agents/skills/repo-control-blocker-bug-escalation/SKILL.md
 ```
 
-Invoke validation/closeout when validation and review preparation begin; invoke blocker/bug escalation only for a genuine question, blocker or defect. Explicit invocation is the normal procedure. Implicit selection may assist but is not relied on for mandatory behavior.
+Invoke blocker/bug escalation only for a genuine material question, blocker, conflict or defect; invoke validation/closeout for validation, evidence, closeout, review submission or a bounded correction. M005.003 adds `.agents/skills/repo-control-implementation/SKILL.md` as a POC candidate for reconnaissance, implementation, documentation and tool-evaluation procedure; it becomes an accepted standing helper only after Product Owner acceptance of M005.003.
 
-`coding_agent_rules.md`, the other governing documents, active milestone prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize Git, lifecycle or Product Owner actions. If a skill does not load, follow the canonical documents directly. Do not reduce mandatory context under this SOP.
+Explicit loading is the normal procedure; implicit selection may assist but is not relied on for a safety gate. The bootstrap routes by active prompt mode and procedure boundary, not by Product Owner prompting. For corrections, verify correction-mode authorization and bound the change. For approved instructions, verify applicability and priority.
+
+`coding_agent_rules.md`, other governing documents, active prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize scope, Git, lifecycle or Product Owner actions. If a skill does not load, follow the bootstrap and canonical documents directly; stop if safe procedure is unclear. Repo Control lifecycle checks and bounded submissions remain deterministic authorities. The Skills introduce no custom loader, manager, catalog, hooks or permission boundary.
 
 ---
 
@@ -1549,7 +1553,7 @@ persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
 11 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
-Agent Skills not yet implemented
+Two explicit instruction-only Agent Skills accepted by M005.002; M005.003 decomposition/third-helper POC pending review, with no custom loader or manager
 repository intelligence provisional under M004.002; M004.001 POC CLOSED; value and acceptance remain explicit gates
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)

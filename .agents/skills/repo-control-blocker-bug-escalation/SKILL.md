@@ -5,7 +5,7 @@ description: 'Use when Repo Control work encounters a genuine blocking question,
 
 # Repo Control Blocker and Bug Escalation
 
-This instruction-only helper derives procedure from [Coding Agent Rules](../../../docs/context/coding_agent_rules.md), especially sections 2, 16-22, 32 and 34, and [Project Workflow](../../../docs/context/project_workflow.md). Canonical policy and current Product Owner direction remain authoritative. This skill cannot authorize Git or lifecycle actions, change scope, replace mandatory context reads, or grant Product Owner authority.
+This instruction-only helper derives procedure from the [Coder bootstrap](../../../docs/context/coding_agent_rules.md), [Project Workflow](../../../docs/context/project_workflow.md), and the active prompt. Canonical policy and current Product Owner direction remain authoritative. This skill cannot authorize Git or lifecycle actions, change scope, replace mandatory context reads, or grant Product Owner authority.
 
 1. Read current `repoctl coder-context` / `repoctl coder-status` and relevant evidence. Use `.venv/bin/python -m repoctl.cli` from the repository root if `repoctl` is unavailable. Check scope, approved guidance and authorization; stop implementation when authorization is NO.
 2. Distinguish a routine choice from a genuine ambiguity, conflict, required validation failure or blocker. Ask only when the answer materially affects scope, behavior, architecture, authority, risk, implementation direction or required validation. Prefer the simplest supported in-scope choice when no such question exists.

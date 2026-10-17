@@ -472,10 +472,11 @@ Primary concerns:
 Current preferred direction:
 
 - use the Agent Skills standard;
-- use the two Repo Control II SOP helpers proposed in M005.002, pending Product Owner acceptance;
+- use the two Repo Control II SOP helpers accepted in M005.002;
+- evaluate `repo-control-implementation` as an additional explicit procedure Skill through M005.003;
 - keep skills modular and progressively disclosed;
 - explicitly invoke a helper at its relevant procedure boundary; implicit activation is advisory only;
-- preserve governing documents as authority and do not shorten mandatory context under this SOP.
+- preserve the Coder bootstrap and governing documents as authority; Skills do not confer permission or replace deterministic lifecycle checks.
 
 Potential early skills include:
 
@@ -485,7 +486,7 @@ milestone-implementation
 git-readonly-inspection
 ```
 
-Proposed helpers are `.agents/skills/repo-control-validation-closeout/SKILL.md` and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md`. If accepted, invoke validation/closeout when that phase begins; invoke blocker/bug escalation only for genuine questions, blockers or defects. Skills do not authorize Git, lifecycle or Product Owner actions. `repo-control-preflight` is deferred because existing mandatory Coder context and rules already define startup authorization and read-only preflight.
+The accepted helpers are `.agents/skills/repo-control-validation-closeout/SKILL.md` and `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md`. Invoke validation/closeout when that phase begins; invoke blocker/bug escalation only for genuine questions, blockers or defects. M005.003's `.agents/skills/repo-control-implementation/SKILL.md` is a POC candidate pending acceptance. Skills do not authorize scope, Git, lifecycle or Product Owner actions. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap.
 
 Ponytail may be evaluated as an optional coding-behavior skill focused on avoiding unnecessary abstractions and overengineering.
 
@@ -1051,7 +1052,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M003.013 documentation reconciliation and M004.001 POC are CLOSED. M004.002 integration remains provisional pending acceptance and value review; this does not authorize an Agent Skills roadmap.
+The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M005.002 is CLOSED; M005.003 is the currently authorized Agent Procedure decomposition POC. This does not authorize work beyond its approved scope or establish a broader roadmap.
 
 ---
 
@@ -1098,9 +1099,9 @@ Coding agents consume the active milestone prompt, standing document references,
 
 M004.002 exposes the same bounded structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`, using the server-selected allowlisted repository. Explicit Product Owner browser approval builds/refreshes external graph state; ordinary queries never rebuild. CURRENT evidence includes generation/source identity and normalized outcomes. The `/intelligence` page shows freshness, use ratings, sticky misleading flags and comparative task metrics. Communities/viewer and semantic/network operations remain excluded; template/browser gaps remain unsupported.
 
-## 20.6 Agent Skills (Not Implemented)
+## 20.6 Agent Skills (Explicit SOP Helpers)
 
-Reusable, progressively disclosed Agent Skills remain a possible procedure layer, subject to separately approved scope.
+M005.002 accepted two instruction-only explicit SOP helpers. M005.003 tests a compact always-loaded Coder bootstrap with one additional implementation/mode procedure Skill; that third helper remains a POC candidate until the milestone is accepted. No custom loader, catalog, runtime, or permission model is introduced.
 
 ## 20.7 Model Gateway (Deferred)
 
