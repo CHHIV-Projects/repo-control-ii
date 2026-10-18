@@ -172,14 +172,15 @@ Use these checks as an onboarding sign-off, selecting only what is applicable:
 
 ## Known cross-repository integration risks
 
-Direct Coder CLI resolution is not yet guaranteed to follow the same
-authoritative managed-repository configuration as the browser and Architect.
-The CLI may fall back to repository key `default`, explicit repository or
-milestone-root options may be needed, and multiple legacy `repoctl`
-installations may resolve to the wrong executable. During onboarding, verify
-the executable, repository, root, and selected milestone explicitly; do not
-assume shell location or a default key proves correct targeting. This gap is
-tracked in the [canonical parking lot](../context/canonical_parking_lot.md).
+The Coder CLI resolves exact canonical worktree paths through the same central
+`ops/repositories.toml` used by the browser. From any managed worktree, use
+`/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli
+coder-context`; this avoids ambiguity from multiple `repoctl` executables on
+`PATH`. Unmanaged paths, invalid or unavailable registry configuration,
+ambiguous path mappings, and missing configured milestone roots fail closed.
+The optional `--milestone-root` argument cannot override central configuration.
+Onboarding should still verify that Coder, browser, and Architect report the
+same repository key, canonical path, repository ID, and milestone root.
 
 The **Dashboard → Refresh Status** HTTP 500 / `unexpected_error` observation
 from Vocab onboarding is a Repo Control II issue candidate, not a Vocab repair

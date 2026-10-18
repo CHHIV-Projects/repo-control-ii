@@ -9,11 +9,12 @@ from pathlib import Path
 from unittest import mock
 
 from repoctl.cli import build_parser, main
+from repoctl.scanner.util import make_repository_id
 from repoctl.workflow.coder_interface import (
-    GIT_MUTATION_POLICY_NOTICE,
     CoderInterfaceError,
     format_coder_context_text,
     format_coder_status_text,
+    GIT_MUTATION_POLICY_NOTICE,
     get_authorization_status,
     get_coder_context,
     get_coder_status,
@@ -80,10 +81,174 @@ class TestCoderInterface(unittest.TestCase):
         self.repo = _init_test_repo(self.temp_path)
         self.state_root = self.temp_path / "state"
         self.state_root.mkdir(parents=True, exist_ok=True)
+        self.registry_path = self.temp_path / "central-repositories.toml"
+        self._write_registry(
+            [
+                {
+                    "key": "test-repository",
+                    "name": "Test Repository",
+                    "path": self.repo,
+                    "milestone_root": "docs/milestones",
+                }
+            ]
+        )
+        self.registry_patcher = mock.patch(
+            "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+            self.registry_path,
+        )
+        self.registry_patcher.start()
         self.candidate = discover_milestones(self.repo)["candidates"][0]
 
     def tearDown(self):
+        self.registry_patcher.stop()
         self.temp_dir.cleanup()
+
+    def _write_registry(self, entries: list[dict]) -> None:
+        lines = [f"default = {json.dumps(entries[0]['key'])}"]
+        for entry in entries:
+            lines.extend(
+                [
+                    "",
+                    f"[repositories.{entry['key']}]",
+                    f"name = {json.dumps(entry['name'])}",
+                    f"path = {json.dumps(str(entry['path']))}",
+                    f"milestone_root = {json.dumps(entry['milestone_root'])}",
+                    "",
+                    f"[repositories.{entry['key']}.documents]",
+                    'context = "docs/context/project_context.md"',
+                    'architecture = "docs/context/project_architecture.md"',
+                    'workflow = "docs/context/project_workflow.md"',
+                    'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                    'parking_lot = "docs/context/canonical_parking_lot.md"',
+                ]
+            )
+        self.registry_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_managed_repository_resolution_uses_central_registry(self):
+        entry = resolve_repository_entry(self.repo)
+        self.assertEqual(entry.key, "test-repository")
+        self.assertEqual(entry.path, self.repo.resolve())
+        self.assertEqual(entry.repository_id, make_repository_id(self.repo))
+        self.assertEqual(entry.milestone_root, "docs/milestones")
+        self.assertEqual(entry.documents["coding_agent_rules"], "docs/context/coding_agent_rules.md")
+
+        with mock.patch("repoctl.workflow.coder_interface.Path.cwd", return_value=self.repo):
+            cwd_entry = resolve_repository_entry()
+        self.assertEqual(cwd_entry, entry)
+
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        status = get_coder_status(self.repo, state_root=self.state_root)
+        self.assertEqual(status["repository"]["key"], "test-repository")
+        self.assertEqual(status["repository"]["path"], str(self.repo.resolve()))
+        self.assertEqual(status["repository"]["milestone_root"], "docs/milestones")
+        self.assertEqual(status["repository"]["documents"], entry.documents)
+        text = format_coder_status_text(status)
+        self.assertIn("Managed Key:    test-repository", text)
+        self.assertIn("Repository ID:", text)
+        self.assertIn("Milestone Root: docs/milestones", text)
+        context = get_coder_context(self.repo, state_root=self.state_root)
+        self.assertEqual(context["repository"], status["repository"])
+        self.assertEqual(
+            context["standing_references"]["coding_agent_rules"],
+            "docs/context/coding_agent_rules.md",
+        )
+        self.assertEqual(
+            context["standing_references"]["project_context"],
+            "docs/context/project_context.md",
+        )
+        self.assertEqual(
+            context["standing_references"]["canonical_parking_lot"],
+            "docs/context/canonical_parking_lot.md",
+        )
+
+    def test_registered_repo_control_and_vocab_keys_resolve_distinct_worktrees(self):
+        vocab = _init_test_repo(self.temp_path, "vocab-app")
+        self._write_registry(
+            [
+                {
+                    "key": "repo-control-ii",
+                    "name": "Repo Control II",
+                    "path": self.repo,
+                    "milestone_root": "docs/milestones",
+                },
+                {
+                    "key": "vocab-app",
+                    "name": "Vocab App",
+                    "path": vocab,
+                    "milestone_root": "docs/milestones",
+                },
+            ]
+        )
+
+        repo_control_entry = resolve_repository_entry(self.repo)
+        vocab_entry = resolve_repository_entry(vocab)
+        self.assertEqual(repo_control_entry.key, "repo-control-ii")
+        self.assertEqual(vocab_entry.key, "vocab-app")
+        self.assertNotEqual(repo_control_entry.repository_id, vocab_entry.repository_id)
+        self.assertEqual(vocab_entry.repository_id, make_repository_id(vocab))
+        self.assertEqual(vocab_entry.milestone_root, "docs/milestones")
+        self.assertFalse((vocab / "ops" / "repositories.toml").exists())
+
+    def test_unmanaged_repository_fails_closed(self):
+        unmanaged = _init_test_repo(self.temp_path, "unmanaged")
+        with self.assertRaisesRegex(CoderInterfaceError, "not managed by the central Repo Control registry"):
+            resolve_repository_entry(unmanaged)
+
+    def test_registry_missing_or_invalid_fails_closed(self):
+        self.registry_path.unlink()
+        with self.assertRaisesRegex(CoderInterfaceError, "registry is unavailable"):
+            resolve_repository_entry(self.repo)
+
+        self.registry_path.write_text("not valid TOML =", encoding="utf-8")
+        with self.assertRaisesRegex(CoderInterfaceError, "registry is invalid"):
+            resolve_repository_entry(self.repo)
+
+    def test_duplicate_managed_path_fails_as_ambiguous(self):
+        self._write_registry(
+            [
+                {
+                    "key": "test-repository",
+                    "name": "Test Repository",
+                    "path": self.repo,
+                    "milestone_root": "docs/milestones",
+                },
+                {
+                    "key": "duplicate",
+                    "name": "Duplicate Mapping",
+                    "path": self.repo,
+                    "milestone_root": "docs/milestones",
+                },
+            ]
+        )
+        with self.assertRaisesRegex(CoderInterfaceError, "mapped by multiple"):
+            resolve_repository_entry(self.repo)
+
+    def test_milestone_root_must_exist_and_match_registry(self):
+        self._write_registry(
+            [
+                {
+                    "key": "test-repository",
+                    "name": "Test Repository",
+                    "path": self.repo,
+                    "milestone_root": "missing/milestones",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(CoderInterfaceError, "milestone root is missing"):
+            resolve_repository_entry(self.repo)
+
+        self._write_registry(
+            [
+                {
+                    "key": "test-repository",
+                    "name": "Test Repository",
+                    "path": self.repo,
+                    "milestone_root": "docs/milestones",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(CoderInterfaceError, "controlled by the central"):
+            resolve_repository_entry(self.repo, "elsewhere")
 
     def test_no_milestone_selected(self):
         with self.assertRaises(CoderInterfaceError) as ctx:

@@ -364,6 +364,18 @@ Repo Control provides a dedicated, co-located CLI workflow interface for local c
 
 ### Commands
 
+From any centrally managed repository worktree, use the canonical Repo Control
+II installation rather than relying on shell `PATH`:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context
+```
+
+The CLI resolves repository identity and milestone/document configuration from
+Repo Control II's central `ops/repositories.toml`. The optional
+`--milestone-root` argument is only a compatibility assertion and must match
+the configured root.
+
 | Command | Purpose |
 |---|---|
 | `repoctl coder-context` | Retrieve authoritative active milestone prompt, lifecycle authorization, and standing document references |

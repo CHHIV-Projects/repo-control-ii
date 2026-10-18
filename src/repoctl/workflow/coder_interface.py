@@ -7,13 +7,8 @@ from typing import Any
 
 from ..scanner.core import DEFAULT_STATE_ROOT
 from ..scanner.git_ops import ScanError, validate_git_worktree
-from ..scanner.util import make_repository_id
 from .architect_dispatches import ArchitectDispatchError, list_owner_dispatches
-from ..web.repository_registry import (
-    DEFAULT_DOCUMENT_PATHS,
-    RepositoryEntry,
-    RepositoryRegistry,
-)
+from ..web.repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .lifecycle import (
     WorkflowRecordError,
     load_milestone_workflow,
@@ -35,6 +30,9 @@ class CoderInterfaceError(RuntimeError):
     pass
 
 
+CENTRAL_REPOSITORY_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "ops" / "repositories.toml"
+
+
 def resolve_repository_entry(
     repository_path: str | Path | None = None,
     milestone_root: str | None = None,
@@ -45,34 +43,41 @@ def resolve_repository_entry(
     except ScanError as exc:
         raise CoderInterfaceError(f"Target is not a valid Git repository: {exc}") from exc
 
-    toml_path = root / "ops" / "repositories.toml"
-    if toml_path.is_file():
-        try:
-            registry = RepositoryRegistry.from_toml(toml_path)
-            for entry in registry.entries:
-                if entry.path == root:
-                    if milestone_root is not None:
-                        return RepositoryEntry(
-                            key=entry.key,
-                            name=entry.name,
-                            path=entry.path,
-                            repository_id=entry.repository_id,
-                            milestone_root=milestone_root,
-                            documents=entry.documents,
-                        )
-                    return entry
-        except Exception:
-            pass
+    if not CENTRAL_REPOSITORY_REGISTRY_PATH.is_file():
+        raise CoderInterfaceError(
+            f"Managed repository registry is unavailable: {CENTRAL_REPOSITORY_REGISTRY_PATH}"
+        )
+    try:
+        registry = RepositoryRegistry.from_toml(CENTRAL_REPOSITORY_REGISTRY_PATH)
+    except RepositoryRegistryError as exc:
+        message = str(exc)
+        if message.startswith("Cannot read repository registry"):
+            raise CoderInterfaceError(f"Managed repository registry is unavailable: {message}") from exc
+        raise CoderInterfaceError(f"Managed repository registry is invalid: {message}") from exc
 
-    effective_milestone_root = milestone_root or "docs/milestones"
-    return RepositoryEntry(
-        key="default",
-        name=root.name,
-        path=root,
-        repository_id=make_repository_id(root),
-        milestone_root=effective_milestone_root,
-        documents=dict(DEFAULT_DOCUMENT_PATHS),
-    )
+    matches = [entry for entry in registry.entries if entry.path == root]
+    if not matches:
+        raise CoderInterfaceError(
+            f"Repository is not managed by the central Repo Control registry: {root}"
+        )
+    if len(matches) != 1:
+        raise CoderInterfaceError(
+            f"Repository path is mapped by multiple central Repo Control entries: {root}"
+        )
+
+    entry = matches[0]
+    configured_milestone_path = entry.path.joinpath(*Path(entry.milestone_root).parts)
+    if not configured_milestone_path.is_dir():
+        raise CoderInterfaceError(
+            f"Configured milestone root is missing or is not a directory for managed repository "
+            f"{entry.key!r}: {entry.milestone_root}"
+        )
+    if milestone_root is not None and milestone_root != entry.milestone_root:
+        raise CoderInterfaceError(
+            f"Milestone root is controlled by the central Repo Control registry for managed repository "
+            f"{entry.key!r}: expected {entry.milestone_root!r}"
+        )
+    return entry
 
 
 def _is_correction_mode(workflow: dict[str, Any]) -> bool:
@@ -199,9 +204,11 @@ def get_coder_status(
     prompt_size = prompt_path.stat().st_size if prompt_path.is_file() else 0
 
     standing_references = {
-        "coding_agent_rules": entry.documents.get("coding_agent_rules", DEFAULT_DOCUMENT_PATHS["coding_agent_rules"]),
-        "project_workflow": entry.documents.get("workflow", DEFAULT_DOCUMENT_PATHS["workflow"]),
-        "project_architecture": entry.documents.get("architecture", DEFAULT_DOCUMENT_PATHS["architecture"]),
+        "coding_agent_rules": entry.documents.get("coding_agent_rules"),
+        "project_workflow": entry.documents.get("workflow"),
+        "project_architecture": entry.documents.get("architecture"),
+        "project_context": entry.documents.get("context"),
+        "canonical_parking_lot": entry.documents.get("parking_lot"),
         "git_mutation_policy": GIT_MUTATION_POLICY_NOTICE,
     }
 
@@ -211,6 +218,8 @@ def get_coder_status(
             "path": str(entry.path),
             "key": entry.key,
             "repository_id": entry.repository_id,
+            "milestone_root": entry.milestone_root,
+            "documents": dict(entry.documents),
         },
         "selection": {
             "milestone_id": candidate["milestone_id"],
@@ -324,6 +333,9 @@ def format_coder_status_text(data: dict[str, Any]) -> str:
         "REPO CONTROL — CODER STATUS",
         "=" * 80,
         f"Repository:     {repo['name']} ({repo['path']})",
+        f"Managed Key:    {repo['key']}",
+        f"Repository ID:  {repo['repository_id']}",
+        f"Milestone Root: {repo['milestone_root']}",
         f"Selected ID:    {milestone['id']}",
         f"Prompt Path:    {prompt['path']} ({prompt.get('size_bytes', 0)} bytes)",
         f"Lifecycle:      {milestone['phase']}",
@@ -353,8 +365,10 @@ def format_coder_context_text(data: dict[str, Any]) -> str:
         "STANDING DOCUMENT REFERENCES & RULES",
         "-" * 80,
         f"- Coding Agent Rules:  {refs.get('coding_agent_rules')}",
+        f"- Project Context:     {refs.get('project_context')}",
         f"- Project Workflow:    {refs.get('project_workflow')}",
         f"- Architecture:        {refs.get('project_architecture')}",
+        f"- Canonical Parking Lot: {refs.get('canonical_parking_lot')}",
         "",
         "Git Mutation Policy:",
         refs.get("git_mutation_policy", GIT_MUTATION_POLICY_NOTICE),

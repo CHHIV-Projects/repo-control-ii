@@ -17,6 +17,8 @@ the authoritative repository, Git, or milestone records.
    `coder-context` and verify repository, selected milestone, lifecycle,
    authoritative prompt, applicable approved dispatches, and authorization.
    Stop if the browser, Architect, and Coder disagree about any of these.
+   From a managed worktree, the canonical command is
+   `/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context`.
 
 ## Core concepts
 

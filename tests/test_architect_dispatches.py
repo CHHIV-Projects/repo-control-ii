@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.app import create_web_app
@@ -53,10 +55,38 @@ class TestArchitectDispatches(unittest.TestCase):
         self.prompt_path.write_text("# Test milestone\n", encoding="utf-8")
         self.state_root = self.root / "state"
         self.repository_id = make_repository_id(self.repository)
+        self.registry_path = self.root / "central-repositories.toml"
+        self.registry_path.write_text(
+            "\n".join(
+                [
+                    'default = "test-repository"',
+                    "",
+                    "[repositories.test-repository]",
+                    'name = "Test Repository"',
+                    f"path = {json.dumps(str(self.repository))}",
+                    'milestone_root = "docs/milestones"',
+                    "",
+                    "[repositories.test-repository.documents]",
+                    'context = "docs/context/project_context.md"',
+                    'architecture = "docs/context/project_architecture.md"',
+                    'workflow = "docs/context/project_workflow.md"',
+                    'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                    'parking_lot = "docs/context/canonical_parking_lot.md"',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.registry_patcher = mock.patch(
+            "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+            self.registry_path,
+        )
+        self.registry_patcher.start()
         self.candidate = discover_milestones(self.repository)["candidates"][0]
         self.active_milestone_id = "M003.001"
 
     def tearDown(self) -> None:
+        self.registry_patcher.stop()
         self.temporary.cleanup()
 
     def _submit(self, dispatch_type: str, **kwargs):

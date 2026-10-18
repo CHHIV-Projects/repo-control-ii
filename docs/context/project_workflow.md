@@ -872,6 +872,8 @@ Packet generation does not change lifecycle or Git state.
 
 Co-located coding agents execute under strict boundary constraints (Model B write boundary):
 
+From a managed worktree, use `/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli <command>` as the canonical invocation. The Coder CLI resolves the exact canonical worktree path against the central `ops/repositories.toml`, using the same registry file passed to the browser service; it does not synthesize a `default` entry or accept a milestone-root override. The legacy `--milestone-root` option is retained only as an assertion that must match the configured root.
+
 - **Context Retrieval:** `repoctl coder-context` retrieves the authoritative milestone prompt and checks lifecycle authorization before coding begins.
 - **Status Check:** `repoctl coder-status` provides lightweight inspection of lifecycle phase, blockers, lock-ins, and open questions without re-reading the prompt.
 - **Question Submission:** `repoctl coder-question "<summary>" [--blocking] [--category ...]` records implementation questions. If marked `--blocking`, the milestone transitions from `IN_PROGRESS` to `WAITING` until answered and resumed by the Product Owner.

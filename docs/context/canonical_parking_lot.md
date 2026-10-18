@@ -696,41 +696,6 @@ Do not weaken lifecycle event validation or accept arbitrary control characters 
 
 ---
 
-## INTEGRATION-001 — Managed-Repository Coder CLI Resolution
-
-### Status
-
-Deferred
-
-### Summary
-
-Make direct Coder CLI operation resolve the same authoritative managed-repository configuration as the browser and Architect.
-
-### Why It Is Parked
-
-During Vocab onboarding, the browser and Architect resolved registered repository keys while direct Coder CLI could fall back to key `default`. Explicit repository or milestone-root arguments may be needed, and multiple legacy `repoctl` installations can resolve to the wrong executable. This needs a separately scoped resolution design, not per-repository workarounds.
-
-### Trigger for Reconsideration
-
-Revisit when managed repositories need reliable direct Coder context without operator-supplied overrides or when more than one Repo Control CLI installation is present.
-
-### Likely Scope
-
-```text
-stable authoritative executable resolution
-deterministic repository key/path/milestone-root selection for Coder context
-behavior for multiple legacy repoctl installations
-verification across browser, Architect, and direct Coder CLI
-```
-
-### Dependencies
-
-Requires a design for consuming or deterministically resolving central managed-repository configuration without requiring a project-local Repo Control installation.
-
-### Notes
-
-Until resolved, verify executable, repository, root, and selected milestone explicitly. Do not infer correct targeting from the shell's working directory or a `default` key.
-
 ---
 
 ## INTEGRATION-002 — Bounded Architect Repository-Document Read Access

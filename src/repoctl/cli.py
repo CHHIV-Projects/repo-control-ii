@@ -88,7 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
     )
     coder_context_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_context_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_context_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     coder_status_parser = subparsers.add_parser(
         "coder-status", help="Report active milestone lifecycle and workflow status for Coder agents"
@@ -98,7 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
     )
     coder_status_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_status_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_status_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     from .intelligence.service import DEFAULT_BOUNDS, OPERATIONS
     from .intelligence.measurements import RATINGS
@@ -131,7 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     coder_question_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_question_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_question_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_question_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     coder_bug_parser = subparsers.add_parser(
         "coder-bug", help="Record discovery of a defect during implementation"
@@ -139,7 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     coder_bug_parser.add_argument("summary", help="Defect discovery summary")
     coder_bug_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_bug_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_bug_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_bug_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     coder_test_parser = subparsers.add_parser(
         "coder-test", help="Record test execution evidence from the Coder"
@@ -149,7 +157,9 @@ def build_parser() -> argparse.ArgumentParser:
     coder_test_parser.add_argument("--result", required=True, help="Test outcome result (e.g. pass/fail counts)")
     coder_test_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_test_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_test_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_test_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     coder_closeout_parser = subparsers.add_parser(
         "coder-closeout", help="Submit milestone closeout artifact for Product Owner review"
@@ -159,7 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     coder_closeout_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_closeout_parser.add_argument("--state-root", help="Explicit state root override")
-    coder_closeout_parser.add_argument("--milestone-root", help="Explicit milestone root override")
+    coder_closeout_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
 
     return parser
 

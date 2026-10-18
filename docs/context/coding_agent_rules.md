@@ -37,7 +37,7 @@ Instruction ready.
 These notifications are not authorization by themselves. Without asking the Product Owner to repeat standing procedure:
 
 1. Confirm the workspace is `/home/chuck/projects/repo-control-ii`.
-2. Retrieve current `repoctl coder-context`; use `.venv/bin/python -m repoctl.cli coder-context` from the repository root if `repoctl` is unavailable. Read the authoritative prompt, lifecycle/authorization, lock-ins, and applicable approved instructions from that result.
+2. Retrieve current context with `/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context` from any managed repository worktree. This canonical invocation uses Repo Control II's centrally configured repository registry; do not rely on `PATH`, a project-local registry, or a manually supplied milestone root. Read the authoritative prompt, lifecycle/authorization, lock-ins, and applicable approved instructions from that result.
 3. Confirm authorization permits the requested work (`IN_PROGRESS` or explicitly authorized correction mode). Retrieve `coder-status` if status or open conditions need rechecking.
 4. Run read-only Git preflight: `git branch --show-current`, `git status --short`, and `git log --oneline --decorate -5`. Confirm the expected branch and classify changed paths; the active workflow sidecar may be expected workflow state, but is not a blanket exemption for other changes.
 5. Apply the standing pre-work feedback rule before coding:
