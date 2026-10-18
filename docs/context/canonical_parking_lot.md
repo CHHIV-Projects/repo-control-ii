@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Packet-context optimization and future Coder MCP remain deferred; completed phase-aware UX and action compression are not backlog
+**Current status:** Unresolved packet-context, Coder MCP, Git merge, WAITING-input, managed-repository CLI resolution, Dashboard refresh, Coder context convergence, intelligence consumer-rating, and governing-document maintenance work remains deferred below.
 
 ---
 
@@ -693,6 +693,229 @@ A reproducible case and explicit implementation scope before changing validation
 ### Notes
 
 Do not weaken lifecycle event validation or accept arbitrary control characters without review. No fix is authorized by this note.
+
+---
+
+## INTEGRATION-001 — Managed-Repository Coder CLI Resolution
+
+### Status
+
+Deferred
+
+### Summary
+
+Make direct Coder CLI operation resolve the same authoritative managed-repository configuration as the browser and Architect.
+
+### Why It Is Parked
+
+During Vocab onboarding, the browser and Architect resolved registered repository keys while direct Coder CLI could fall back to key `default`. Explicit repository or milestone-root arguments may be needed, and multiple legacy `repoctl` installations can resolve to the wrong executable. This needs a separately scoped resolution design, not per-repository workarounds.
+
+### Trigger for Reconsideration
+
+Revisit when managed repositories need reliable direct Coder context without operator-supplied overrides or when more than one Repo Control CLI installation is present.
+
+### Likely Scope
+
+```text
+stable authoritative executable resolution
+deterministic repository key/path/milestone-root selection for Coder context
+behavior for multiple legacy repoctl installations
+verification across browser, Architect, and direct Coder CLI
+```
+
+### Dependencies
+
+Requires a design for consuming or deterministically resolving central managed-repository configuration without requiring a project-local Repo Control installation.
+
+### Notes
+
+Until resolved, verify executable, repository, root, and selected milestone explicitly. Do not infer correct targeting from the shell's working directory or a `default` key.
+
+---
+
+## INTEGRATION-002 — Bounded Architect Repository-Document Read Access
+
+### Status
+
+Deferred
+
+### Summary
+
+Allow the Architect to request bounded, read-only content for explicitly selected repository documentation beyond the five registered governing-document roles.
+
+### Why It Is Parked
+
+The Architect MCP can read configured governing documents and selected milestone evidence, but cannot currently request a relevant non-governing repository document such as `docs/guides/*`. During M006.000, the new guides were principal deliverables and remained untracked, so GitHub could not provide their current contents for review; Repo Control evidence confirmed their existence and validation but did not expose their prose for direct Architect review.
+
+### Trigger for Reconsideration
+
+Revisit when Architect review needs direct access to relevant repository documentation that is not part of the registered governing roles or active milestone artifacts.
+
+### Likely Scope
+
+```text
+bounded read-only retrieval of explicitly selected repository-relative documentation
+support review of guides, design notes, and relevant Markdown/text artifacts, including uncommitted files
+enforce server-selected repository identity, path policy, and response-size limits
+prefer a narrow documentation-evidence mechanism over arbitrary file access
+```
+
+### Dependencies
+
+Requires a repository-scoped path and size policy, explicit source identity, and reviewable behavior that preserves existing authority boundaries.
+
+### Notes
+
+This must not grant arbitrary filesystem, shell, Git, lifecycle, or mutation authority. Governing documents, prompts, and Repo Control state remain the authority for their respective roles.
+
+---
+
+## UI-001 — Dashboard Refresh Status HTTP 500
+
+### Status
+
+Deferred — Repo Control II diagnosis required
+
+### Summary
+
+Diagnose the Vocab onboarding observation where Dashboard **Refresh Status** returned HTTP 500 / `unexpected_error`.
+
+### Why It Is Parked
+
+Git Review and Milestone views otherwise operated during the observation. The issue is a Repo Control II UI defect candidate and has not been diagnosed here; it is not a Vocab repository repair.
+
+### Trigger for Reconsideration
+
+Revisit when the Dashboard refresh failure is reproduced or prioritized for a focused Repo Control II investigation.
+
+### Likely Scope
+
+```text
+reproduce Refresh Status failure with captured request/log evidence
+identify the failing Dashboard status dependency
+add focused regression coverage and report verified effects
+```
+
+### Dependencies
+
+Requires a reproducible failure or sufficient service error evidence. Do not infer that the failed refresh changed Git or workflow state.
+
+### Notes
+
+Keep the defect classification and any repair within a separately authorized Repo Control II scope.
+
+---
+
+## WORKFLOW-005 — Authoritative Coder Context Convergence
+
+### Status
+
+Deferred
+
+### Summary
+
+Ensure a fresh or resumed Coder session deterministically converges on authoritative Repo Control context for the correct repository and selected milestone.
+
+### Why It Is Parked
+
+During an observed fresh VS Code Coder session, the PO asked it to retrieve context for the next prompt while Repo Control authoritatively showed M006.000 `IN_PROGRESS`. The Coder instead reported stale M005.004 context and could not confirm the closeout state. Separately, after the PO approved an Architect `INSTRUCTION` and requested a bounded correction, the Coder did not immediately surface/use the instruction until explicitly prompted to check.
+
+### Trigger for Reconsideration
+
+Revisit when a fresh or resumed Coder session fails to identify the current repository, selected milestone, lifecycle, prompt, approved guidance, or authorization without relying on prior chat history.
+
+### Likely Scope
+
+```text
+deterministic fresh-session and resumed-session bootstrap from Repo Control
+identify current repository, selected milestone, lifecycle phase, authoritative prompt, applicable approved INSTRUCTION/RESPONSE dispatches, and authorization
+avoid reliance on prior Coder chat history or broad document searching to reconstruct current state
+fail clearly when repository or milestone identity cannot be resolved
+verify normal-start, resume, and correction flows while excluding pending dispatches from authoritative guidance
+```
+
+### Dependencies
+
+Must preserve PO approval, repository/milestone scoping, lifecycle authorization, and existing prompt/rules precedence.
+
+### Notes
+
+The previously observed approved-INSTRUCTION visibility issue remains one concrete symptom. Approval does not prove the Coder has consumed a dispatch; do not broaden guidance beyond its approved milestone.
+
+---
+
+## INTEL-001 — Repository Intelligence Consumer-Rating Workflow
+
+### Status
+
+Deferred
+
+### Summary
+
+Make Repository Intelligence usage feedback reflect the experience of the Architect or Coder who consumed the evidence.
+
+### Why It Is Parked
+
+Recorded intelligence uses included material Coder uses that remained `UNRATED`. A PO cannot meaningfully judge technical usefulness for evidence they did not consume.
+
+### Trigger for Reconsideration
+
+Revisit when usage measurement is used for an adoption or value decision and consumer feedback is still missing.
+
+### Likely Scope
+
+```text
+Coder rating of materially relied-on uses before closeout
+optional short consumer rationale
+Architect-side rating when practical
+consumer-centered usefulness metrics
+```
+
+### Dependencies
+
+Must preserve optional feedback, recorded use identity, and the distinction between consumer experience and PO acceptance. Historical unrated uses remain unrated.
+
+### Notes
+
+Do not manufacture ratings for past uses. PO rating remains optional rather than expected when the PO did not consume the evidence.
+
+---
+
+## DOC-001 — Controlled Governing Document Maintenance
+
+### Status
+
+Deferred
+
+### Summary
+
+Provide a lightweight controlled path for Product Owners and Architects to propose or maintain small factual/planning updates to the five canonical governing documents.
+
+### Why It Is Parked
+
+Without a reviewable maintenance path, governing documents may remain stale when updating them requires a full implementation milestone. Material policy, architecture, authority, or scope changes still require milestone-level review.
+
+### Trigger for Reconsideration
+
+Revisit when recurring small factual/status updates are delayed or handled inconsistently because the existing maintenance path is too cumbersome.
+
+### Likely Scope
+
+```text
+controlled edits/proposals for project_context.md
+project_architecture.md, project_workflow.md, coding_agent_rules.md,
+and canonical_parking_lot.md
+review, provenance, authority boundaries, and appropriate validation
+separation of lightweight maintenance from material changes
+```
+
+### Dependencies
+
+Requires a design preserving PO review, source provenance, no-Coder-Git-mutation rules, and milestone requirements for consequential changes.
+
+### Notes
+
+This is future capability only; it is not part of the current governing-document maintenance scope.
 
 ---
 

@@ -4,12 +4,12 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
-**Current branch at reconciliation:** `arc/m005-agent-procedure` (verify live Git state before work)
+**Branch at M005.004 reconciliation:** `arc/m005-agent-procedure` (historical; verify live Git state before work)
 **Current repository state:** Active, version-controlled Repo Control II repository with accepted Git Control, Workflow Orchestration, bounded Repository Intelligence, and Agent Procedure capabilities
-**Current working emphasis:** Complete M005.004 documentation reconciliation; its acceptance will complete the M005 Agent Procedure arc through M005.004 and prepare the branch for Product Owner Git completion/merge and the planned development pause. The Product Owner's later discussion about applying the accepted workflow to another repository is not an implementation roadmap or current authorization.
+**Current working emphasis:** The current milestone and lifecycle are selected and reported by Repo Control. Do not infer active work or authorization from this document; it records accepted project context and durable constraints.
 
 ---
 
@@ -477,7 +477,7 @@ Accepted Agent Procedure baseline:
 - explicit invocation/routing is normal; implicit activation is advisory only;
 - Skills provide reusable procedure, not permission, and do not replace deterministic lifecycle checks or Product Owner authority.
 
-No additional Skill family is part of the accepted catalog or current direction. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap. M005.004 prepares the M005 arc for Product Owner Git completion/merge and the planned development pause.
+No additional Skill family is part of the accepted catalog or current direction. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap. M005.004 was accepted and closed, completing the M005 Agent Procedure arc.
 
 ## 7.4 Repository Intelligence
 
@@ -1005,13 +1005,13 @@ M004.000 — Graphify Architecture / Tool-Fit Reconnaissance    CLOSED; ADOPT FO
 M004.001 — Local Graphify Proof of Concept                   CLOSED
 M004.002 — Graphify Integration and Value Measurement        ACCEPTED / CLOSED (bounded integration and measured-value limits)
 M005.000–M005.003 — Agent Procedure reconnaissance/POCs/SOPs  ACCEPTED / CLOSED
-M005.004 — Governing Context Reconciliation / Arc Closeout    IN PROGRESS
+M005.004 — Governing Context Reconciliation / Arc Closeout    ACCEPTED / CLOSED
 ```
 
 Remaining capability areas are not a prescribed implementation sequence:
 
 ```text
-Agent Procedure / Skills            ACCEPTED through M005.003; M005.004 final reconciliation in progress
+Agent Procedure / Skills            ACCEPTED through M005.004 / CLOSED
 Repository Intelligence             ACCEPTED bounded integration; usefulness monitoring may continue
 Deeper Architect / Coder Integration DEFERRED
 Model Gateway                       DEFERRED
@@ -1043,7 +1043,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone is selected explicitly through Repo Control, not inferred from this document or milestone numbering. M005.003 is accepted and CLOSED; M005.004 is the authorized final documentation reconciliation for the M005 Agent Procedure arc. Upon its acceptance, the arc will be ready for Product Owner Git completion/merge and planned development pause. No further feature work or implementation roadmap is implied.
+The active milestone and authorization are selected and reported explicitly through Repo Control, not inferred from this document or milestone numbering. M005.004 is accepted and CLOSED, completing the M005 Agent Procedure arc. No further feature work or implementation roadmap is implied by that historical closure.
 
 ---
 

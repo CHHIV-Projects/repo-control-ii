@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -1469,7 +1469,7 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 is the final governing-context reconciliation; once accepted, M005 Agent Procedure work is complete through M005.004 and the arc is prepared for Product Owner Git completion/merge and planned development pause. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
+The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1555,7 +1555,7 @@ persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue
-M005.002–M005.003 Agent Procedure / three explicit Skill helpers accepted and CLOSED; M005.004 is the final context reconciliation, preparing the arc for Product Owner Git completion/merge and planned development pause once accepted
+M005.002–M005.004 Agent Procedure / three explicit Skill helpers and governing-context reconciliation accepted and CLOSED
 Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, or permission framework is integrated
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)

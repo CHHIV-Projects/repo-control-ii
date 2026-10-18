@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 accepted and CLOSED; M005.004 is the final governing-context reconciliation milestone
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
@@ -1358,7 +1358,7 @@ The completed architectural baseline and remaining capability areas are:
 
 5. Workflow Orchestration through M003.012           ACCEPTED / CLOSED
 
-6. Agent Procedure / Skills                         M005.000–M005.003 ACCEPTED / CLOSED; M005.004 final reconciliation in progress
+6. Agent Procedure / Skills                         M005.000–M005.004 ACCEPTED / CLOSED
 7. Repository Intelligence                          M004.001–M004.002 ACCEPTED / CLOSED (bounded integration; limits/monitoring retained)
 
 8. Deeper Architect / Coder integration             DEFERRED
@@ -1542,4 +1542,4 @@ deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement
 ```
 
-M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.003 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the compact always-loaded authority/bootstrap and three explicit repository-local Skills. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. M005.004 is the final reconciliation milestone and, once accepted, prepares the arc for Product Owner Git completion/merge and planned development pause.
+M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the compact always-loaded authority/bootstrap and three explicit repository-local Skills. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. The active milestone and lifecycle are authoritative in Repo Control, not inferred from this architecture document. Documentation maintenance does not by itself change this architecture or authorize product behavior changes.
