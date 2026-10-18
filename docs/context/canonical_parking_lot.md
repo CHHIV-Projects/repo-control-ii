@@ -770,6 +770,43 @@ This must not grant arbitrary filesystem, shell, Git, lifecycle, or mutation aut
 
 ---
 
+## INTEGRATION-003 — Bounded Architect Historical Project Context Retrieval
+
+### Status
+
+Deferred
+
+### Summary
+
+Provide repository-scoped, read-only, progressive discovery and retrieval of explicitly allowlisted historical project artifacts for Architect planning, including historical milestone prompts, workflow sidecars, closeouts, planning documents, and archived material under `docs/history/**`.
+
+### Why It Is Parked
+
+Current Architect tools expose the active milestone and five governing-document roles but do not discover historical artifacts by milestone or artifact type. Mature-project planning may need prior decisions, experiments, rejected approaches, and partial work that current governing documents do not retain. M007.000 reconnaissance found historical corpora in Vocab's `docs/history/**` while active milestone discovery remains scoped to its configured root.
+
+### Trigger for Reconsideration
+
+Revisit when Architect planning for mature repositories needs selective, auditable access to historical project evidence without relying on prior chat history or loading the full corpus.
+
+### Likely Scope
+
+```text
+bounded discovery/search with deterministic result limits and exact source paths/types
+historical provenance and selective retrieval of one chosen artifact
+configured repository-relative historical roots, including docs/history/**
+explicit distinction from current/non-governing document reads in INTEGRATION-002
+```
+
+### Dependencies
+
+Requires an explicit historical artifact/root policy, bounded repository-scoped text reading, and source/provenance labeling. INTEGRATION-002 covers reading an explicitly selected current/non-governing document, including an uncommitted deliverable; INTEGRATION-003 covers discovering historical planning evidence and retrieving a selected historical artifact. The two capabilities may share a lower-level bounded text reader without merging their user-facing contracts.
+
+### Notes
+
+Historical evidence informs planning only; current governing documents and current Repo Control lifecycle remain authoritative. Historical artifacts must not become active milestone candidates or alter active milestone discovery/selection. This future capability must not grant arbitrary filesystem access, shell execution, Git mutation, lifecycle mutation, or write/edit authority. No capability is implemented or authorized by this parking-lot entry.
+
+---
+
 ## UI-001 — Dashboard Refresh Status HTTP 500
 
 ### Status
