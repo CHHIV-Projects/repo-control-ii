@@ -7,7 +7,7 @@
 **Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Unresolved packet-context, Coder MCP, Git merge, WAITING-input, managed-repository CLI resolution, Dashboard refresh, Coder context convergence, intelligence consumer-rating, and governing-document maintenance work remains deferred below.
+**Current status:** Unresolved packet-context, Coder MCP, Git merge, WAITING-input, managed-repository CLI resolution, Dashboard refresh, intelligence consumer-rating, and governing-document maintenance work remains deferred below.
 
 ---
 
@@ -727,44 +727,6 @@ Requires a reproducible failure or sufficient service error evidence. Do not inf
 ### Notes
 
 Keep the defect classification and any repair within a separately authorized Repo Control II scope.
-
----
-
-## WORKFLOW-005 — Authoritative Coder Context Convergence
-
-### Status
-
-Deferred
-
-### Summary
-
-Ensure a fresh or resumed Coder session deterministically converges on authoritative Repo Control context for the correct repository and selected milestone.
-
-### Why It Is Parked
-
-During an observed fresh VS Code Coder session, the PO asked it to retrieve context for the next prompt while Repo Control authoritatively showed M006.000 `IN_PROGRESS`. The Coder instead reported stale M005.004 context and could not confirm the closeout state. Separately, after the PO approved an Architect `INSTRUCTION` and requested a bounded correction, the Coder did not immediately surface/use the instruction until explicitly prompted to check.
-
-### Trigger for Reconsideration
-
-Revisit when a fresh or resumed Coder session fails to identify the current repository, selected milestone, lifecycle, prompt, approved guidance, or authorization without relying on prior chat history.
-
-### Likely Scope
-
-```text
-deterministic fresh-session and resumed-session bootstrap from Repo Control
-identify current repository, selected milestone, lifecycle phase, authoritative prompt, applicable approved INSTRUCTION/RESPONSE dispatches, and authorization
-avoid reliance on prior Coder chat history or broad document searching to reconstruct current state
-fail clearly when repository or milestone identity cannot be resolved
-verify normal-start, resume, and correction flows while excluding pending dispatches from authoritative guidance
-```
-
-### Dependencies
-
-Must preserve PO approval, repository/milestone scoping, lifecycle authorization, and existing prompt/rules precedence.
-
-### Notes
-
-The previously observed approved-INSTRUCTION visibility issue remains one concrete symptom. Approval does not prove the Coder has consumed a dispatch; do not broaden guidance beyond its approved milestone.
 
 ---
 
