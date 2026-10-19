@@ -4,11 +4,11 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Branch at M005.004 reconciliation:** `arc/m005-agent-procedure` (historical; verify live Git state before work)
-**Current repository state:** Active, version-controlled Repo Control II repository with accepted Git Control, Workflow Orchestration, bounded Repository Intelligence, and Agent Procedure capabilities
+**Current repository state:** Active, version-controlled Repo Control II repository with accepted Git Control, Workflow Orchestration, bounded Repository Intelligence, Agent Procedure, managed-context integration, and fresh/resumed Coder-context capabilities
 **Current working emphasis:** The current milestone and lifecycle are selected and reported by Repo Control. Do not infer active work or authorization from this document; it records accepted project context and durable constraints.
 
 ---
@@ -477,7 +477,7 @@ Accepted Agent Procedure baseline:
 - explicit invocation/routing is normal; implicit activation is advisory only;
 - Skills provide reusable procedure, not permission, and do not replace deterministic lifecycle checks or Product Owner authority.
 
-No additional Skill family is part of the accepted catalog or current direction. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap. M005.004 was accepted and closed, completing the M005 Agent Procedure arc.
+No additional Skill family is part of the accepted catalog or current direction. `repo-control-preflight` remains deferred because startup authorization and read-only preflight are deliberately retained in the bootstrap. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M007.006 validated fresh and resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff.
 
 ## 7.4 Repository Intelligence
 
@@ -1006,6 +1006,8 @@ M004.001 — Local Graphify Proof of Concept                   CLOSED
 M004.002 — Graphify Integration and Value Measurement        ACCEPTED / CLOSED (bounded integration and measured-value limits)
 M005.000–M005.003 — Agent Procedure reconnaissance/POCs/SOPs  ACCEPTED / CLOSED
 M005.004 — Governing Context Reconciliation / Arc Closeout    ACCEPTED / CLOSED
+M006.000 — Operational Documentation / Onboarding             ACCEPTED / CLOSED
+M007.000–M007.006 — Managed Context / History / Coder Acceptance ACCEPTED / CLOSED
 ```
 
 Remaining capability areas are not a prescribed implementation sequence:
@@ -1013,6 +1015,7 @@ Remaining capability areas are not a prescribed implementation sequence:
 ```text
 Agent Procedure / Skills            ACCEPTED through M005.004 / CLOSED
 Repository Intelligence             ACCEPTED bounded integration; usefulness monitoring may continue
+Managed context / history / cross-repository Coder acceptance  ACCEPTED through M007.006 / CLOSED
 Deeper Architect / Coder Integration DEFERRED
 Model Gateway                       DEFERRED
 ```
@@ -1043,7 +1046,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone and authorization are selected and reported explicitly through Repo Control, not inferred from this document or milestone numbering. M005.004 is accepted and CLOSED, completing the M005 Agent Procedure arc. No further feature work or implementation roadmap is implied by that historical closure.
+The active milestone and authorization are selected and reported explicitly through Repo Control, not inferred from this document or milestone numbering. M005.004 is accepted and CLOSED, completing the M005 Agent Procedure arc; M006.000 and M007.000–M007.006 are also accepted and CLOSED. No further feature work or implementation roadmap is implied by those historical closures.
 
 ---
 
@@ -1074,8 +1077,8 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 
 - OpenAI `tunnel-client` daemon running as persistent systemd service `repo-control-architect-tunnel.service`;
 - custom stdio JSON-RPC 2.0 adapter `repoctl mcp-architect`;
-- 10 existing read-only evidence tools remain mapped to Repo Control's loopback GET endpoints;
-- accepted bounded `repo_intelligence` adds structural evidence and operational use measurements (15 total tools including dispatch transport);
+- 14 bounded evidence tools are available, including current-document `repo_read_document` and separate historical `repo_history_search` / `repo_history_document` operations; historical results remain non-authoritative;
+- accepted bounded `repo_intelligence` adds structural evidence and operational use measurements; the Architect tunnel exposes those 14 evidence tools plus four dispatch tools (18 total);
 - bounded `PROMPT`, `INSTRUCTION`, and `RESPONSE` proposal tools use fixed POST endpoints; `repo_dispatches` provides bounded status/content readback;
 - Product Owner approval is performed only in the Repo Control browser UI; pending content is not Coder-authoritative, and prompt approval creates only a canonical artifact under the configured milestone root;
 - Repo Control strictly bound to `127.0.0.1:8765` with zero LAN or public exposure;
@@ -1084,7 +1087,7 @@ Architect integration is operational via the Secure MCP Tunnel (M003.006 and bou
 
 ## 20.4 Coder Integration (Implemented)
 
-Coding agents consume the active milestone prompt, standing document references, and applicable Product Owner-approved Architect INSTRUCTION/RESPONSE dispatches through local `repoctl coder-context`; generated Coder Handoff Packets remain a fallback. Local bounded commands submit questions, bugs, test evidence, and closeout. No Coder MCP is implemented. Coding agents remain strictly forbidden from executing Git mutations.
+Coding agents resolve the centrally registered managed repository, active milestone prompt, lifecycle authorization, standing references, shared procedure, local overlay, and applicable Product Owner-approved Architect INSTRUCTION/RESPONSE dispatches through local `repoctl coder-context`; fresh and resumed context convergence was accepted across Repo Control II and Vocab in M007.006. Approved applicable instructions surface after the normal concise handoff; pending/rejected dispatches remain excluded. Generated Coder Handoff Packets remain a fallback. Local bounded commands submit questions, bugs, test evidence, and closeout. No Coder MCP is implemented. Coding agents remain strictly forbidden from executing Git mutations.
 
 ## 20.5 Repository Intelligence Engine (Accepted Bounded Integration)
 

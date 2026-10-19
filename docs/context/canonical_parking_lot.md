@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** Unresolved packet-context, Coder MCP, Git merge, WAITING-input, managed-repository CLI resolution, Dashboard refresh, intelligence consumer-rating, and governing-document maintenance work remains deferred below.
+**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
 
 ---
 

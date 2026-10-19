@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -1475,8 +1475,8 @@ approved applicable Architect dispatches in local Coder context
 
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
-- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for the original 10 read-only evidence tools plus bounded `repo_intelligence`, current-document `repo_read_document`, and historical `repo_history_search` / `repo_history_document`, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Historical evidence informs planning only and never overrides current authority. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
-- **Coder (VS Code):** Co-located Coders use the local CLI for authoritative prompt, standing references, authorization, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
+- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel's 14 evidence tools and four dispatch tools (18 tools total): current-document `repo_read_document`, historical `repo_history_search` / `repo_history_document`, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Historical evidence informs planning only and never overrides current authority. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
+- **Coder (VS Code):** Co-located Coders resolve the managed repository, active prompt, lifecycle authorization, shared procedure, local overlay, standing references, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Fresh/resumed context convergence across Repo Control II and Vocab is accepted in M007.006; approved applicable INSTRUCTION/RESPONSE dispatches surface after the normal concise handoff, while pending/rejected dispatches are excluded. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
 ---
@@ -1485,7 +1485,7 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
+The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M006.000 and M007.000–M007.006 are also accepted and closed; M007.006 validated fresh/resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1567,7 +1567,7 @@ accepted six-state lifecycle (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLO
 on-demand Coder handoff packets and Architect review packets
 Architect JSON API on loopback with read-only evidence and fixed pending-proposal endpoints
 persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
-14 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
+14 bounded evidence MCP tools (intelligence also records operational use metrics) plus four dispatch tools; 18 total
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue

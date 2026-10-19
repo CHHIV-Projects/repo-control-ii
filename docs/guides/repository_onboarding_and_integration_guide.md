@@ -222,10 +222,13 @@ paths, missing locks, and invalid overlays are visible; conflicting files are
 not silently replaced. Local overlays remain outside the generated hash and
 are never written by the shared materializer.
 
-There is no operator-facing materialization command. A future operational
-write action must require explicit Product Owner approval, bind the reviewed
-preview to repository identity and unchanged file hashes, and preserve ordinary
-Git review. For mature repositories, first review legacy duplicated procedure
-and local rules; only a separately approved migration may edit their files.
-File installation does not establish host consumption: fresh/resumed session
-and Skill invocation checks remain a manual acceptance step for WORKFLOW-005.
+There is no operator-facing materialization command. The guarded internal
+materializer is limited to explicitly Product-Owner-authorized reconciliation
+after status and deterministic preview review, bound to the selected managed
+repository and unchanged file snapshots; ordinary Git review remains required.
+For mature repositories, first review legacy duplicated procedure and local
+rules; only a separately approved migration may edit their files. M007.006
+accepted fresh/resumed Coder-context convergence across Repo Control II and
+Vocab, including approved applicable instruction visibility after the normal
+handoff; fresh/resumed context convergence is a standard onboarding acceptance
+check.

@@ -281,7 +281,9 @@ At most 128,000 UTF-8 bytes are returned with explicit original size and
 truncation metadata; source files above 5,000,000 bytes are rejected. Git
 tracking status is not collected. This is not directory browsing or search,
 and paths under historical roots (`history`, `milestones`, `archive`,
-`archives`, or `historical`) are reserved for M007.005.
+`archives`, or `historical`) are excluded from current-document reads; use the
+separate bounded historical evidence tools for prior canonical milestone
+artifacts.
 
 ### Architect reads of historical project evidence
 
@@ -338,12 +340,13 @@ Use these read-only commands to inspect a registered repository:
 ```
 
 Status reports release/hash/overlay drift. Preview shows proposed diffs and
-blocked conflicts; it does not write or delete files. The current implementation
-has no operational materialization command. Future repository writes must be
-explicitly Product-Owner-controlled and reviewed first. A `CURRENT` file status
-does not prove that a fresh/resumed coding host consumes the bootstrap or
-invokes Skills; that remains a separate manual acceptance check tracked by
-`WORKFLOW-005`.
+blocked conflicts; it does not write or delete files. There is no
+operator-facing materialization command. A guarded internal materializer may
+be used only for an explicitly Product-Owner-authorized reconciliation after
+status and deterministic preview review; ordinary Git review remains required.
+M007.006 accepted fresh/resumed Coder-context resolution and approved
+instruction visibility across Repo Control II and Vocab. A `CURRENT` file
+status remains distinct from that host-consumption acceptance.
 
 Status values are `CURRENT`, `MISSING`, `STALE_VERSION`, `HASH_MISMATCH`,
 `OVERLAY_INVALID`, and `INCOMPATIBLE`. Overlay checks validate its marker and

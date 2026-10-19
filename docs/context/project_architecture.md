@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
-**Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, read-only Architect evidence API, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
+**Current architecture baseline:** Repo Control II has an accepted browser-based Git Control layer, always-on Linux service runtime, multi-repository allowlist, Windows SSH access model, noninteractive GitHub authentication, external milestone selection pointer, chronological workflow sidecars, six-state lifecycle engine, bounded current-document and historical Architect evidence APIs, central shared-procedure governance, managed-repository Coder context resolution, accepted fresh/resumed context convergence, and persistent Architect Secure MCP Tunnel with a separate bounded dispatch proposal channel.
 **Current architectural emphasis:** Preserve read-only Architect evidence semantics while routing typed proposal submissions through pending Repo Control dispatches, explicit Product Owner approval, and local Coder CLI consumption; preserve deterministic Git authority and strict role separation.
 
 ---
@@ -214,13 +214,15 @@ local Coder overlay; generic materialization never overwrites that overlay.
 
 `coder-procedure-status` reports deterministic version, hash, overlay, and
 path drift. `coder-procedure-preview` produces proposed file diffs without
-writing. There is no operational reconciliation command: any future
-managed-repository write interface must be explicitly Product-Owner-controlled,
-bound to the selected repository and reviewed preview, and must preserve
-ordinary Git review. Exact existing Skill copies may be adopted into the lock
-without rewriting their bytes; conflicting files are blocked. Fresh/resumed
-host consumption remains a separate acceptance requirement tracked by
-`WORKFLOW-005`. Overlay validation checks the declared marker and required
+writing. There is no operator-facing materialization command. The guarded internal
+materializer may be used only for an explicitly Product-Owner-authorized
+reconciliation, after reviewing status and a deterministic preview bound to
+the selected managed repository and confirming the exact generated-file
+changes; ordinary Git review remains required. Exact existing Skill copies
+may be adopted into the lock without rewriting their bytes; conflicting files
+are blocked. M007.006 accepted fresh/resumed host consumption and approved
+instruction visibility across Repo Control II and Vocab. Overlay validation
+checks the declared marker and required
 section structurally; human review remains responsible for semantic conflicts
 between local rules and generic authority. The internal materializer replaces
 each file atomically but does not make the complete file set transactional. If
@@ -934,9 +936,10 @@ network resources.
 
 ### 14.2 Bounded Dispatch Proposal Tools
 
-The original 10 evidence tools retain their existing read-only behavior. With
-`repo_intelligence`, `repo_read_document`, and the two historical tools, the
-fixed inventory is 18 tools including the four dispatch tools below:
+The original 10 evidence tools retain their existing read-only behavior.
+`repo_intelligence`, `repo_read_document`, and the two historical tools bring
+the evidence inventory to 14; with the four dispatch tools below, the fixed
+inventory is 18 tools:
 
 | Tool | Endpoint | Scope |
 |---|---|---|
@@ -1430,10 +1433,9 @@ The completed architectural baseline and remaining capability areas are:
 
 6. Agent Procedure / Skills                         M005.000–M005.004 ACCEPTED / CLOSED
 7. Repository Intelligence                          M004.001–M004.002 ACCEPTED / CLOSED (bounded integration; limits/monitoring retained)
-
-8. Deeper Architect / Coder integration             DEFERRED
-
-9. Model Gateway                                    LATER
+8. Managed context / history / Coder convergence    M006.000, M007.000–M007.006 ACCEPTED / CLOSED
+9. Deeper Architect / Coder integration             DEFERRED
+10. Model Gateway                                   LATER
 ```
 
 This is not a prescribed future implementation sequence. Any extension requires separately approved scope and must preserve the completed transport/authority boundaries.
@@ -1600,7 +1602,7 @@ open condition tracking and blocking condition enforcement
 on-demand Coder and Architect handoff packet generation
 versioned Architect JSON API on loopback (read-only evidence plus fixed bounded proposal submissions)
 persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
-14 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
+14 bounded evidence MCP tools (intelligence also records use metrics) plus four dispatch tools; 18 total
 Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
 approved applicable dispatches surfaced through local coder-context
 local Coder context/status and bounded question/bug/test/closeout commands; no Coder MCP
@@ -1612,4 +1614,4 @@ deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement
 ```
 
-M003 capabilities through M003.013, M004.001–M004.002, and M005.000–M005.004 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the compact always-loaded authority/bootstrap and three explicit repository-local Skills. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. The active milestone and lifecycle are authoritative in Repo Control, not inferred from this architecture document. Documentation maintenance does not by itself change this architecture or authorize product behavior changes.
+M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the compact always-loaded authority/bootstrap and three explicit repository-local Skills. M007.006 accepted fresh/resumed Coder-context convergence across Repo Control II and Vocab, including visibility of approved applicable instructions after the normal handoff. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. The active milestone and lifecycle are authoritative in Repo Control, not inferred from this architecture document. Documentation maintenance does not by itself change this architecture or authorize product behavior changes.

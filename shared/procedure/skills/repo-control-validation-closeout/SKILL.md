@@ -28,6 +28,14 @@ This instruction-only helper derives procedure from the [Coder bootstrap](../../
    ## 11. Git Status
    ```
 
+   For every implementation milestone, include a concise Repository Intelligence disposition in the closeout:
+
+   - `Repository Intelligence: USED — <question(s) it materially informed>.`
+   - `Repository Intelligence: NOT USED — <brief reason it was not materially useful>.`
+   - `Repository Intelligence: NOT AVAILABLE — <observed state/reason>; proceeded with <other evidence>.`
+
+   When USED, distinguish structural evidence from source/runtime proof. If the existing rating workflow is available, the consuming Coder rates materially relied-on uses according to current Repo Control procedure. Do not manufacture uses or ratings. This disposition is not mandatory for documentation-only, lifecycle-only, or trivially localized work unless the active prompt requires it.
+
    Use at most one matching workflow sidecar, named `<same-id>_<slug>_workflow.md`; it is event history, not a prompt or closeout. For a bounded correction, update the existing closeout and rerun relevant validation. Include exact changed paths, validation, decisions, deviations, limitations, deferred work and recommended next step. Resolve naming conflicts through the bounded question path rather than bypassing artifact discovery.
 6. Inspect final read-only Git status/diff and identify the exact logical change set. Do not stage, commit, push, tag, merge, rebase, reset, stash, clean, switch/create/delete branches, or mutate remotes. Product Owner review and all Git mutations remain separate.
 7. When authorized work and required validation are complete, use `repoctl coder-closeout --summary "<bounded completion summary>"`, then `repoctl coder-status` to verify REVIEW and report final read-only Git status. The final report should identify status, scope/files, tests and results, questions/decisions, limitations/deferred work, Git status, and recommended next step; point to the closeout instead of repeating it. Stop; REVIEW does not authorize further edits or imply Product Owner acceptance.

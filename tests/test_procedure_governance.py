@@ -91,7 +91,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
     def test_manifest_sources_are_hashed_and_skills_match_accepted_copies(self) -> None:
         self.assertEqual(self.bundle.schema_version, 1)
-        self.assertEqual(self.bundle.release, "1.0.1")
+        self.assertEqual(self.bundle.release, "1.0.2")
         for source, expected in self.bundle.source_hashes.items():
             data = (self.bundle.root / source).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
@@ -148,7 +148,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self.assertEqual(first.lock_bytes, second.lock_bytes)
         rendered = dict(first.files)[".github/copilot-instructions.md"].decode()
         self.assertIn("`docs/context/coding_agent_rules.md`", rendered)
-        self.assertIn("`1.0.1`", rendered)
+        self.assertIn(f"`{self.bundle.release}`", rendered)
         self.assertNotIn("/home/chuck/projects/repo-control-ii`", rendered)
         self.assertNotIn("Vocab", rendered)
 
@@ -210,7 +210,8 @@ class ProcedureGovernanceTests(unittest.TestCase):
     def test_stale_release_can_be_previewed_and_updated_but_stale_plan_is_refused(self) -> None:
         self._materialize()
         original_bundle = self.bundle
-        next_bundle = replace(self.bundle, release="1.0.2")
+        major, minor, patch = (int(part) for part in self.bundle.release.split("."))
+        next_bundle = replace(self.bundle, release=f"{major}.{minor}.{patch + 1}")
         status = inspect_procedure(self.entry, next_bundle)
         self.assertEqual(status["status"], "STALE_VERSION")
         plan = preview_reconciliation(self.entry, next_bundle)
@@ -227,7 +228,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
         fresh_plan = preview_reconciliation(self.entry, next_bundle)
         materialize_preview(self.entry, fresh_plan, next_bundle)
         self.assertEqual(inspect_procedure(self.entry, next_bundle)["status"], "CURRENT")
-        self.assertEqual(original_bundle.release, "1.0.1")
+        self.assertEqual(original_bundle.release, self.bundle.release)
 
     def test_corrupt_lock_and_unversioned_bundle_changes_are_not_reconciled_silently(self) -> None:
         self._materialize()

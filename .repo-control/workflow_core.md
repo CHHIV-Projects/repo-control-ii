@@ -43,6 +43,10 @@ commands and outcomes, including failures and limits. Repository intelligence
 supports source inspection but does not prove runtime behavior. Do not refresh
 optional derived evidence without Product Owner authority.
 
+Repository Intelligence is optional deterministic evidence, not mandatory
+ceremony; implementation milestones explicitly disposition its use, non-use,
+or unavailability in the closeout.
+
 ## Validation, review, and Git
 
 Choose focused existing tests and checks for changed behavior. Prepare a
