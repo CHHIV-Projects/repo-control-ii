@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import errno
+import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,6 +14,7 @@ from ..workflow.handoff_packets import (
     MAX_PACKET_BYTES,
     MAX_SOURCE_BYTES,
     HandoffPacketError,
+    _PRIVATE_KEY_MARKER,
     _open_conditions,
     _read_relative_source,
 )
@@ -20,6 +24,29 @@ from .repository_registry import DOCUMENT_ROLES, RepositoryEntry
 
 CONTRACT_VERSION = "1"
 EVENT_LIMIT = 30
+MAX_REPOSITORY_DOCUMENT_BYTES = MAX_SOURCE_BYTES
+MAX_REPOSITORY_DOCUMENT_FILE_BYTES = 5_000_000
+_DOCUMENT_EXTENSIONS = frozenset({".md", ".txt", ".rst"})
+_SENSITIVE_PATH_COMPONENTS = frozenset(
+    {
+        ".env",
+        ".git",
+        ".ssh",
+        ".venv",
+        "config",
+        "configs",
+        "configuration",
+        "configurations",
+        "credential",
+        "credentials",
+        "env",
+        "private",
+        "secret",
+        "secrets",
+        "venv",
+    }
+)
+_HISTORICAL_PATH_COMPONENTS = frozenset({"archive", "archives", "historical", "history", "milestones"})
 
 
 class ArchitectContractError(RuntimeError):
@@ -286,6 +313,216 @@ def _read_content(repository: RepositoryEntry, relative_path: str, source_type: 
     }
 
 
+def _repository_document_path(value: str | None) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 512
+        or "\\" in value
+        or "\x00" in value
+        or (len(value) > 1 and value[0].isalpha() and value[1] == ":")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ArchitectContractError("invalid_document_path", "A valid repository-relative document path is required.", 400)
+    path = PurePosixPath(value)
+    parts = value.split("/")
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise ArchitectContractError("invalid_document_path", "The document path must be repository-relative and traversal-free.", 400)
+    lowered_parts = {part.lower() for part in parts}
+    if lowered_parts & _SENSITIVE_PATH_COMPONENTS or any(
+        part.startswith(".env.") or part.endswith((".pem", ".key", ".p12", ".pfx"))
+        for part in lowered_parts
+    ):
+        raise ArchitectContractError(
+            "document_path_not_allowed",
+            "The requested path is outside the documentation allowlist.",
+            403,
+        )
+    if lowered_parts & _HISTORICAL_PATH_COMPONENTS:
+        raise ArchitectContractError(
+            "historical_document_not_supported",
+            "Historical artifact discovery and retrieval are reserved for the separate historical capability.",
+            403,
+        )
+
+    allowed_root = (
+        parts[0] == "docs"
+        or parts[0] in {".github", ".repo-control"}
+        or (parts[0] == ".agents" and len(parts) == 4 and parts[1] == "skills" and parts[3] == "SKILL.md")
+        or value == "README.md"
+    )
+    if not allowed_root:
+        raise ArchitectContractError(
+            "document_path_not_allowed",
+            "The requested path is outside the documentation allowlist.",
+            403,
+        )
+    if value != "README.md" and Path(parts[-1]).suffix.lower() not in _DOCUMENT_EXTENSIONS:
+        raise ArchitectContractError(
+            "unsupported_document_type",
+            "Only Markdown, plain-text, and reStructuredText files are supported.",
+            415,
+        )
+    return value
+
+
+def _read_repository_document(repository: RepositoryEntry, relative_path: str) -> dict[str, Any]:
+    parts = PurePosixPath(relative_path).parts
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        root_fd = os.open(repository.path, directory_flags)
+    except OSError as exc:
+        raise ArchitectContractError(
+            "repository_document_unreadable",
+            "The selected repository cannot be safely read.",
+            422,
+        ) from exc
+    parent_fd = root_fd
+    opened_directories: list[int] = []
+    source_fd: int | None = None
+    try:
+        for part in parts[:-1]:
+            parent_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            opened_directories.append(parent_fd)
+        try:
+            source_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError as exc:
+            raise ArchitectContractError(
+                "missing_repository_document",
+                "The requested document does not exist.",
+                404,
+            ) from exc
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise ArchitectContractError(
+                    "unsafe_document_path",
+                    "The requested path contains a symlink or non-directory component.",
+                    422,
+                ) from exc
+            raise ArchitectContractError(
+                "repository_document_unreadable",
+                "The requested document cannot be safely opened.",
+                422,
+            ) from exc
+
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ArchitectContractError("unsafe_document_path", "The requested path is not a regular file.", 422)
+        if before.st_size > MAX_REPOSITORY_DOCUMENT_FILE_BYTES:
+            raise ArchitectContractError(
+                "repository_document_oversized",
+                f"The requested file exceeds the {MAX_REPOSITORY_DOCUMENT_FILE_BYTES}-byte source limit.",
+                413,
+            )
+
+        read_limit = min(before.st_size, MAX_REPOSITORY_DOCUMENT_BYTES)
+        raw = bytearray()
+        while len(raw) < read_limit:
+            chunk = os.read(source_fd, min(64 * 1024, read_limit - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+
+        after = os.fstat(source_fd)
+        try:
+            current_path = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise ArchitectContractError(
+                "repository_document_changed",
+                "The document changed or disappeared during the read.",
+                409,
+            ) from exc
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or (after.st_dev, after.st_ino) != (current_path.st_dev, current_path.st_ino)
+            or len(raw) != read_limit
+        ):
+            raise ArchitectContractError(
+                "repository_document_changed",
+                "The document changed or disappeared during the read.",
+                409,
+            )
+
+        truncated = before.st_size > MAX_REPOSITORY_DOCUMENT_BYTES
+        visible = bytes(raw)
+        try:
+            content = visible.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            if not truncated or exc.reason != "unexpected end of data" or exc.end != len(visible):
+                raise ArchitectContractError(
+                    "invalid_document_encoding",
+                    "The document is not valid UTF-8 text.",
+                    422,
+                ) from exc
+            visible = visible[: exc.start]
+            try:
+                content = visible.decode("utf-8")
+            except UnicodeDecodeError as nested:
+                raise ArchitectContractError(
+                    "invalid_document_encoding",
+                    "The document is not valid UTF-8 text.",
+                    422,
+                ) from nested
+        if any(
+            (ord(character) < 32 and character not in "\t\n\r") or ord(character) == 127
+            for character in content
+        ):
+            raise ArchitectContractError(
+                "invalid_document_encoding",
+                "The document contains unsupported binary control characters.",
+                422,
+            )
+        if _PRIVATE_KEY_MARKER.search(content):
+            raise ArchitectContractError(
+                "unsafe_document_content",
+                "The requested document contains private-key material.",
+                422,
+            )
+        return {
+            "source_type": "repository_document",
+            "path": relative_path,
+            "file_size_bytes": before.st_size,
+            "bytes_returned": len(content.encode("utf-8")),
+            "character_count": len(content),
+            "truncated": truncated,
+            "working_tree_source": "current_working_tree",
+            "git_state": "not_collected",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "content": content,
+        }
+    except ArchitectContractError:
+        raise
+    except FileNotFoundError as exc:
+        raise ArchitectContractError(
+            "missing_repository_document",
+            "The requested document does not exist.",
+            404,
+        ) from exc
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArchitectContractError(
+                "unsafe_document_path",
+                "The requested path contains a symlink or non-directory component.",
+                422,
+            ) from exc
+        raise ArchitectContractError(
+            "repository_document_unreadable",
+            "The requested document cannot be safely read.",
+            422,
+        ) from exc
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+        for directory_fd in reversed(opened_directories):
+            os.close(directory_fd)
+        os.close(root_fd)
+
+
 def _git_view(repository: RepositoryEntry) -> dict[str, Any]:
     try:
         state = inspect_git_state(str(repository.path))
@@ -476,10 +713,18 @@ def build_architect_response(
     state_root: str | Path,
     resource: str,
     role: str | None = None,
+    document_path: str | None = None,
     expected_repository_key: str | None = None,
     expected_generation: int | None = None,
     expected_milestone_id: str | None = None,
 ) -> dict[str, Any]:
+    if resource == "repository_document":
+        if not expected_repository_key or expected_generation is None:
+            raise ArchitectContractError(
+                "invalid_precondition",
+                "Repository-document reads require expected_repository_key and expected_generation.",
+                400,
+            )
     if expected_repository_key is not None and expected_repository_key != repository.key:
         raise ArchitectContractError(
             "stale_repository_selection",
@@ -492,7 +737,27 @@ def build_architect_response(
             "The repository registry generation changed; refresh status before retrying.",
             409,
         )
-    envelope, candidate = _base(repository, registry_generation, state_root)
+    if resource == "repository_document":
+        document_path = _repository_document_path(document_path)
+    if resource == "repository_document":
+        envelope = {
+            "contract_version": CONTRACT_VERSION,
+            "repository": {
+                "key": repository.key,
+                "name": repository.name,
+                "path": str(repository.path),
+                "repository_id": repository.repository_id,
+                "registry_generation": registry_generation,
+            },
+            "selection": {
+                "status": "not_required",
+                "milestone_id": None,
+                "prompt_path": None,
+            },
+        }
+        candidate = None
+    else:
+        envelope, candidate = _base(repository, registry_generation, state_root)
     if expected_milestone_id is not None and (
         candidate is None or candidate["milestone_id"] != expected_milestone_id
     ):
@@ -530,6 +795,14 @@ def build_architect_response(
                 "source_type": "repository_registry",
                 "documents": inventory,
             }
+    elif resource == "repository_document":
+        envelope["data"] = {
+            "repository": {
+                "key": repository.key,
+                "repository_id": repository.repository_id,
+            },
+            **_read_repository_document(repository, document_path),
+        }
     elif resource == "git":
         envelope["data"] = _git_view(repository)
     else:

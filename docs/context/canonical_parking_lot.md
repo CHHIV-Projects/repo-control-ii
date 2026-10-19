@@ -698,43 +698,6 @@ Do not weaken lifecycle event validation or accept arbitrary control characters 
 
 ---
 
-## INTEGRATION-002 — Bounded Architect Repository-Document Read Access
-
-### Status
-
-Deferred
-
-### Summary
-
-Allow the Architect to request bounded, read-only content for explicitly selected repository documentation beyond the five registered governing-document roles.
-
-### Why It Is Parked
-
-The Architect MCP can read configured governing documents and selected milestone evidence, but cannot currently request a relevant non-governing repository document such as `docs/guides/*`. During M006.000, the new guides were principal deliverables and remained untracked, so GitHub could not provide their current contents for review; Repo Control evidence confirmed their existence and validation but did not expose their prose for direct Architect review.
-
-### Trigger for Reconsideration
-
-Revisit when Architect review needs direct access to relevant repository documentation that is not part of the registered governing roles or active milestone artifacts.
-
-### Likely Scope
-
-```text
-bounded read-only retrieval of explicitly selected repository-relative documentation
-support review of guides, design notes, and relevant Markdown/text artifacts, including uncommitted files
-enforce server-selected repository identity, path policy, and response-size limits
-prefer a narrow documentation-evidence mechanism over arbitrary file access
-```
-
-### Dependencies
-
-Requires a repository-scoped path and size policy, explicit source identity, and reviewable behavior that preserves existing authority boundaries.
-
-### Notes
-
-This must not grant arbitrary filesystem, shell, Git, lifecycle, or mutation authority. Governing documents, prompts, and Repo Control state remain the authority for their respective roles.
-
----
-
 ## INTEGRATION-003 — Bounded Architect Historical Project Context Retrieval
 
 ### Status

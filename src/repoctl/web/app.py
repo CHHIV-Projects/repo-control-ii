@@ -574,8 +574,11 @@ def create_web_app(
         allowed_parameters = {
             "expected_repository_key",
             "expected_generation",
-            "expected_milestone_id",
         }
+        if resource == "repository_document":
+            allowed_parameters.add("path")
+        else:
+            allowed_parameters.add("expected_milestone_id")
         unknown_parameters = set(request.args) - allowed_parameters
         if unknown_parameters:
             raise ArchitectContractError(
@@ -587,6 +590,11 @@ def create_web_app(
             expected_repository_key = architect_query_value("expected_repository_key", maximum_length=64)
             expected_generation_text = architect_query_value("expected_generation", maximum_length=12)
             expected_milestone_id = architect_query_value("expected_milestone_id", maximum_length=32)
+            document_path = (
+                architect_query_value("path", maximum_length=512)
+                if resource == "repository_document"
+                else None
+            )
             if expected_generation_text is not None:
                 try:
                     expected_generation = int(expected_generation_text)
@@ -622,6 +630,7 @@ def create_web_app(
                     state_root=effective_state_root,
                     resource=resource,
                     role=role,
+                    document_path=document_path,
                     expected_repository_key=expected_repository_key,
                     expected_generation=expected_generation,
                     expected_milestone_id=expected_milestone_id,
@@ -681,6 +690,10 @@ def create_web_app(
     @app.get("/api/architect/v1/documents/<role>")
     def architect_document(role: str):
         return architect_endpoint("documents", role=role)
+
+    @app.get("/api/architect/v1/repository-document")
+    def architect_repository_document():
+        return architect_endpoint("repository_document")
 
     @app.get("/api/architect/v1/review")
     def architect_review():

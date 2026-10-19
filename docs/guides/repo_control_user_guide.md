@@ -264,6 +264,25 @@ are [implementation](../../.agents/skills/repo-control-implementation/SKILL.md),
 and [validation/closeout](../../.agents/skills/repo-control-validation-closeout/SKILL.md).
 Explicitly load the relevant Skill; it supplies procedure, never permission.
 
+### Architect reads of current repository documents
+
+`repo_document` remains the fixed-role reader for the five registered
+governing documents. For other current documentation, the Architect can use
+`repo_read_document` with one explicit repository-relative path and the
+expected repository key and registry generation. The read is from the
+selected repository's working tree, so modified and untracked documents are
+available for review.
+
+The path must name a Markdown, `.txt`, or `.rst` file under `docs/`,
+`.github/`, or `.repo-control/`; the root `README.md`; or a Skill
+`.agents/skills/<skill>/SKILL.md`. Traversal, symlinks, source-code paths,
+secret/configuration paths, directories, and unsupported types are rejected.
+At most 128,000 UTF-8 bytes are returned with explicit original size and
+truncation metadata; source files above 5,000,000 bytes are rejected. Git
+tracking status is not collected. This is not directory browsing or search,
+and paths under historical roots (`history`, `milestones`, `archive`,
+`archives`, or `historical`) are reserved for M007.005.
+
 Generic bootstrap, workflow core, and Skill sources are maintained in the
 versioned [`shared/procedure`](../../shared/procedure/) bundle. Managed
 repositories contain a generated `.github/copilot-instructions.md`, physical

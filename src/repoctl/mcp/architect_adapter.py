@@ -168,6 +168,28 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "repo_read_document",
+        "description": (
+            "Read one explicitly selected current working-tree documentation file from an allowlisted path. "
+            "This cannot browse directories, read source code, or retrieve historical artifacts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Repository-relative path to one allowlisted Markdown/text document.",
+                },
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+            },
+            "required": ["path", "expected_repository_key", "expected_generation"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "repo_review",
         "description": "Get comprehensive bounded review summary of the active milestone, combining status, git, and lifecycle.",
         "inputSchema": {
@@ -346,7 +368,19 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
             raise AdapterValidationError("expected_milestone_id must be a non-empty string <= 32 characters")
         query_params["expected_milestone_id"] = val
 
-    if tool_name == "repo_dispatches":
+    if tool_name == "repo_read_document":
+        for key in ("path", "expected_repository_key", "expected_generation"):
+            if key not in arguments:
+                raise AdapterValidationError(f"Missing required argument {key!r} for repo_read_document")
+        path = arguments["path"]
+        if not isinstance(path, str) or not 1 <= len(path) <= 512:
+            raise AdapterValidationError("path must be a non-empty repository-relative path <= 512 characters")
+        return "/api/architect/v1/repository-document", {
+            "path": path,
+            "expected_repository_key": query_params["expected_repository_key"],
+            "expected_generation": query_params["expected_generation"],
+        }
+    elif tool_name == "repo_dispatches":
         if "milestone_id" in arguments:
             value = arguments["milestone_id"]
             if not isinstance(value, str) or not re.fullmatch(_MILESTONE_ID_PATTERN[1:-1], value):

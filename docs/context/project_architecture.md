@@ -874,7 +874,7 @@ Repo Control Service (127.0.0.1:8765/api/architect/v1/*)
 
 ### 14.1 Read-Only MCP Tool Inventory
 
-The adapter exposes 11 focused evidence tools (intelligence queries also persist bounded operational use metrics):
+The adapter exposes 12 focused evidence tools (intelligence queries also persist bounded operational use metrics):
 
 | Tool | Mapped Endpoint | Purpose |
 |---|---|---|
@@ -887,12 +887,31 @@ The adapter exposes 11 focused evidence tools (intelligence queries also persist
 | `repo_evidence` | `GET /api/architect/v1/evidence` | Recorded test results and binding verification items |
 | `repo_documents` | `GET /api/architect/v1/documents` | List registered governing documents |
 | `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
+| `repo_read_document` | `GET /api/architect/v1/repository-document` | Read one explicit current working-tree document under the allowlisted documentation roots/types |
 | `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
 | `repo_intelligence` | `GET /api/architect/v1/intelligence` | Bounded structural evidence with explicit repository/generation preconditions; no build authority |
 
+`repo_read_document` is separate from the fixed five-role `repo_document`
+contract. It requires an explicit repository-relative path plus expected
+repository key and registry generation. Allowed files are Markdown, text, or
+reStructuredText under `docs/`, `.github/`, and `.repo-control/`; one
+repository-root `README.md`; or a Skill `SKILL.md` below
+`.agents/skills/<skill>/`. Symlinks, traversal, secrets/configuration paths,
+source code, arbitrary root files, and non-regular files are rejected. Reads
+use the current working tree, including modified and untracked documentation.
+At most 128,000 UTF-8 bytes are returned; content beyond that limit is
+deterministically truncated with original size, returned byte/character
+counts, and a `truncated` flag. Files above 5,000,000 bytes are rejected.
+Git tracking state is not collected. This does not provide browsing, search,
+historical roots (`history`, `milestones`, `archive`, `archives`, or
+`historical` path components), arbitrary file access, or remote access;
+historical discovery remains the separate M007.005 capability.
+
 ### 14.2 Bounded Dispatch Proposal Tools
 
-The original 10 evidence tools retain their existing read-only behavior. With `repo_intelligence`, the fixed inventory is 15 tools including the four dispatch tools below:
+The original 10 evidence tools retain their existing read-only behavior. With
+`repo_intelligence` and `repo_read_document`, the fixed inventory is 16 tools
+including the four dispatch tools below:
 
 | Tool | Endpoint | Scope |
 |---|---|---|
@@ -1556,7 +1575,7 @@ open condition tracking and blocking condition enforcement
 on-demand Coder and Architect handoff packet generation
 versioned Architect JSON API on loopback (read-only evidence plus fixed bounded proposal submissions)
 persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
-11 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
+12 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
 Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
 approved applicable dispatches surfaced through local coder-context
 local Coder context/status and bounded question/bug/test/closeout commands; no Coder MCP

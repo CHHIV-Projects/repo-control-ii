@@ -38,6 +38,7 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "repo_evidence",
         "repo_documents",
         "repo_document",
+        "repo_read_document",
         "repo_review",
         "repo_dispatches",
         "architect_submit_prompt_draft",
@@ -49,7 +50,7 @@ class TestArchitectMcpInventory(unittest.TestCase):
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}
         self.assertEqual(advertised_names, self.EXPECTED_TOOLS)
-        self.assertEqual(len(TOOL_INVENTORY), 15)
+        self.assertEqual(len(TOOL_INVENTORY), 16)
 
     def test_schemas_forbid_additional_properties(self):
         for tool in TOOL_INVENTORY:
@@ -100,6 +101,49 @@ class TestArchitectMcpValidation(unittest.TestCase):
         with self.assertRaises(AdapterValidationError) as ctx:
             validate_tool_call("repo_document", {})
         self.assertIn("Missing required argument 'role'", str(ctx.exception))
+
+    def test_repository_document_requires_fixed_path_and_repository_preconditions(self):
+        path, query = validate_tool_call(
+            "repo_read_document",
+            {
+                "path": "docs/guides/review.md",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+            },
+        )
+        self.assertEqual(path, "/api/architect/v1/repository-document")
+        self.assertEqual(
+            query,
+            {
+                "path": "docs/guides/review.md",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": "3",
+            },
+        )
+        with self.assertRaises(AdapterValidationError):
+            validate_tool_call(
+                "repo_read_document",
+                {"path": "docs/guides/review.md", "expected_repository_key": "repo-control-ii"},
+            )
+        with self.assertRaises(AdapterValidationError):
+            validate_tool_call(
+                "repo_read_document",
+                {
+                    "path": "",
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 3,
+                },
+            )
+        with self.assertRaises(AdapterValidationError):
+            validate_tool_call(
+                "repo_read_document",
+                {
+                    "path": "docs/guides/review.md",
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 3,
+                    "root": "/etc",
+                },
+            )
 
     def test_precondition_arguments_valid(self):
         path, query = validate_tool_call(
@@ -205,7 +249,7 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         resp = handle_rpc_request(req, "http://127.0.0.1:8765")
         self.assertEqual(resp["id"], 2)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 15)
+        self.assertEqual(len(tools), 16)
 
     def test_submission_tools_are_fixed_and_typed(self):
         path, payload = validate_submission_call(

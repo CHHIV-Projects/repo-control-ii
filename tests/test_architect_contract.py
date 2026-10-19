@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -288,6 +289,243 @@ class ArchitectContractTests(unittest.TestCase):
         oversized = self.client.get("/api/architect/v1/documents/context")
         self.assertEqual(oversized.status_code, 413)
         self.assertEqual(oversized.get_json()["error"]["code"], "source_oversized")
+
+    def test_repository_document_reads_current_working_tree_with_provenance(self) -> None:
+        guide_dir = self.first / "docs/guides"
+        guide_dir.mkdir()
+        tracked = guide_dir / "tracked.md"
+        tracked.write_text("committed guide\n", encoding="utf-8")
+        _git(self.first, "add", "docs/guides/tracked.md")
+        _git(self.first, "commit", "-qm", "add tracked guide")
+        tracked.write_text("modified current guide\n", encoding="utf-8")
+        untracked = guide_dir / "untracked.md"
+        untracked.write_text("new working-tree guide\n", encoding="utf-8")
+        original_head = _git(self.first, "rev-parse", "HEAD")
+        original_status = _git(self.first, "status", "--porcelain")
+
+        for relative_path, expected in (
+            ("docs/guides/tracked.md", "modified current guide"),
+            ("docs/guides/untracked.md", "new working-tree guide"),
+        ):
+            response = self.client.get(
+                "/api/architect/v1/repository-document",
+                query_string={
+                    "path": relative_path,
+                    "expected_repository_key": "first",
+                    "expected_generation": "0",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            payload = response.get_json()
+            document = payload["data"]
+            self.assertEqual(payload["repository"]["key"], "first")
+            self.assertEqual(payload["repository"]["repository_id"], make_repository_id(self.first))
+            self.assertEqual(document["source_type"], "repository_document")
+            self.assertEqual(document["path"], relative_path)
+            self.assertEqual(document["working_tree_source"], "current_working_tree")
+            self.assertEqual(document["git_state"], "not_collected")
+            self.assertFalse(document["truncated"])
+            self.assertEqual(document["file_size_bytes"], len(document["content"].encode("utf-8")))
+            self.assertEqual(document["bytes_returned"], len(document["content"].encode("utf-8")))
+            self.assertIn(expected, document["content"])
+            self.assertNotIn("SECOND_ONLY", document["content"])
+        self.assertEqual(_git(self.first, "rev-parse", "HEAD"), original_head)
+        self.assertEqual(_git(self.first, "status", "--porcelain"), original_status)
+
+        skill = self.first / ".agents/skills/example/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# Example Skill\n", encoding="utf-8")
+        readme = self.first / "README.md"
+        readme.write_text("# Explicitly allowed root document\n", encoding="utf-8")
+        for relative_path in ("README.md", ".agents/skills/example/SKILL.md"):
+            response = self.client.get(
+                "/api/architect/v1/repository-document",
+                query_string={
+                    "path": relative_path,
+                    "expected_repository_key": "first",
+                    "expected_generation": "0",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()["data"]["path"], relative_path)
+        for relative_path in (".github/notes.md", ".repo-control/workflow.md"):
+            target = self.first / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("allowlisted text\n", encoding="utf-8")
+            response = self.client.get(
+                "/api/architect/v1/repository-document",
+                query_string={
+                    "path": relative_path,
+                    "expected_repository_key": "first",
+                    "expected_generation": "0",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+
+        selection = (
+            self.state_root
+            / make_repository_id(self.first)
+            / "milestones"
+            / "selection.json"
+        )
+        selection.unlink()
+        response = self.client.get(
+            "/api/architect/v1/repository-document",
+            query_string={
+                "path": "README.md",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(
+            response.get_json()["selection"]["status"],
+            "not_required",
+        )
+
+    def test_repository_document_rejections_have_bounded_explicit_errors(self) -> None:
+        guide_dir = self.first / "docs/guides"
+        guide_dir.mkdir()
+        (guide_dir / "directory.md").mkdir()
+        (guide_dir / "invalid.md").write_bytes(b"\xff\xfe")
+        (guide_dir / "binary.md").write_bytes(b"# valid UTF-8 prefix\x00binary\n")
+        (guide_dir / "escape.md").symlink_to(self.root / "outside.md")
+        (guide_dir / "internal-source.md").symlink_to(self.first / "tracked.txt")
+        os.mkfifo(guide_dir / "fifo.md")
+        (guide_dir / "private-key.md").write_text(
+            "-----BEGIN PRIVATE KEY-----\nsecret\n", encoding="utf-8"
+        )
+        (guide_dir / "truncated.md").write_bytes(
+            b"a" * 127_999 + "é".encode("utf-8") + b"tail"
+        )
+        oversized = guide_dir / "oversized.md"
+        with oversized.open("wb") as stream:
+            stream.truncate(5_000_001)
+
+        cases = [
+            ("", "invalid_query_parameter", 400),
+            ("docs/../README.md", "invalid_document_path", 400),
+            ("/etc/passwd", "invalid_document_path", 400),
+            ("C:/Windows/system.ini", "invalid_document_path", 400),
+            (".git/config", "document_path_not_allowed", 403),
+            ("src/repoctl/web/app.py", "document_path_not_allowed", 403),
+            ("pyproject.toml", "document_path_not_allowed", 403),
+            ("docs/secrets/notes.md", "document_path_not_allowed", 403),
+            ("docs/.env.production.md", "document_path_not_allowed", 403),
+            ("docs/history/old_closeout.md", "historical_document_not_supported", 403),
+            ("docs/milestones/M003.001_old_prompt.md", "historical_document_not_supported", 403),
+            ("docs/guides/unsupported.pdf", "unsupported_document_type", 415),
+            ("docs/guides/missing.md", "missing_repository_document", 404),
+            ("docs/guides/directory.md", "unsafe_document_path", 422),
+            ("docs/guides/fifo.md", "unsafe_document_path", 422),
+            ("docs/guides/escape.md", "unsafe_document_path", 422),
+            ("docs/guides/internal-source.md", "unsafe_document_path", 422),
+            ("docs/guides/invalid.md", "invalid_document_encoding", 422),
+            ("docs/guides/binary.md", "invalid_document_encoding", 422),
+            ("docs/guides/private-key.md", "unsafe_document_content", 422),
+            ("docs/guides/oversized.md", "repository_document_oversized", 413),
+        ]
+        for relative_path, expected_code, expected_status in cases:
+            with self.subTest(path=relative_path):
+                response = self.client.get(
+                    "/api/architect/v1/repository-document",
+                    query_string={
+                        "path": relative_path,
+                        "expected_repository_key": "first",
+                        "expected_generation": "0",
+                    },
+                )
+                self.assertEqual(response.status_code, expected_status, response.get_json())
+                self.assertEqual(response.get_json()["error"]["code"], expected_code)
+                self.assertNotIn(str(self.first), response.get_data(as_text=True))
+
+        truncated = self.client.get(
+            "/api/architect/v1/repository-document",
+            query_string={
+                "path": "docs/guides/truncated.md",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(truncated.status_code, 200)
+        payload = truncated.get_json()["data"]
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["file_size_bytes"], 128_005)
+        self.assertEqual(payload["bytes_returned"], 127_999)
+        self.assertEqual(payload["character_count"], 127_999)
+        self.assertTrue(payload["content"].endswith("a"))
+
+    def test_repository_document_detects_change_during_read(self) -> None:
+        document = self.first / "docs/guides/changed.md"
+        document.parent.mkdir()
+        document.write_text("before\n", encoding="utf-8")
+        original_read = os.read
+        changed = False
+
+        def read_then_change(fd: int, count: int) -> bytes:
+            nonlocal changed
+            content = original_read(fd, count)
+            if not changed:
+                changed = True
+                document.write_text("changed\n", encoding="utf-8")
+            return content
+
+        with patch("repoctl.web.architect_contract.os.read", side_effect=read_then_change):
+            response = self.client.get(
+                "/api/architect/v1/repository-document",
+                query_string={
+                    "path": "docs/guides/changed.md",
+                    "expected_repository_key": "first",
+                    "expected_generation": "0",
+                },
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"]["code"], "repository_document_changed")
+
+    def test_repository_document_requires_current_repository_generation(self) -> None:
+        path = "/api/architect/v1/repository-document"
+        mismatch = self.client.get(
+            path,
+            query_string={"path": "docs/context/project_context.md", "expected_repository_key": "second", "expected_generation": "0"},
+        )
+        self.assertEqual(mismatch.status_code, 409)
+        self.assertEqual(mismatch.get_json()["error"]["code"], "stale_repository_selection")
+
+        stale_generation = self.client.get(
+            path,
+            query_string={"path": "docs/context/project_context.md", "expected_repository_key": "first", "expected_generation": "1"},
+        )
+        self.assertEqual(stale_generation.status_code, 409)
+        self.assertEqual(stale_generation.get_json()["error"]["code"], "stale_repository_generation")
+
+        missing_precondition = self.client.get(
+            path,
+            query_string={"path": "docs/context/project_context.md"},
+        )
+        self.assertEqual(missing_precondition.status_code, 400)
+        self.assertEqual(missing_precondition.get_json()["error"]["code"], "invalid_precondition")
+
+        missing_path = self.client.get(
+            path,
+            query_string={"expected_repository_key": "first", "expected_generation": "0"},
+        )
+        self.assertEqual(missing_path.status_code, 400)
+        self.assertEqual(missing_path.get_json()["error"]["code"], "invalid_document_path")
+
+        unexpected_milestone = self.client.get(
+            path,
+            query_string={
+                "path": "docs/context/project_context.md",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+                "expected_milestone_id": "M007.004",
+            },
+        )
+        self.assertEqual(unexpected_milestone.status_code, 400)
+        self.assertEqual(
+            unexpected_milestone.get_json()["error"]["code"],
+            "unsupported_query_parameter",
+        )
 
     def test_unconfigured_roles_and_bounded_workflow_history(self) -> None:
         no_documents_registry = self.root / "no-documents.toml"
