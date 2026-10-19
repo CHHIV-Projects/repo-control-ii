@@ -110,7 +110,7 @@ is used.
 
 After deploying code, the Product Owner restarts the existing Repo Control and
 Architect tunnel services using their normal administrative procedure. The MCP
-inventory is now **16 tools**. Verify local `tools/list`; ChatGPT may also require
+inventory is now **18 tools**. Verify local `tools/list`; ChatGPT may also require
 an explicit custom-app refresh (a Linux service restart alone may not refresh
 its catalog). No new listener or systemd unit is required.
 
@@ -299,6 +299,8 @@ Repo Control remains strictly bound to `127.0.0.1:8765`. The adapter runs locall
 | `repo_documents` | `GET /api/architect/v1/documents` | List registered governing documents |
 | `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
 | `repo_read_document` | `GET /api/architect/v1/repository-document` | Read one explicitly selected allowlisted current working-tree document; requires path, repository key, and generation |
+| `repo_history_search` | `GET /api/architect/v1/history/search` | Discover bounded prior milestone and `docs/history/` evidence without returning file content |
+| `repo_history_document` | `GET /api/architect/v1/history/document` | Read one explicitly selected artifact from the historical corpus with non-authoritative provenance |
 | `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
 
 ### Running the Adapter

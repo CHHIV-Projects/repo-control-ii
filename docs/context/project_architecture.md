@@ -874,7 +874,7 @@ Repo Control Service (127.0.0.1:8765/api/architect/v1/*)
 
 ### 14.1 Read-Only MCP Tool Inventory
 
-The adapter exposes 12 focused evidence tools (intelligence queries also persist bounded operational use metrics):
+The adapter exposes 14 focused evidence tools (intelligence queries also persist bounded operational use metrics):
 
 | Tool | Mapped Endpoint | Purpose |
 |---|---|---|
@@ -888,6 +888,8 @@ The adapter exposes 12 focused evidence tools (intelligence queries also persist
 | `repo_documents` | `GET /api/architect/v1/documents` | List registered governing documents |
 | `repo_document` | `GET /api/architect/v1/documents/{role}` | Read a specific governing document (`context`, `architecture`, `workflow`, `coding_agent_rules`, `parking_lot`) |
 | `repo_read_document` | `GET /api/architect/v1/repository-document` | Read one explicit current working-tree document under the allowlisted documentation roots/types |
+| `repo_history_search` | `GET /api/architect/v1/history/search` | Bounded lexical discovery over prior milestone artifacts and the `docs/history/` archive |
+| `repo_history_document` | `GET /api/architect/v1/history/document` | Read one selected prior artifact with historical/non-authoritative provenance |
 | `repo_review` | `GET /api/architect/v1/review` | Bounded review summary combining status, git, and lifecycle |
 | `repo_intelligence` | `GET /api/architect/v1/intelligence` | Bounded structural evidence with explicit repository/generation preconditions; no build authority |
 
@@ -904,14 +906,37 @@ deterministically truncated with original size, returned byte/character
 counts, and a `truncated` flag. Files above 5,000,000 bytes are rejected.
 Git tracking state is not collected. This does not provide browsing, search,
 historical roots (`history`, `milestones`, `archive`, `archives`, or
-`historical` path components), arbitrary file access, or remote access;
-historical discovery remains the separate M007.005 capability.
+`historical` path components), arbitrary file access, or remote access.
+
+Historical access uses the separate `repo_history_search` then
+`repo_history_document` workflow. Discovery is limited to canonical prior
+prompt/workflow/closeout artifacts under each managed repository's configured
+milestone root and supported text files under the fixed `docs/history/`
+convention. No additional registry root field is introduced; the configured
+milestone root plus this repository-relative archive convention is the
+historical-root policy. The selected milestone's artifacts are excluded from
+historical results. Search is repository-local and lexical, capped at 2,000
+candidate files, 2,000 directories, 300 text-file reads, 16,000,000 bytes
+scanned, 20 results, and a 128,000-byte response. Each artifact read is capped
+at 128,000 returned UTF-8 bytes and rejects source files above 5,000,000 bytes.
+Broad inventory without a milestone ID or paired category/type filters is
+rejected. Results contain paths, types, sizes, milestone/category metadata and
+match counts, not full content or snippets. Ordering is deterministic: exact
+path match, exact milestone-ID match, descending lexical occurrence count,
+then path. One selected result can be read with the same no-follow file
+protections and UTF-8/truncation bounds as current-document reads. Results and
+retrieved content identify themselves as `historical_evidence`, sourced from
+the current working tree, and explicitly not current authority. Current PO
+decisions and approved dispatches, lifecycle and active prompt, and current
+governing documents remain above historical evidence in authority. This
+capability does not browse Git history, source code, arbitrary roots, or
+network resources.
 
 ### 14.2 Bounded Dispatch Proposal Tools
 
 The original 10 evidence tools retain their existing read-only behavior. With
-`repo_intelligence` and `repo_read_document`, the fixed inventory is 16 tools
-including the four dispatch tools below:
+`repo_intelligence`, `repo_read_document`, and the two historical tools, the
+fixed inventory is 18 tools including the four dispatch tools below:
 
 | Tool | Endpoint | Scope |
 |---|---|---|
@@ -1575,7 +1600,7 @@ open condition tracking and blocking condition enforcement
 on-demand Coder and Architect handoff packet generation
 versioned Architect JSON API on loopback (read-only evidence plus fixed bounded proposal submissions)
 persistent Secure MCP Tunnel service (repo-control-architect-tunnel.service)
-12 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
+14 bounded evidence MCP tools (intelligence also records use metrics) plus dispatch submission and readback
 Product Owner-gated PROMPT / INSTRUCTION / RESPONSE dispatch transport
 approved applicable dispatches surfaced through local coder-context
 local Coder context/status and bounded question/bug/test/closeout commands; no Coder MCP

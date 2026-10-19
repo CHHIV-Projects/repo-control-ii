@@ -190,6 +190,67 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "repo_history_search",
+        "description": (
+            "Discover bounded prior milestone and docs/history artifacts in the selected repository. "
+            "Results are historical planning evidence, never current authority."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "Optional lexical query; all query terms must match.",
+                },
+                "milestone_id": {
+                    "type": "string",
+                    "pattern": r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)$",
+                },
+                "artifact_type": {
+                    "type": "string",
+                    "enum": [
+                        "milestone_prompt",
+                        "milestone_workflow",
+                        "milestone_closeout",
+                        "archived_context",
+                        "archived_planning",
+                        "historical_document",
+                    ],
+                },
+                "category": {"type": "string", "enum": ["milestone", "archive"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+            },
+            "required": ["expected_repository_key", "expected_generation"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "repo_history_document",
+        "description": (
+            "Read one explicitly selected prior milestone or approved docs/history artifact. "
+            "Returned content is labeled historical evidence and is not current authority."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Exact repository-relative historical path returned by repo_history_search.",
+                },
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+            },
+            "required": ["path", "expected_repository_key", "expected_generation"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "repo_review",
         "description": "Get comprehensive bounded review summary of the active milestone, combining status, git, and lifecycle.",
         "inputSchema": {
@@ -376,6 +437,62 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         if not isinstance(path, str) or not 1 <= len(path) <= 512:
             raise AdapterValidationError("path must be a non-empty repository-relative path <= 512 characters")
         return "/api/architect/v1/repository-document", {
+            "path": path,
+            "expected_repository_key": query_params["expected_repository_key"],
+            "expected_generation": query_params["expected_generation"],
+        }
+    elif tool_name == "repo_history_search":
+        for key in ("expected_repository_key", "expected_generation"):
+            if key not in arguments:
+                raise AdapterValidationError(f"Missing required argument {key!r} for repo_history_search")
+        history_params: dict[str, str] = {
+            "expected_repository_key": query_params["expected_repository_key"],
+            "expected_generation": query_params["expected_generation"],
+        }
+        if "query" in arguments:
+            value = arguments["query"]
+            if not isinstance(value, str) or not 1 <= len(value) <= 256:
+                raise AdapterValidationError("query must be a non-empty string <= 256 characters")
+            history_params["query"] = value
+        if "milestone_id" in arguments:
+            value = arguments["milestone_id"]
+            if not isinstance(value, str) or not re.fullmatch(
+                r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)",
+                value,
+            ):
+                raise AdapterValidationError("milestone_id must use a supported historical milestone form")
+            history_params["milestone_id"] = value
+        if "artifact_type" in arguments:
+            value = arguments["artifact_type"]
+            if not isinstance(value, str) or value not in {
+                "milestone_prompt",
+                "milestone_workflow",
+                "milestone_closeout",
+                "archived_context",
+                "archived_planning",
+                "historical_document",
+            }:
+                raise AdapterValidationError("artifact_type is not a supported historical artifact type")
+            history_params["artifact_type"] = value
+        if "category" in arguments:
+            value = arguments["category"]
+            if not isinstance(value, str) or value not in {"milestone", "archive"}:
+                raise AdapterValidationError("category must be 'milestone' or 'archive'")
+            history_params["category"] = value
+        if "limit" in arguments:
+            value = arguments["limit"]
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 20:
+                raise AdapterValidationError("limit must be an integer from 1 to 20")
+            history_params["limit"] = str(value)
+        return "/api/architect/v1/history/search", history_params
+    elif tool_name == "repo_history_document":
+        for key in ("path", "expected_repository_key", "expected_generation"):
+            if key not in arguments:
+                raise AdapterValidationError(f"Missing required argument {key!r} for repo_history_document")
+        path = arguments["path"]
+        if not isinstance(path, str) or not 1 <= len(path) <= 512:
+            raise AdapterValidationError("path must be a non-empty repository-relative path <= 512 characters")
+        return "/api/architect/v1/history/document", {
             "path": path,
             "expected_repository_key": query_params["expected_repository_key"],
             "expected_generation": query_params["expected_generation"],

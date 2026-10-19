@@ -1475,7 +1475,7 @@ approved applicable Architect dispatches in local Coder context
 
 The operational transport architecture now distinguishes Architect from Coder workflows:
 
-- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for the original 10 read-only evidence tools plus bounded `repo_intelligence` and `repo_read_document`, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
+- **Architect (ChatGPT):** Uses the persistent Secure MCP Tunnel for the original 10 read-only evidence tools plus bounded `repo_intelligence`, current-document `repo_read_document`, and historical `repo_history_search` / `repo_history_document`, bounded `repo_dispatches` readback, and separate typed PROMPT / INSTRUCTION / RESPONSE submissions that create only pending proposals. Historical evidence informs planning only and never overrides current authority. Product Owner approval remains in Repo Control's browser UI; Architect Review Packets remain an on-demand fallback.
 - **Coder (VS Code):** Co-located Coders use the local CLI for authoritative prompt, standing references, authorization, and approved applicable Architect dispatches via `repoctl coder-context`; status via `repoctl coder-status`; and bounded workflow events via existing `coder-*` commands. Coder Handoff Packets remain supported as a fallback/export mechanism for disconnected or external use. The Coder remains bound to read-only Git commands.
 - **Product Owner:** Remains in full control of milestone selection, prompt approval (PLANNING → READY), resume decisions, review acceptance (REVIEW → CLOSED), and all Git mutations (staging, commit, push).
 
@@ -1567,7 +1567,7 @@ accepted six-state lifecycle (PLANNING, READY, IN_PROGRESS, WAITING, REVIEW, CLO
 on-demand Coder handoff packets and Architect review packets
 Architect JSON API on loopback with read-only evidence and fixed pending-proposal endpoints
 persistent Secure MCP Tunnel daemon (repo-control-architect-tunnel.service)
-12 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
+14 bounded evidence MCP tools (intelligence also records operational use metrics) plus dispatch submission and readback
 Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue

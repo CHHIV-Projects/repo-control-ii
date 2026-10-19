@@ -39,6 +39,8 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "repo_documents",
         "repo_document",
         "repo_read_document",
+        "repo_history_search",
+        "repo_history_document",
         "repo_review",
         "repo_dispatches",
         "architect_submit_prompt_draft",
@@ -50,7 +52,7 @@ class TestArchitectMcpInventory(unittest.TestCase):
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}
         self.assertEqual(advertised_names, self.EXPECTED_TOOLS)
-        self.assertEqual(len(TOOL_INVENTORY), 16)
+        self.assertEqual(len(TOOL_INVENTORY), 18)
 
     def test_schemas_forbid_additional_properties(self):
         for tool in TOOL_INVENTORY:
@@ -144,6 +146,82 @@ class TestArchitectMcpValidation(unittest.TestCase):
                     "root": "/etc",
                 },
             )
+
+    def test_history_tools_have_fixed_endpoints_and_bounded_validation(self):
+        endpoint, query = validate_tool_call(
+            "repo_history_search",
+            {
+                "query": "prior decision",
+                "milestone_id": "M007.004",
+                "artifact_type": "milestone_closeout",
+                "category": "milestone",
+                "limit": 5,
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 2,
+            },
+        )
+        self.assertEqual(endpoint, "/api/architect/v1/history/search")
+        self.assertEqual(
+            query,
+            {
+                "query": "prior decision",
+                "milestone_id": "M007.004",
+                "artifact_type": "milestone_closeout",
+                "category": "milestone",
+                "limit": "5",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": "2",
+            },
+        )
+        endpoint, query = validate_tool_call(
+            "repo_history_document",
+            {
+                "path": "docs/history/context/old.md",
+                "expected_repository_key": "vocab-app",
+                "expected_generation": 1,
+            },
+        )
+        self.assertEqual(endpoint, "/api/architect/v1/history/document")
+        self.assertEqual(
+            query,
+            {
+                "path": "docs/history/context/old.md",
+                "expected_repository_key": "vocab-app",
+                "expected_generation": "1",
+            },
+        )
+        invalid_calls = [
+            (
+                "repo_history_search",
+                {
+                    "query": "history",
+                    "expected_repository_key": "first",
+                    "expected_generation": 0,
+                    "limit": 21,
+                },
+            ),
+            (
+                "repo_history_search",
+                {
+                    "expected_repository_key": "first",
+                    "expected_generation": 0,
+                    "artifact_type": [],
+                },
+            ),
+            (
+                "repo_history_document",
+                {
+                    "path": "../escape.md",
+                    "expected_repository_key": "first",
+                    "expected_generation": 0,
+                    "root": "/tmp",
+                },
+            ),
+        ]
+        for tool, arguments in invalid_calls:
+            with self.subTest(tool=tool, arguments=arguments):
+                with self.assertRaises(AdapterValidationError):
+                    validate_tool_call(tool, arguments)
 
     def test_precondition_arguments_valid(self):
         path, query = validate_tool_call(
@@ -249,7 +327,7 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         resp = handle_rpc_request(req, "http://127.0.0.1:8765")
         self.assertEqual(resp["id"], 2)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 16)
+        self.assertEqual(len(tools), 18)
 
     def test_submission_tools_are_fixed_and_typed(self):
         path, payload = validate_submission_call(

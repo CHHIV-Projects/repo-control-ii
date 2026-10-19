@@ -283,6 +283,45 @@ tracking status is not collected. This is not directory browsing or search,
 and paths under historical roots (`history`, `milestones`, `archive`,
 `archives`, or `historical`) are reserved for M007.005.
 
+### Architect reads of historical project evidence
+
+Historical planning evidence uses a separate two-step interface; it does not
+extend the current-document reader:
+
+- MCP `repo_history_search` / API `GET /api/architect/v1/history/search`
+  returns bounded metadata for prior canonical milestone prompts, workflow
+  sidecars, and closeouts under the selected repository's configured
+  milestone root, plus supported text artifacts under `docs/history/`.
+- MCP `repo_history_document` / API
+  `GET /api/architect/v1/history/document` reads one explicitly selected
+  historical path returned by discovery.
+
+Both tools require `expected_repository_key` and `expected_generation`.
+Search supports an optional lexical `query` (all terms must match),
+`milestone_id`, `artifact_type`, `category` (`milestone` or `archive`), and
+`limit` (1–20). Without a query, request a narrow inventory using a milestone
+ID or both category and artifact type. The fixed search policy considers at most
+2,000 candidate files and directories, reads at most 300 text files and
+16,000,000 bytes, returns at most 20 results, and caps each response at
+128,000 bytes. Results never include document content;
+they include the exact path, type, size, category, milestone ID when
+derivable, match counts, and explicit returned/total/omitted and bounded-scan
+metadata. Ordering is deterministic: exact path match, exact milestone-ID
+match, descending lexical occurrence count, then path.
+
+The current selected milestone's artifacts are not returned as historical
+results. A search is permitted even when no milestone is selected. Historical
+reads use the current working tree, allow only repository-contained regular
+Markdown/text/reStructuredText files in the configured milestone root or the
+fixed `docs/history/` convention, reject symlinks and unsafe paths, and return
+at most 128,000 UTF-8 bytes. Source files above 5,000,000 bytes are rejected.
+Returned content includes original size, returned byte/character counts, and
+truncation metadata. The tools label all results as `historical_evidence` and
+not current authority. Current Product Owner decisions/approved dispatches,
+active lifecycle/prompt, and current governing documents remain authoritative.
+They do not inspect Git history, search source code, browse arbitrary
+directories, or access external/network resources.
+
 Generic bootstrap, workflow core, and Skill sources are maintained in the
 versioned [`shared/procedure`](../../shared/procedure/) bundle. Managed
 repositories contain a generated `.github/copilot-instructions.md`, physical

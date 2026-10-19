@@ -577,6 +577,10 @@ def create_web_app(
         }
         if resource == "repository_document":
             allowed_parameters.add("path")
+        elif resource == "history_search":
+            allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit"})
+        elif resource == "history_document":
+            allowed_parameters.add("path")
         else:
             allowed_parameters.add("expected_milestone_id")
         unknown_parameters = set(request.args) - allowed_parameters
@@ -592,9 +596,45 @@ def create_web_app(
             expected_milestone_id = architect_query_value("expected_milestone_id", maximum_length=32)
             document_path = (
                 architect_query_value("path", maximum_length=512)
-                if resource == "repository_document"
+                if resource in {"repository_document", "history_document"}
                 else None
             )
+            history_query = (
+                architect_query_value("query", maximum_length=256)
+                if resource == "history_search"
+                else None
+            )
+            history_milestone_id = (
+                architect_query_value("milestone_id", maximum_length=32)
+                if resource == "history_search"
+                else None
+            )
+            history_artifact_type = (
+                architect_query_value("artifact_type", maximum_length=32)
+                if resource == "history_search"
+                else None
+            )
+            history_category = (
+                architect_query_value("category", maximum_length=16)
+                if resource == "history_search"
+                else None
+            )
+            history_limit_text = (
+                architect_query_value("limit", maximum_length=3)
+                if resource == "history_search"
+                else None
+            )
+            if history_limit_text is None:
+                history_limit = None
+            else:
+                try:
+                    history_limit = int(history_limit_text)
+                except ValueError as exc:
+                    raise ArchitectContractError(
+                        "invalid_history_limit",
+                        "Historical result limit must be an integer.",
+                        400,
+                    ) from exc
             if expected_generation_text is not None:
                 try:
                     expected_generation = int(expected_generation_text)
@@ -631,6 +671,11 @@ def create_web_app(
                     resource=resource,
                     role=role,
                     document_path=document_path,
+                    history_query=history_query,
+                    history_milestone_id=history_milestone_id,
+                    history_artifact_type=history_artifact_type,
+                    history_category=history_category,
+                    history_limit=history_limit,
                     expected_repository_key=expected_repository_key,
                     expected_generation=expected_generation,
                     expected_milestone_id=expected_milestone_id,
@@ -694,6 +739,14 @@ def create_web_app(
     @app.get("/api/architect/v1/repository-document")
     def architect_repository_document():
         return architect_endpoint("repository_document")
+
+    @app.get("/api/architect/v1/history/search")
+    def architect_history_search():
+        return architect_endpoint("history_search")
+
+    @app.get("/api/architect/v1/history/document")
+    def architect_history_document():
+        return architect_endpoint("history_document")
 
     @app.get("/api/architect/v1/review")
     def architect_review():

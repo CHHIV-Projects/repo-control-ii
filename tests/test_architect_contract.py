@@ -128,6 +128,425 @@ class ArchitectContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def _historical_fixtures(self) -> None:
+        milestone_root = self.first / "docs/milestones"
+        milestone_root.mkdir(parents=True, exist_ok=True)
+        slug = "prior_searchable_decision"
+        for suffix, body in (
+            ("prompt", "# Prior Prompt\n\nlegacy_signal search phrase\n"),
+            ("workflow", "# Prior Workflow\n\nworkflow audit history\n"),
+            ("closeout", "# Prior Closeout\n\nlegacy_signal accepted result\n"),
+        ):
+            (milestone_root / f"M003.003_{slug}_{suffix}.md").write_text(
+                body,
+                encoding="utf-8",
+            )
+        history_context = self.first / "docs/history/context"
+        history_context.mkdir(parents=True)
+        (history_context / "project_context_v1.md").write_text(
+            "# Archived Context\n\nlegacy_signal archived context evidence\n",
+            encoding="utf-8",
+        )
+        history_milestones = self.first / "docs/history/milestones"
+        history_milestones.mkdir(parents=True)
+        (history_milestones / "002.1_prior_design_closeout.md").write_text(
+            "# Archived Planning Closeout\n\nrejected_design archive evidence\n",
+            encoding="utf-8",
+        )
+
+    def test_historical_search_is_bounded_deterministic_and_excludes_active_milestone(self) -> None:
+        self._historical_fixtures()
+        path = "/api/architect/v1/history/search"
+        query = {
+            "query": "legacy_signal",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "2",
+        }
+        first = self.client.get(path, query_string=query)
+        second = self.client.get(path, query_string=query)
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(first.get_json(), second.get_json())
+        data = first.get_json()["data"]
+        self.assertEqual(data["total_count"], 3)
+        self.assertEqual(data["returned_count"], 2)
+        self.assertEqual(data["omitted_count"], 1)
+        self.assertTrue(data["truncated"])
+        self.assertTrue(data["total_count_complete"])
+        self.assertEqual(
+            [item["path"] for item in data["results"]],
+            [
+                "docs/history/context/project_context_v1.md",
+                "docs/milestones/M003.003_prior_searchable_decision_closeout.md",
+            ],
+        )
+        for item in data["results"]:
+            self.assertEqual(item["repository_key"], "first")
+            self.assertEqual(item["repository_id"], make_repository_id(self.first))
+            self.assertEqual(item["source_type"], "historical_evidence")
+            self.assertEqual(item["authority_classification"], "historical_evidence")
+            self.assertIn("not current governing or lifecycle authority", item["authority_note"])
+            self.assertFalse(item["is_current_authority"])
+            self.assertEqual(item["working_tree_source"], "current_working_tree")
+            self.assertGreater(item["file_size_bytes"], 0)
+            self.assertNotIn("content", item)
+            self.assertIn("match_metadata", item)
+
+        selected_milestone = self.client.get(
+            path,
+            query_string={
+                "milestone_id": MILESTONE_ID,
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(selected_milestone.status_code, 200)
+        self.assertEqual(selected_milestone.get_json()["data"]["total_count"], 0)
+
+        no_query_inventory = self.client.get(
+            path,
+            query_string={
+                "category": "milestone",
+                "artifact_type": "milestone_prompt",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(no_query_inventory.status_code, 200, no_query_inventory.get_json())
+        inventory_paths = [item["path"] for item in no_query_inventory.get_json()["data"]["results"]]
+        self.assertEqual(inventory_paths, ["docs/milestones/M003.003_prior_searchable_decision_prompt.md"])
+
+        workflow_filter = self.client.get(
+            path,
+            query_string={
+                "milestone_id": "M003.003",
+                "artifact_type": "milestone_workflow",
+                "category": "milestone",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(workflow_filter.status_code, 200, workflow_filter.get_json())
+        self.assertEqual(
+            [item["path"] for item in workflow_filter.get_json()["data"]["results"]],
+            ["docs/milestones/M003.003_prior_searchable_decision_workflow.md"],
+        )
+
+        zero_match = self.client.get(
+            path,
+            query_string={
+                "query": "no_such_historical_marker",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(zero_match.status_code, 200)
+        self.assertEqual(zero_match.get_json()["data"]["total_count"], 0)
+        self.assertEqual(zero_match.get_json()["data"]["returned_count"], 0)
+
+        with patch("repoctl.web.architect_contract.MAX_HISTORY_SEARCH_FILES", 1):
+            bounded_scan = self.client.get(path, query_string=query)
+        self.assertEqual(bounded_scan.status_code, 200, bounded_scan.get_json())
+        self.assertTrue(bounded_scan.get_json()["data"]["limited"])
+        self.assertFalse(bounded_scan.get_json()["data"]["total_count_complete"])
+        self.assertEqual(bounded_scan.get_json()["data"]["files_scanned"], 1)
+
+        with patch("repoctl.web.architect_contract.MAX_HISTORY_CANDIDATES", 2):
+            bounded_candidates = self.client.get(path, query_string=query)
+        self.assertEqual(bounded_candidates.status_code, 200, bounded_candidates.get_json())
+        self.assertTrue(bounded_candidates.get_json()["data"]["limited"])
+        self.assertFalse(bounded_candidates.get_json()["data"]["total_count_complete"])
+
+        broad_inventory = self.client.get(
+            path,
+            query_string={
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(broad_inventory.status_code, 400)
+        self.assertEqual(
+            broad_inventory.get_json()["error"]["code"],
+            "historical_inventory_too_broad",
+        )
+
+        archive_inventory = self.client.get(
+            path,
+            query_string={
+                "milestone_id": "002.1",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(archive_inventory.status_code, 200)
+        result = archive_inventory.get_json()["data"]["results"][0]
+        self.assertEqual(result["path"], "docs/history/milestones/002.1_prior_design_closeout.md")
+        self.assertEqual(result["artifact_type"], "milestone_closeout")
+
+        repo_document = self.client.get(
+            "/api/architect/v1/repository-document",
+            query_string={
+                "path": "docs/history/context/project_context_v1.md",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(repo_document.status_code, 403)
+        self.assertEqual(
+            repo_document.get_json()["error"]["code"],
+            "historical_document_not_supported",
+        )
+
+    def test_historical_document_read_policy_and_provenance(self) -> None:
+        self._historical_fixtures()
+        path = "/api/architect/v1/history/document"
+        valid_args = {
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+        }
+        for relative_path, expected_type in (
+            (
+                "docs/milestones/M003.003_prior_searchable_decision_prompt.md",
+                "milestone_prompt",
+            ),
+            (
+                "docs/milestones/M003.003_prior_searchable_decision_closeout.md",
+                "milestone_closeout",
+            ),
+            ("docs/history/context/project_context_v1.md", "archived_context"),
+        ):
+            response = self.client.get(
+                path,
+                query_string={**valid_args, "path": relative_path},
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            data = response.get_json()["data"]
+            self.assertEqual(data["path"], relative_path)
+            self.assertEqual(data["artifact_type"], expected_type)
+            self.assertEqual(data["source_type"], "historical_evidence")
+            self.assertEqual(data["repository_key"], "first")
+            self.assertEqual(data["repository_id"], make_repository_id(self.first))
+            self.assertEqual(data["authority_classification"], "historical_evidence")
+            self.assertIn("not current governing or lifecycle authority", data["authority_note"])
+            self.assertFalse(data["is_current_authority"])
+            self.assertEqual(data["working_tree_source"], "current_working_tree")
+            self.assertEqual(data["file_size_bytes"], data["bytes_returned"])
+            self.assertFalse(data["truncated"])
+            self.assertTrue(data["content"])
+
+        invalid_cases = [
+            ("../README.md", "invalid_history_path", 400),
+            ("/etc/passwd", "invalid_history_path", 400),
+            ("src/secret.md", "historical_path_not_allowed", 403),
+            ("docs/history/context/unsupported.pdf", "unsupported_historical_document_type", 415),
+            (
+                "docs/milestones/M003.004_architect_read_only_repo_control_contract_prompt.md",
+                "current_artifact_not_historical",
+                409,
+            ),
+            ("docs/history/context/missing.md", "historical_artifact_missing", 404),
+        ]
+        for relative_path, code, status in invalid_cases:
+            with self.subTest(path=relative_path):
+                response = self.client.get(path, query_string={**valid_args, "path": relative_path})
+                self.assertEqual(response.status_code, status, response.get_json())
+                self.assertEqual(response.get_json()["error"]["code"], code)
+
+        secret = self.first / "docs/history/context/secrets/notes.md"
+        secret.parent.mkdir()
+        secret.write_text("not an allowed document\n", encoding="utf-8")
+        denied_secret = self.client.get(
+            path,
+            query_string={**valid_args, "path": "docs/history/context/secrets/notes.md"},
+        )
+        self.assertEqual(denied_secret.status_code, 403)
+        self.assertEqual(denied_secret.get_json()["error"]["code"], "historical_path_not_allowed")
+
+        symlink = self.first / "docs/history/context/symlink.md"
+        symlink.symlink_to(self.second / "docs/context/project_context.md")
+        denied_symlink = self.client.get(path, query_string={**valid_args, "path": "docs/history/context/symlink.md"})
+        self.assertEqual(denied_symlink.status_code, 422)
+        self.assertEqual(denied_symlink.get_json()["error"]["code"], "unsafe_historical_path")
+
+        invalid_encoding = self.first / "docs/history/context/invalid.md"
+        invalid_encoding.write_bytes(b"\xff\xfe")
+        denied_encoding = self.client.get(path, query_string={**valid_args, "path": "docs/history/context/invalid.md"})
+        self.assertEqual(denied_encoding.status_code, 422)
+        self.assertEqual(denied_encoding.get_json()["error"]["code"], "invalid_historical_encoding")
+
+        oversized = self.first / "docs/history/context/oversized.md"
+        oversized.write_bytes(b"a" * 128_001)
+        truncated = self.client.get(path, query_string={**valid_args, "path": "docs/history/context/oversized.md"})
+        self.assertEqual(truncated.status_code, 200, truncated.get_json())
+        self.assertTrue(truncated.get_json()["data"]["truncated"])
+        self.assertEqual(truncated.get_json()["data"]["file_size_bytes"], 128_001)
+        self.assertEqual(truncated.get_json()["data"]["bytes_returned"], 128_000)
+        too_large = self.first / "docs/history/context/too-large.md"
+        with too_large.open("wb") as stream:
+            stream.truncate(5_000_001)
+        rejected_size = self.client.get(path, query_string={**valid_args, "path": "docs/history/context/too-large.md"})
+        self.assertEqual(rejected_size.status_code, 413)
+        self.assertEqual(rejected_size.get_json()["error"]["code"], "historical_artifact_oversized")
+
+        directory = self.first / "docs/history/context/directory.md"
+        directory.mkdir()
+        rejected_directory = self.client.get(path, query_string={**valid_args, "path": "docs/history/context/directory.md"})
+        self.assertEqual(rejected_directory.status_code, 422)
+        self.assertEqual(rejected_directory.get_json()["error"]["code"], "unsafe_historical_path")
+
+    def test_history_search_and_read_enforce_repository_preconditions(self) -> None:
+        self._historical_fixtures()
+        search = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "expected_repository_key": "second",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(search.status_code, 409)
+        self.assertEqual(search.get_json()["error"]["code"], "stale_repository_selection")
+
+        stale = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "expected_repository_key": "first",
+                "expected_generation": "1",
+            },
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"]["code"], "stale_repository_generation")
+
+        invalid_query = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "!!!",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(invalid_query.status_code, 400)
+        self.assertEqual(invalid_query.get_json()["error"]["code"], "invalid_history_query")
+
+        invalid_type = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "artifact_type": "source_code",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(invalid_type.status_code, 400)
+        self.assertEqual(
+            invalid_type.get_json()["error"]["code"],
+            "unsupported_historical_artifact_type",
+        )
+
+        invalid_limit = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "limit": "21",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(invalid_limit.status_code, 400)
+        self.assertEqual(invalid_limit.get_json()["error"]["code"], "invalid_history_limit")
+
+    def test_history_is_available_without_selection_and_without_archive_root(self) -> None:
+        self._historical_fixtures()
+        selection = self.state_root / make_repository_id(self.first) / "milestones" / "selection.json"
+        selection.unlink()
+        no_selection = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(no_selection.status_code, 200, no_selection.get_json())
+        self.assertGreater(no_selection.get_json()["data"]["total_count"], 0)
+
+        second_registry_root = self.root / "second-registry"
+        second_registry_root.mkdir()
+        second_registry = _registry(
+            second_registry_root,
+            [("second", "Second Repository", self.second)],
+            "second",
+        )
+        second_client = create_web_app(
+            repository_registry_path=second_registry,
+            state_root=self.state_root,
+        ).test_client()
+        no_archive = second_client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "category": "archive",
+                "artifact_type": "archived_context",
+                "expected_repository_key": "second",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(no_archive.status_code, 200, no_archive.get_json())
+        self.assertEqual(no_archive.get_json()["data"]["total_count"], 0)
+        isolated = second_client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "FIRST_ONLY",
+                "expected_repository_key": "second",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(isolated.status_code, 200, isolated.get_json())
+        self.assertEqual(isolated.get_json()["data"]["total_count"], 0)
+
+    def test_historical_reads_do_not_mutate_selection_or_git_state(self) -> None:
+        self._historical_fixtures()
+        selection = self.state_root / make_repository_id(self.first) / "milestones" / "selection.json"
+        selection_before = selection.read_bytes()
+        head_before = _git(self.first, "rev-parse", "HEAD")
+        status_before = _git(self.first, "status", "--porcelain")
+        query = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "legacy_signal",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(query.status_code, 200, query.get_json())
+        read = self.client.get(
+            "/api/architect/v1/history/document",
+            query_string={
+                "path": "docs/history/context/project_context_v1.md",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(read.status_code, 200, read.get_json())
+        self.assertEqual(selection.read_bytes(), selection_before)
+        self.assertEqual(_git(self.first, "rev-parse", "HEAD"), head_before)
+        self.assertEqual(_git(self.first, "status", "--porcelain"), status_before)
+
+    def test_history_discovery_rejects_symlinked_archive_root(self) -> None:
+        history_root = self.first / "docs/history"
+        history_root.parent.mkdir(parents=True, exist_ok=True)
+        history_root.symlink_to(self.second / "docs", target_is_directory=True)
+        response = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": "anything",
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.get_json()["error"]["code"], "unsafe_historical_root")
+
     def test_status_prompt_workflow_closeout_and_review_contract(self) -> None:
         _record(
             self.first,

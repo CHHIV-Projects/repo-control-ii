@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,23 @@ CONTRACT_VERSION = "1"
 EVENT_LIMIT = 30
 MAX_REPOSITORY_DOCUMENT_BYTES = MAX_SOURCE_BYTES
 MAX_REPOSITORY_DOCUMENT_FILE_BYTES = 5_000_000
+MAX_HISTORY_CANDIDATES = 2_000
+MAX_HISTORY_SEARCH_FILES = 300
+MAX_HISTORY_SEARCH_BYTES = 16_000_000
+MAX_HISTORY_RESULTS = 20
+DEFAULT_HISTORY_RESULTS = 10
+MAX_HISTORY_QUERY_LENGTH = 256
+MAX_HISTORY_DIRECTORIES = 2_000
+MAX_HISTORY_DIRECTORY_ENTRIES = 50_000
+MAX_HISTORY_RESPONSE_BYTES = 128_000
+_MILESTONE_HISTORY_FILENAME = re.compile(
+    r"^(M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})_"
+    r"[a-z0-9]+(?:_[a-z0-9]+)*_(prompt|workflow|closeout)\.md$"
+)
+_ARCHIVE_MILESTONE_ID = re.compile(
+    r"^((?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*))_"
+)
+_HISTORY_TOKEN = re.compile(r"[\w-]+", re.UNICODE)
 _DOCUMENT_EXTENSIONS = frozenset({".md", ".txt", ".rst"})
 _SENSITIVE_PATH_COMPONENTS = frozenset(
     {
@@ -313,7 +331,7 @@ def _read_content(repository: RepositoryEntry, relative_path: str, source_type: 
     }
 
 
-def _repository_document_path(value: str | None) -> str:
+def _repository_document_path(value: str | None, *, allow_historical: bool = False) -> str:
     if (
         not isinstance(value, str)
         or not value
@@ -338,7 +356,7 @@ def _repository_document_path(value: str | None) -> str:
             "The requested path is outside the documentation allowlist.",
             403,
         )
-    if lowered_parts & _HISTORICAL_PATH_COMPONENTS:
+    if not allow_historical and lowered_parts & _HISTORICAL_PATH_COMPONENTS:
         raise ArchitectContractError(
             "historical_document_not_supported",
             "Historical artifact discovery and retrieval are reserved for the separate historical capability.",
@@ -351,7 +369,7 @@ def _repository_document_path(value: str | None) -> str:
         or (parts[0] == ".agents" and len(parts) == 4 and parts[1] == "skills" and parts[3] == "SKILL.md")
         or value == "README.md"
     )
-    if not allowed_root:
+    if not allowed_root and not allow_historical:
         raise ArchitectContractError(
             "document_path_not_allowed",
             "The requested path is outside the documentation allowlist.",
@@ -366,7 +384,13 @@ def _repository_document_path(value: str | None) -> str:
     return value
 
 
-def _read_repository_document(repository: RepositoryEntry, relative_path: str) -> dict[str, Any]:
+def _read_repository_document(
+    repository: RepositoryEntry,
+    relative_path: str,
+    *,
+    allow_historical: bool = False,
+) -> dict[str, Any]:
+    relative_path = _repository_document_path(relative_path, allow_historical=allow_historical)
     parts = PurePosixPath(relative_path).parts
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
@@ -521,6 +545,568 @@ def _read_repository_document(repository: RepositoryEntry, relative_path: str) -
         for directory_fd in reversed(opened_directories):
             os.close(directory_fd)
         os.close(root_fd)
+
+
+def _historical_path_info(
+    repository: RepositoryEntry,
+    value: str,
+    selected_milestone_id: str | None,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 512
+        or "\\" in value
+        or "\x00" in value
+        or (len(value) > 1 and value[0].isalpha() and value[1] == ":")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ArchitectContractError(
+            "invalid_history_path",
+            "A valid repository-relative historical artifact path is required.",
+            400,
+        )
+    path = PurePosixPath(value)
+    parts = value.split("/")
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise ArchitectContractError(
+            "invalid_history_path",
+            "The historical artifact path must be repository-relative and traversal-free.",
+            400,
+        )
+    lowered_parts = {part.lower() for part in parts}
+    if lowered_parts & _SENSITIVE_PATH_COMPONENTS or any(
+        part.startswith(".env.") or part.endswith((".pem", ".key", ".p12", ".pfx"))
+        for part in lowered_parts
+    ):
+        raise ArchitectContractError(
+            "historical_path_not_allowed",
+            "The requested path is outside the historical documentation corpus.",
+            403,
+        )
+    if Path(parts[-1]).suffix.lower() not in _DOCUMENT_EXTENSIONS:
+        raise ArchitectContractError(
+            "unsupported_historical_document_type",
+            "Historical artifacts must be Markdown, plain text, or reStructuredText.",
+            415,
+        )
+
+    milestone_parts = PurePosixPath(repository.milestone_root).parts
+    if len(parts) > len(milestone_parts) and tuple(parts[: len(milestone_parts)]) == milestone_parts:
+        match = _MILESTONE_HISTORY_FILENAME.fullmatch(parts[-1])
+        if match is None:
+            raise ArchitectContractError(
+                "historical_path_not_allowed",
+                "Only canonical milestone prompts, workflow sidecars, and closeouts are historical artifacts.",
+                403,
+            )
+        milestone_id, suffix = match.groups()
+        return {
+            "path": value,
+            "artifact_type": f"milestone_{suffix}",
+            "category": "milestone",
+            "historical_root": repository.milestone_root,
+            "milestone_id": milestone_id,
+            "title": Path(parts[-1]).stem,
+            "is_current": milestone_id == selected_milestone_id,
+        }
+
+    if len(parts) < 3 or tuple(parts[:2]) != ("docs", "history"):
+        raise ArchitectContractError(
+            "historical_path_not_allowed",
+            "The requested path is outside the approved historical roots.",
+            403,
+        )
+    relative_archive_parts = parts[2:]
+    parent_parts = tuple(part.lower() for part in relative_archive_parts[:-1])
+    filename = parts[-1]
+    suffix = Path(filename).stem.rsplit("_", 1)[-1].lower()
+    if "context" in parent_parts:
+        artifact_type = "archived_context"
+    elif "planning" in parent_parts:
+        artifact_type = "archived_planning"
+    elif "milestones" in parent_parts and suffix in {"prompt", "workflow", "closeout"}:
+        artifact_type = f"milestone_{suffix}"
+    else:
+        artifact_type = "historical_document"
+    id_match = _ARCHIVE_MILESTONE_ID.match(filename)
+    return {
+        "path": value,
+        "artifact_type": artifact_type,
+        "category": "archive",
+        "historical_root": "docs/history",
+        "milestone_id": id_match.group(1) if id_match else None,
+        "title": Path(filename).stem,
+        "is_current": False,
+    }
+
+
+def _historical_roots(repository: RepositoryEntry) -> list[tuple[str, Path]]:
+    root = repository.path.resolve(strict=True)
+    configured_roots = [repository.milestone_root, "docs/history"]
+    roots: list[tuple[str, Path]] = []
+    seen: set[tuple[str, ...]] = set()
+    for relative_root in configured_roots:
+        parts = PurePosixPath(relative_root).parts
+        if not parts or PurePosixPath(relative_root).is_absolute() or "\\" in relative_root:
+            raise ArchitectContractError(
+                "unsafe_historical_root",
+                "A configured historical root is not a safe repository-relative path.",
+                422,
+            )
+        if parts in seen:
+            continue
+        seen.add(parts)
+        current = root
+        missing = False
+        try:
+            for part in parts:
+                current = current / part
+                try:
+                    current.lstat()
+                except FileNotFoundError:
+                    missing = True
+                    break
+                if current.is_symlink():
+                    raise ArchitectContractError(
+                        "unsafe_historical_root",
+                        "A historical root contains a symlink and cannot be traversed.",
+                        422,
+                    )
+            if missing:
+                continue
+            resolved = current.resolve(strict=True)
+            if not resolved.is_relative_to(root) or not resolved.is_dir():
+                raise ArchitectContractError(
+                    "unsafe_historical_root",
+                    "A historical root is not a directory contained in the selected repository.",
+                    422,
+                )
+            roots.append((PurePosixPath(*parts).as_posix(), resolved))
+        except OSError as exc:
+            raise ArchitectContractError(
+                "historical_discovery_failed",
+                "A historical root cannot be safely inspected.",
+                503,
+            ) from exc
+    return roots
+
+
+def _open_repository_directory(repository: RepositoryEntry, relative_path: str) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        root_fd = os.open(repository.path, flags)
+    except OSError as exc:
+        raise ArchitectContractError(
+            "historical_discovery_failed",
+            "The selected repository cannot be safely traversed.",
+            503,
+        ) from exc
+    current_fd = root_fd
+    try:
+        for part in PurePosixPath(relative_path).parts:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = next_fd
+        if current_fd == root_fd:
+            return os.dup(root_fd)
+        result_fd = current_fd
+        current_fd = root_fd
+        return result_fd
+    except OSError as exc:
+        if current_fd != root_fd:
+            os.close(current_fd)
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArchitectContractError(
+                "unsafe_historical_root",
+                "A historical directory contains a symlink or non-directory component.",
+                422,
+            ) from exc
+        raise ArchitectContractError(
+            "historical_discovery_failed",
+            "A historical directory cannot be safely opened.",
+            503,
+        ) from exc
+    finally:
+        os.close(root_fd)
+
+
+def _discover_historical_candidates(
+    repository: RepositoryEntry,
+    selected_milestone_id: str | None,
+) -> tuple[list[dict[str, Any]], bool, int]:
+    candidates: list[dict[str, Any]] = []
+    visited_directories = 0
+    visited_entries = 0
+    skipped_count = 0
+    limited = False
+    for root_relative, root_path in _historical_roots(repository):
+        pending = [root_relative]
+        while pending:
+            relative_directory = pending.pop()
+            visited_directories += 1
+            if visited_directories > MAX_HISTORY_DIRECTORIES:
+                return candidates, True, skipped_count
+            try:
+                directory_fd = _open_repository_directory(repository, relative_directory)
+            except OSError as exc:
+                raise ArchitectContractError(
+                    "historical_discovery_failed",
+                    "A historical directory cannot be safely inspected.",
+                    503,
+                ) from exc
+            try:
+                try:
+                    with os.scandir(os.dup(directory_fd)) as iterator:
+                        entries = []
+                        for entry in iterator:
+                            if visited_entries >= MAX_HISTORY_DIRECTORY_ENTRIES:
+                                limited = True
+                                break
+                            visited_entries += 1
+                            entries.append(entry)
+                except OSError as exc:
+                    raise ArchitectContractError(
+                        "historical_discovery_failed",
+                        "A historical directory cannot be safely inspected.",
+                        503,
+                    ) from exc
+            finally:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+            if limited and visited_entries >= MAX_HISTORY_DIRECTORY_ENTRIES:
+                candidates.sort(key=lambda item: item["path"])
+                return candidates, True, skipped_count
+            entries.sort(key=lambda entry: os.fsencode(entry.name))
+            child_directories: list[str] = []
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        skipped_count += 1
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        child_directories.append(
+                            PurePosixPath(relative_directory, entry.name).as_posix()
+                        )
+                        continue
+                    file_stat = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        skipped_count += 1
+                        continue
+                    relative_path = PurePosixPath(relative_directory, entry.name).as_posix()
+                    if Path(entry.name).suffix.lower() not in _DOCUMENT_EXTENSIONS:
+                        continue
+                    info = _historical_path_info(repository, relative_path, selected_milestone_id)
+                except ArchitectContractError as exc:
+                    if exc.code in {"historical_path_not_allowed", "unsupported_historical_document_type"}:
+                        continue
+                    raise
+                except OSError:
+                    skipped_count += 1
+                    continue
+                if info["is_current"]:
+                    continue
+                candidates.append(
+                    {
+                        **info,
+                        "source_type": "historical_evidence",
+                        "repository_key": repository.key,
+                        "repository_id": repository.repository_id,
+                        "file_size_bytes": file_stat.st_size,
+                        "authority_classification": "historical_evidence",
+                        "authority_note": (
+                            "Historical planning evidence only; not current governing or lifecycle authority."
+                        ),
+                        "is_current_authority": False,
+                        "working_tree_source": "current_working_tree",
+                    }
+                )
+                if len(candidates) > MAX_HISTORY_CANDIDATES:
+                    candidates.pop()
+                    limited = True
+                    candidates.sort(key=lambda item: item["path"])
+                    return candidates, limited, skipped_count
+            pending.extend(reversed(sorted(child_directories)))
+    candidates.sort(key=lambda item: item["path"])
+    return candidates, limited, skipped_count
+
+
+def _history_query_tokens(query: str) -> list[str]:
+    tokens = _HISTORY_TOKEN.findall(query.casefold())
+    if not tokens:
+        raise ArchitectContractError(
+            "invalid_history_query",
+            "A historical search query must contain at least one letter or number.",
+            400,
+        )
+    return tokens
+
+
+def _search_historical_candidates(
+    repository: RepositoryEntry,
+    candidates: list[dict[str, Any]],
+    *,
+    query: str | None,
+    milestone_id: str | None,
+    artifact_type: str | None,
+    category: str | None,
+    limit: int,
+    scan_limited: bool,
+    skipped_count: int,
+) -> dict[str, Any]:
+    filtered = [
+        item
+        for item in candidates
+        if (milestone_id is None or item["milestone_id"] == milestone_id)
+        and (artifact_type is None or item["artifact_type"] == artifact_type)
+        and (category is None or item["category"] == category)
+    ]
+    tokens = _history_query_tokens(query) if query is not None else []
+    matches: list[dict[str, Any]] = []
+    files_scanned = 0
+    bytes_scanned = 0
+    limited = scan_limited
+    if query is None:
+        matches = filtered
+    else:
+        for item in filtered:
+            if files_scanned >= MAX_HISTORY_SEARCH_FILES:
+                limited = True
+                break
+            expected_bytes = min(item["file_size_bytes"], MAX_REPOSITORY_DOCUMENT_BYTES)
+            if expected_bytes > MAX_HISTORY_SEARCH_BYTES - bytes_scanned:
+                limited = True
+                break
+            try:
+                document = _read_repository_document(
+                    repository,
+                    item["path"],
+                    allow_historical=True,
+                )
+            except ArchitectContractError as exc:
+                if exc.code in {
+                    "repository_document_oversized",
+                    "invalid_document_encoding",
+                    "unsafe_document_content",
+                }:
+                    skipped_count += 1
+                    limited = True
+                    continue
+                raise
+            files_scanned += 1
+            bytes_scanned += document["bytes_returned"]
+            content = document["content"].casefold()
+            searchable = f"{item['path']} {item['title']} {item['milestone_id'] or ''} {content}".casefold()
+            if not all(token in searchable for token in tokens):
+                continue
+            occurrences = sum(searchable.count(token) for token in tokens)
+            path_match = query.casefold() in item["path"].casefold()
+            milestone_match = item["milestone_id"] is not None and query.casefold() == item["milestone_id"].casefold()
+            matches.append(
+                {
+                    **item,
+                    "match_metadata": {
+                        "matched_terms": tokens,
+                        "occurrence_count": occurrences,
+                        "path_match": path_match,
+                    },
+                    "_ranking": (
+                        -int(path_match),
+                        -int(milestone_match),
+                        -occurrences,
+                        item["path"],
+                    ),
+                }
+            )
+            if document["truncated"]:
+                limited = True
+        matches.sort(key=lambda item: item["_ranking"])
+        for item in matches:
+            item.pop("_ranking", None)
+    total_count = len(matches)
+    results = matches[:limit]
+    response = {
+        "query": query,
+        "filters": {
+            "milestone_id": milestone_id,
+            "artifact_type": artifact_type,
+            "category": category,
+        },
+        "results": results,
+        "returned_count": len(results),
+        "total_count": total_count,
+        "omitted_count": max(0, total_count - len(results)),
+        "total_count_complete": not limited,
+        "limited": limited,
+        "truncated": limited or total_count > len(results),
+        "candidates_considered": len(filtered),
+        "files_scanned": files_scanned,
+        "bytes_scanned": bytes_scanned,
+        "skipped_count": skipped_count,
+    }
+    while results and response_size_bytes(response) > MAX_HISTORY_RESPONSE_BYTES:
+        results.pop()
+        response["returned_count"] = len(results)
+        response["omitted_count"] = total_count - len(results)
+        response["truncated"] = True
+    if response_size_bytes(response) > MAX_HISTORY_RESPONSE_BYTES:
+        raise ArchitectContractError(
+            "historical_response_too_large",
+            "The bounded historical search response exceeds its response limit.",
+            413,
+        )
+    return response
+
+
+def _history_filters(
+    query: str | None,
+    milestone_id: str | None,
+    artifact_type: str | None,
+    category: str | None,
+    limit: int | None,
+) -> int:
+    if query is not None and len(query) > MAX_HISTORY_QUERY_LENGTH:
+        raise ArchitectContractError(
+            "invalid_history_query",
+            f"Historical search query must be at most {MAX_HISTORY_QUERY_LENGTH} characters.",
+            400,
+        )
+    if query is not None:
+        _history_query_tokens(query)
+    if milestone_id is not None and not re.fullmatch(
+        r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)",
+        milestone_id,
+    ):
+        raise ArchitectContractError(
+            "invalid_milestone_filter",
+            "The historical milestone filter is not a supported milestone identifier.",
+            400,
+        )
+    valid_types = {
+        "milestone_prompt",
+        "milestone_workflow",
+        "milestone_closeout",
+        "archived_context",
+        "archived_planning",
+        "historical_document",
+    }
+    if artifact_type is not None and artifact_type not in valid_types:
+        raise ArchitectContractError(
+            "unsupported_historical_artifact_type",
+            "The requested historical artifact type is not supported.",
+            400,
+        )
+    if category is not None and category not in {"milestone", "archive"}:
+        raise ArchitectContractError(
+            "unsupported_historical_category",
+            "The requested historical category must be 'milestone' or 'archive'.",
+            400,
+        )
+    result_limit = DEFAULT_HISTORY_RESULTS if limit is None else limit
+    if not isinstance(result_limit, int) or isinstance(result_limit, bool) or not 1 <= result_limit <= MAX_HISTORY_RESULTS:
+        raise ArchitectContractError(
+            "invalid_history_limit",
+            f"Historical result limit must be between 1 and {MAX_HISTORY_RESULTS}.",
+            400,
+        )
+    if query is None and not (
+        milestone_id is not None or (category is not None and artifact_type is not None)
+    ):
+        raise ArchitectContractError(
+            "historical_inventory_too_broad",
+            "An inventory request requires a milestone ID or both category and artifact type filters.",
+            400,
+        )
+    return result_limit
+
+
+def _search_historical(
+    repository: RepositoryEntry,
+    state_root: str | Path,
+    *,
+    query: str | None,
+    milestone_id: str | None,
+    artifact_type: str | None,
+    category: str | None,
+    limit: int | None,
+) -> dict[str, Any]:
+    result_limit = _history_filters(query, milestone_id, artifact_type, category, limit)
+    selection = _get_selection(repository, state_root)
+    selected = selection.get("selection") if selection["status"] == "selected" else None
+    selected_id = selected.get("milestone_id") if selected else None
+    candidates, limited, skipped_count = _discover_historical_candidates(repository, selected_id)
+    return _search_historical_candidates(
+        repository,
+        candidates,
+        query=query,
+        milestone_id=milestone_id,
+        artifact_type=artifact_type,
+        category=category,
+        limit=result_limit,
+        scan_limited=limited,
+        skipped_count=skipped_count,
+    )
+
+
+def _read_historical_document(
+    repository: RepositoryEntry,
+    state_root: str | Path,
+    relative_path: str | None,
+) -> dict[str, Any]:
+    selection = _get_selection(repository, state_root)
+    selected = selection.get("selection") if selection["status"] == "selected" else None
+    selected_id = selected.get("milestone_id") if selected else None
+    if not isinstance(relative_path, str):
+        raise ArchitectContractError(
+            "invalid_history_path",
+            "A repository-relative historical artifact path is required.",
+            400,
+        )
+    info = _historical_path_info(repository, relative_path, selected_id)
+    if info["is_current"]:
+        raise ArchitectContractError(
+            "current_artifact_not_historical",
+            "Artifacts belonging to the selected milestone must be read through current milestone tools.",
+            409,
+        )
+    try:
+        document = _read_repository_document(repository, relative_path, allow_historical=True)
+    except ArchitectContractError as exc:
+        mapped_codes = {
+            "missing_repository_document": ("historical_artifact_missing", 404),
+            "unsafe_document_path": ("unsafe_historical_path", 422),
+            "repository_document_oversized": ("historical_artifact_oversized", 413),
+            "invalid_document_encoding": ("invalid_historical_encoding", 422),
+            "unsafe_document_content": ("unsafe_historical_content", 422),
+            "repository_document_changed": ("historical_artifact_changed", 409),
+            "repository_document_unreadable": ("historical_artifact_unreadable", 422),
+        }
+        if exc.code not in mapped_codes:
+            raise
+        code, status_code = mapped_codes[exc.code]
+        raise ArchitectContractError(code, str(exc), status_code) from exc
+    return {
+        "source_type": "historical_evidence",
+        "artifact_type": info["artifact_type"],
+        "category": info["category"],
+        "historical_root": info["historical_root"],
+        "milestone_id": info["milestone_id"],
+        "title": info["title"],
+        "path": document["path"],
+        "repository_key": repository.key,
+        "repository_id": repository.repository_id,
+        "file_size_bytes": document["file_size_bytes"],
+        "bytes_returned": document["bytes_returned"],
+        "character_count": document["character_count"],
+        "truncated": document["truncated"],
+        "working_tree_source": "current_working_tree",
+        "authority_classification": "historical_evidence",
+        "authority_note": "Historical planning evidence only; not current governing or lifecycle authority.",
+        "is_current_authority": False,
+        "observed_at": document["observed_at"],
+        "content": document["content"],
+    }
 
 
 def _git_view(repository: RepositoryEntry) -> dict[str, Any]:
@@ -714,15 +1300,20 @@ def build_architect_response(
     resource: str,
     role: str | None = None,
     document_path: str | None = None,
+    history_query: str | None = None,
+    history_milestone_id: str | None = None,
+    history_artifact_type: str | None = None,
+    history_category: str | None = None,
+    history_limit: int | None = None,
     expected_repository_key: str | None = None,
     expected_generation: int | None = None,
     expected_milestone_id: str | None = None,
 ) -> dict[str, Any]:
-    if resource == "repository_document":
+    if resource in {"repository_document", "history_search", "history_document"}:
         if not expected_repository_key or expected_generation is None:
             raise ArchitectContractError(
                 "invalid_precondition",
-                "Repository-document reads require expected_repository_key and expected_generation.",
+                "This repository-scoped read requires expected_repository_key and expected_generation.",
                 400,
             )
     if expected_repository_key is not None and expected_repository_key != repository.key:
@@ -739,7 +1330,7 @@ def build_architect_response(
         )
     if resource == "repository_document":
         document_path = _repository_document_path(document_path)
-    if resource == "repository_document":
+    if resource in {"repository_document", "history_search", "history_document"}:
         envelope = {
             "contract_version": CONTRACT_VERSION,
             "repository": {
@@ -750,7 +1341,7 @@ def build_architect_response(
                 "registry_generation": registry_generation,
             },
             "selection": {
-                "status": "not_required",
+                "status": "not_required" if resource == "repository_document" else "not_required_for_history",
                 "milestone_id": None,
                 "prompt_path": None,
             },
@@ -767,7 +1358,19 @@ def build_architect_response(
             409,
         )
 
-    if resource == "status":
+    if resource == "history_search":
+        envelope["data"] = _search_historical(
+            repository,
+            state_root,
+            query=history_query,
+            milestone_id=history_milestone_id,
+            artifact_type=history_artifact_type,
+            category=history_category,
+            limit=history_limit,
+        )
+    elif resource == "history_document":
+        envelope["data"] = _read_historical_document(repository, state_root, document_path)
+    elif resource == "status":
         data: dict[str, Any] = {
             "service": "repo-control",
             "status": "available",
