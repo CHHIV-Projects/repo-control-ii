@@ -203,6 +203,32 @@ The Coder should:
 - create or update the required closeout artifact;
 - stop at unresolved authority or architecture boundaries.
 
+### Shared procedure governance
+
+Generic Coder bootstrap, workflow-core, and Skill sources live in the
+versioned [`shared/procedure`](../../shared/procedure/) bundle. The bundle
+renders a host-recognized `.github/copilot-instructions.md`, repository-local
+copy of the concise workflow core, physical Skill copies, and a small SHA-256
+lock. Project/runtime/data/test constraints remain in the registry-mapped
+local Coder overlay; generic materialization never overwrites that overlay.
+
+`coder-procedure-status` reports deterministic version, hash, overlay, and
+path drift. `coder-procedure-preview` produces proposed file diffs without
+writing. There is no operational reconciliation command: any future
+managed-repository write interface must be explicitly Product-Owner-controlled,
+bound to the selected repository and reviewed preview, and must preserve
+ordinary Git review. Exact existing Skill copies may be adopted into the lock
+without rewriting their bytes; conflicting files are blocked. Fresh/resumed
+host consumption remains a separate acceptance requirement tracked by
+`WORKFLOW-005`. Overlay validation checks the declared marker and required
+section structurally; human review remains responsible for semantic conflicts
+between local rules and generic authority. The internal materializer replaces
+each file atomically but does not make the complete file set transactional. If
+an I/O failure leaves a partial result, stop, rerun status/preview, and have
+the Product Owner/operator restore or reconcile the generated files through
+ordinary reviewed Git changes before retrying; there is no automatic deletion
+or Git rollback.
+
 ## 4.4 Human-Readable Artifacts Remain Primary
 
 Normal project artifacts should remain understandable without specialized tooling.

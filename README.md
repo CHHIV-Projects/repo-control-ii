@@ -380,6 +380,8 @@ the configured root.
 |---|---|
 | `repoctl coder-context` | Retrieve authoritative active milestone prompt, lifecycle authorization, and standing document references |
 | `repoctl coder-status` | Quick read-only report of active milestone lifecycle, blockers, lock-ins, and event counts |
+| `repoctl coder-procedure-status [--repository <path>]` | Inspect the centrally governed procedure release, generated artifact hashes, and project-overlay contract for a managed repository |
+| `repoctl coder-procedure-preview [--repository <path>]` | Print the exact proposed bootstrap/Skill/lock diff without writing or deleting repository files |
 | `repoctl coder-question "<summary>" [--blocking] [--category ...]` | Record an implementation question or blocker. `--blocking` pauses implementation into `WAITING` |
 | `repoctl coder-bug "<summary>"` | Record discovery of a defect during implementation |
 | `repoctl coder-test "<summary>" --source "<cmd>" --result "<outcome>"` | Record test execution evidence (labeled as reported evidence) |
@@ -390,6 +392,19 @@ the configured root.
 `coder-context` and `coder-status` support `--format text` (default human-readable) and `--format json` (machine-readable structured payload for future Agent Skills).
 
 Optional `--repository <path>` can target any registered repository worktree (defaults to current working directory).
+
+Generic Coder procedure has one versioned, human-readable source in
+[`shared/procedure`](shared/procedure/). Managed worktrees receive a
+host-recognized `.github/copilot-instructions.md`, a generic workflow core at
+`.repo-control/workflow_core.md`, physical copies of the three accepted
+`.agents/skills/` Skills, and
+`.repo-control/shared-procedure.lock.toml` with release and SHA-256 data.
+Repository-specific constraints remain in the local `coding_agent_rules.md`
+overlay and are not overwritten by shared materialization. Status and preview
+are read-only. Preview is not an approval or write operation; cross-repository
+materialization remains subject to explicit Product Owner review and a
+separately controlled interface. Host-level fresh/resumed-session consumption
+must still be verified manually; file presence alone does not prove invocation.
 
 ### Enforced Invariants
 

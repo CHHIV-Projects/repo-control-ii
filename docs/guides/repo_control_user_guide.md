@@ -250,8 +250,9 @@ The five canonical documents serve different purposes:
   integrations, and architectural invariants.
 - [Project workflow](../context/project_workflow.md): roles, lifecycle, review,
   and Git authority.
-- [Coding Agent Rules](../context/coding_agent_rules.md): always-loaded Coder
-  authority and safe-start requirements.
+- [Coding Agent Rules](../context/coding_agent_rules.md): repository-specific
+  Coder overlay; the generated host bootstrap carries generic Repo Control
+  safe-start procedure.
 - [Canonical parking lot](../context/canonical_parking_lot.md): unresolved
   future/deferred work, not current implementation scope.
 
@@ -262,6 +263,34 @@ are [implementation](../../.agents/skills/repo-control-implementation/SKILL.md),
 [blocker/bug escalation](../../.agents/skills/repo-control-blocker-bug-escalation/SKILL.md),
 and [validation/closeout](../../.agents/skills/repo-control-validation-closeout/SKILL.md).
 Explicitly load the relevant Skill; it supplies procedure, never permission.
+
+Generic bootstrap, workflow core, and Skill sources are maintained in the
+versioned [`shared/procedure`](../../shared/procedure/) bundle. Managed
+repositories contain a generated `.github/copilot-instructions.md`, physical
+`.repo-control/workflow_core.md`, `.agents/skills/` copies, and
+`.repo-control/shared-procedure.lock.toml`.
+Project-specific constraints remain in the local Coder overlay and are never
+overwritten by generic materialization.
+
+Use these read-only commands to inspect a registered repository:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-status
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-preview --repository /path/to/managed/worktree
+```
+
+Status reports release/hash/overlay drift. Preview shows proposed diffs and
+blocked conflicts; it does not write or delete files. The current implementation
+has no operational materialization command. Future repository writes must be
+explicitly Product-Owner-controlled and reviewed first. A `CURRENT` file status
+does not prove that a fresh/resumed coding host consumes the bootstrap or
+invokes Skills; that remains a separate manual acceptance check tracked by
+`WORKFLOW-005`.
+
+Status values are `CURRENT`, `MISSING`, `STALE_VERSION`, `HASH_MISMATCH`,
+`OVERLAY_INVALID`, and `INCOMPATIBLE`. Overlay checks validate its marker and
+required section, not the meaning of its rules; reviewers must ensure that
+local content does not conflict with generic authority.
 
 ## Common recovery
 

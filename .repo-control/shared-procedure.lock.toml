@@ -1,0 +1,31 @@
+schema_version = 1
+release = "1.0.1"
+bundle_manifest_sha256 = "857d0b8988be0a20c2c4cca2f5d8e824e6d3a69f71a4b50ef8b229357c5b869f"
+overlay_schema_version = 1
+overlay_path = "docs/context/coding_agent_rules.md"
+host_entrypoint = ".github/copilot-instructions.md"
+
+[[files]]
+path = ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md"
+source = "skills/repo-control-blocker-bug-escalation/SKILL.md"
+sha256 = "af5e430e1987c1bc6e8b5215a14bfe5653f11b3b153e105e51bdfbefa544b064"
+
+[[files]]
+path = ".agents/skills/repo-control-implementation/SKILL.md"
+source = "skills/repo-control-implementation/SKILL.md"
+sha256 = "545f88556ad40248183f5bf7137ece7ea7421d91a66870dba01c1da7df4f55fe"
+
+[[files]]
+path = ".agents/skills/repo-control-validation-closeout/SKILL.md"
+source = "skills/repo-control-validation-closeout/SKILL.md"
+sha256 = "ab9dab0689106dab353a2abacde3bf8ed46beee02345043c67cd013066e5a9bc"
+
+[[files]]
+path = ".github/copilot-instructions.md"
+source = "bootstrap.md"
+sha256 = "c7b0056fd8ffb4d2aa9a8533c1210f2ccf2d4d145a3a178162446989036d88ed"
+
+[[files]]
+path = ".repo-control/workflow_core.md"
+source = "workflow_core.md"
+sha256 = "dfa178cfca65631ad743f92ef8bc2d8cc889adc891cafe8bb47bc7fb4637ab9f"

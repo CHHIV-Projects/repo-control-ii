@@ -104,6 +104,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    procedure_status_parser = subparsers.add_parser(
+        "coder-procedure-status", help="Inspect shared Coder procedure release and generated-file drift"
+    )
+    procedure_status_parser.add_argument("--repository", help="Path inside target managed Git repository")
+    procedure_status_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
+    )
+
+    procedure_preview_parser = subparsers.add_parser(
+        "coder-procedure-preview", help="Preview shared procedure reconciliation without writing repository files"
+    )
+    procedure_preview_parser.add_argument("--repository", help="Path inside target managed Git repository")
+    procedure_preview_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
+    )
+
     from .intelligence.service import DEFAULT_BOUNDS, OPERATIONS
     from .intelligence.measurements import RATINGS
     intelligence_parser = subparsers.add_parser(
@@ -593,6 +609,37 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(status_data, ensure_ascii=False, indent=2))
         else:
             print(format_coder_status_text(status_data))
+        return 0
+
+    if args.command in {"coder-procedure-status", "coder-procedure-preview"}:
+        from .procedure_governance import (
+            ProcedureGovernanceError,
+            format_procedure_preview_text,
+            format_procedure_status_text,
+            inspect_procedure,
+            load_bundle,
+            preview_reconciliation,
+        )
+        from .workflow.coder_interface import CoderInterfaceError, resolve_repository_entry
+
+        try:
+            entry = resolve_repository_entry(repository_path=args.repository)
+            bundle = load_bundle()
+            if args.command == "coder-procedure-status":
+                result = inspect_procedure(entry, bundle)
+                text = format_procedure_status_text(result)
+            else:
+                plan = preview_reconciliation(entry, bundle)
+                result = plan.as_dict(include_diffs=True)
+                text = format_procedure_preview_text(plan)
+        except (CoderInterfaceError, ProcedureGovernanceError, OSError, UnicodeError) as exc:
+            print(f"coder procedure command failed: {exc}", file=sys.stderr)
+            return 2
+
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(text)
         return 0
 
     if args.command == "coder-question":

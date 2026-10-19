@@ -10,6 +10,20 @@
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
 **Current workflow emphasis:** Use read-only Architect MCP evidence tools plus a separate bounded proposal channel requiring Product Owner approval before Coder consumption; maintain strict six-state lifecycle discipline and reconcile governing documents with the implemented system.
 
+## Shared procedure relationship
+
+The versioned generic Coder bootstrap, workflow core, and accepted Skills are
+maintained in [`shared/procedure`](../../shared/procedure/). The host entrypoint, local workflow-core copy, and local Skill copies are
+generated from that
+bundle and tracked with `.repo-control/shared-procedure.lock.toml`. This
+comprehensive workflow remains Repo Control II's project-specific operating
+and implementation document; it is not the canonical generic workflow source
+for other managed repositories.
+Use `coder-procedure-status` and `coder-procedure-preview` to inspect release
+drift and proposed outputs. These commands do not write managed repository
+files; any future operational reconciliation must be explicitly
+Product-Owner-controlled.
+
 ---
 
 # 1. Purpose

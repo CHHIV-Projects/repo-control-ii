@@ -32,7 +32,7 @@ Use this path when there is no existing project corpus that must be migrated.
 | 4. Create canonical structure | PO + Architect | Agree on the active milestone root `docs/milestones/` and governing-document content before product milestones begin. |
 | 5. Create governing documents | Architect + Coder; PO approves | Create `docs/context/project_context.md`, `docs/context/project_architecture.md`, `docs/context/project_workflow.md`, `docs/context/coding_agent_rules.md`, and `docs/context/canonical_parking_lot.md`. Keep each role distinct; do not fill them with unverified template claims. |
 | 6. Configure central registry | PO / service operator | Add a stable repository key to the service's central registry. Set its absolute worktree path, `milestone_root = "docs/milestones"`, and repository-relative mappings for the five governing-document roles. Follow the deployed service's configuration and restart/reload procedure. |
-| 7. Install accepted Skills | Coder; Architect verifies; PO approves | Copy the accepted instruction-only Repo Control Skills under `.agents/skills/`: `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`. Verify the intended Coder host can discover and explicitly load each applicable Skill. Skills provide procedure, not authority. |
+| 7. Materialize shared procedure | PO/Architect review; Coder supplies preview | Use the central versioned `shared/procedure/` bundle to render `.github/copilot-instructions.md`, `.repo-control/workflow_core.md`, the three local `.agents/skills/*/SKILL.md` copies, and `.repo-control/shared-procedure.lock.toml`. Review `coder-procedure-status` and the exact `coder-procedure-preview` before any materialization. Preserve local overlays; do not use symlinks or silently overwrite conflicts. |
 | 8. Verify repository identity end to end | PO + Architect + Coder | In a fresh or resumed Coder session, retrieve current context/status and verify repository path, selected prompt, lifecycle, applicable approved dispatches, and authorization without relying on prior chat history. Also verify that browser and Architect resolve the intended repository key/path and milestone root. |
 | 9. Build Repository Intelligence when useful | PO; Coder consumes | When code exists and structural evidence would help, deliberately approve a build/refresh. Confirm `CURRENT` before relying on it. The Coder uses targeted queries and rates material uses; graph evidence is not runtime proof. |
 | 10. Verify operations | PO + Architect + Coder | Review a real or isolated onboarding milestone through selection, authorized start, question/waiting behavior if exercised, closeout review, and Git Review. Keep test events in an appropriate test repository/milestone; do not fabricate product history. |
@@ -48,7 +48,10 @@ repositories; it cannot submit an arbitrary filesystem path.
 - [ ] Git remote and noninteractive service-account authentication work.
 - [ ] `docs/milestones/` is the configured active prompt root.
 - [ ] All five canonical documents exist and their registry mappings are correct.
-- [ ] The three accepted Skills are installed and host-visible.
+- [ ] The host bootstrap, three local Skills, and release/hash lock match the
+  canonical shared procedure bundle.
+- [ ] The local project overlay remains intact and cannot override generic
+  authority or Repo Control state.
 - [ ] Browser, Architect, and Coder agree on repository identity and selection.
 - [ ] Fresh and resumed Coder sessions confirm repository, selected milestone,
   lifecycle, prompt, applicable approved dispatches, and authorization using
@@ -71,14 +74,15 @@ milestone corpus. Reconnaissance comes before normalization or file movement.
 | 5. Normalize the five governing documents | Architect + Coder; PO approves | Establish the five canonical roles under `docs/context/`. Reconcile only current authority; do not convert historical milestone narratives into current rules. |
 | 6. Preserve milestone history | Coder under authorized scope; Architect reviews | Keep original prompts, closeouts, and workflow sidecars intact where practical. Separate legacy/historical corpus outside recursive active discovery (for example, `docs/history/milestones/`) so it cannot be mistaken for current prompts. Do not rewrite historical evidence just to normalize names. |
 | 7. Prepare a milestone-root cutover | Architect plans; PO operates | Prepare and inspect the new-root prompt/closeout/sidecar copies first. Keep old-root recovery copies while the new root is selected and verified. Avoid simultaneously exposing legacy artifacts to active discovery. |
-| 8. Install and verify Skills | Coder; Architect verifies | Install the accepted three Skills in `.agents/skills/` and explicitly test host discovery/loading. Remove no legacy instructions until their authority and use have been reconciled. |
-| 9. Configure the central registry | PO / service operator | Set the repository key, absolute worktree path, `docs/milestones/` (or an explicitly approved canonical root), and repository-relative mappings for the five documents. The Coder does not edit central Repo Control configuration. |
-| 10. Perform the controlled cutover | PO / service operator | Change the registry's active milestone root, reload/restart through the normal operator procedure, then reselect the repository. Verify the browser discovers the intended new-root prompts and no legacy candidates pollute discovery. |
-| 11. Verify identity in all clients | PO + Architect + Coder | Confirm browser, Architect, and Coder agree on key, path, prompt/root, governing documents, and lifecycle. In a fresh or resumed Coder session, verify current `coder-context` and `coder-status`, including applicable approved `INSTRUCTION`/`RESPONSE` dispatches and authorization. Packets and prior chat history are fallback transport, not current authority. |
-| 12. Verify Git and intelligence | PO + Coder | Verify noninteractive remote operations under the service account. If structural intelligence is required, PO approves a build and the Coder confirms `CURRENT` before use/rating. |
-| 13. Exercise lifecycle and review | PO + Architect + Coder | Validate selection, prompt approval/start, waiting/resume, closeout/review, and Git Review at the appropriate risk level. Use a dedicated test milestone/repository for scenarios that would otherwise create misleading product history. |
-| 14. Retire recovery copies last | PO; Architect confirms | Only after successful new-root selection and operation may the PO decide how to archive or retire old-root copies. Preserve history and a clear rollback path until then. |
-| 15. Close onboarding | PO | Record what was migrated, retained, deferred, and validated. Begin regular product work only after the PO accepts the integration. |
+| 8. Preview shared-procedure migration | Coder; Architect reviews; PO approves any writes | Inspect the current release/hash/overlay status and proposed generated-file diffs. Identify stale duplicated generic rules and local constraints to preserve. Keep invalid overlays and conflicting host files blocked; preview does not write. |
+| 9. Materialize and verify local artifacts | PO-controlled operation; Coder verifies | After explicit review, materialize the host bootstrap, exact Skill copies, and lock. Verify hashes and overlay preservation. Keep legacy instructions until their authority and use have been reconciled. |
+| 10. Configure the central registry | PO / service operator | Set the repository key, absolute worktree path, `docs/milestones/` (or an explicitly approved canonical root), and repository-relative mappings for the five documents. The Coder does not edit central Repo Control configuration. |
+| 11. Perform the controlled cutover | PO / service operator | Change the registry's active milestone root, reload/restart through the normal operator procedure, then reselect the repository. Verify the browser discovers the intended new-root prompts and no legacy candidates pollute discovery. |
+| 12. Verify identity in all clients | PO + Architect + Coder | Confirm browser, Architect, and Coder agree on key, path, prompt/root, governing documents, and lifecycle. In a fresh or resumed Coder session, verify current `coder-context` and `coder-status`, including applicable approved `INSTRUCTION`/`RESPONSE` dispatches and authorization. Packets and prior chat history are fallback transport, not current authority. |
+| 13. Verify Git and intelligence | PO + Coder | Verify noninteractive remote operations under the service account. If structural intelligence is required, PO approves a build and the Coder confirms `CURRENT` before use/rating. |
+| 14. Exercise lifecycle and review | PO + Architect + Coder | Validate selection, prompt approval/start, waiting/resume, closeout/review, and Git Review at the appropriate risk level. Use a dedicated test milestone/repository for scenarios that would otherwise create misleading product history. |
+| 15. Retire recovery copies last | PO; Architect confirms | Only after successful new-root selection and operation may the PO decide how to archive or retire old-root copies. Preserve history and a clear rollback path until then. |
+| 16. Close onboarding | PO | Record what was migrated, retained, deferred, and validated. Begin regular product work only after the PO accepts the integration. |
 
 ### Established-repository inventory
 
@@ -112,6 +116,9 @@ Use these checks as an onboarding sign-off, selecting only what is applicable:
   intended role, and not replaced by stale or historical copies.
 - **Skills:** all three accepted procedures load in the actual Coder host;
   they do not grant permission or replace current preflight.
+- **Shared procedure:** `coder-procedure-status` reports `CURRENT` after
+  materialization; preview exposes exact output diffs, lock hashes, overlay
+  status, collisions, and files that would remain untouched.
 - **Git:** correct remote and branch are visible; fetch/push authentication is
   noninteractive for the service account; routine Git Review actions work with
   explicit review and confirmation.
@@ -134,7 +141,9 @@ Use these checks as an onboarding sign-off, selecting only what is applicable:
 - [ ] Canonical milestone root is configured and isolated from history.
 - [ ] All five governing documents are present and mapped to the right roles.
 - [ ] Historical material is preserved but cannot become active authority.
-- [ ] Shared Skills are installed and explicitly loadable in the Coder host.
+- [ ] The shared procedure lock and generated host/Skill artifacts match the
+  canonical release; the project overlay is protected.
+- [ ] The actual Coder host can discover and explicitly load each Skill.
 - [ ] Git remote/authentication works noninteractively.
 - [ ] Browser repository selection is correct.
 - [ ] Architect and Coder resolve the same repository, path, and milestone.
@@ -187,3 +196,36 @@ from Vocab onboarding is a Repo Control II issue candidate, not a Vocab repair
 task. Record the error and use other verified views without assuming a failed
 refresh changed Git or workflow state. See the
 [canonical parking lot](../context/canonical_parking_lot.md).
+
+## Shared Coder procedure status and preview
+
+Repo Control II owns the versioned generic source bundle in
+[`shared/procedure`](../../shared/procedure/). It contains the generic host
+bootstrap, concise workflow core, and accepted instruction-only Skills. Each
+managed repository receives a physical host entrypoint, local workflow-core
+copy, physical local Skill copies, and a release/hash lock; symlinks and
+user-profile-only paths are not the distribution mechanism.
+
+From a managed worktree, inspect the selected/default repository or explicitly
+name a centrally registered repository:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-status
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-preview --repository /path/to/managed/worktree
+```
+
+The status reports release, hashes, overlay validity, and exact affected
+paths. Preview prints create/update/adopt/block outcomes and unified diffs;
+it never writes or removes files. Exact existing Skill copies may be adopted
+without rewriting them. Unmanaged collisions, edited generated files, unsafe
+paths, missing locks, and invalid overlays are visible; conflicting files are
+not silently replaced. Local overlays remain outside the generated hash and
+are never written by the shared materializer.
+
+There is no operator-facing materialization command. A future operational
+write action must require explicit Product Owner approval, bind the reviewed
+preview to repository identity and unchanged file hashes, and preserve ordinary
+Git review. For mature repositories, first review legacy duplicated procedure
+and local rules; only a separately approved migration may edit their files.
+File installation does not establish host consumption: fresh/resumed session
+and Skill invocation checks remain a manual acceptance step for WORKFLOW-005.

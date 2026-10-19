@@ -1,0 +1,51 @@
+schema_version = 1
+release = "1.0.1"
+overlay_schema_version = 1
+overlay_marker = "<!-- repo-control-project-overlay:v1 -->"
+lock_path = ".repo-control/shared-procedure.lock.toml"
+host_entrypoint = ".github/copilot-instructions.md"
+
+[[sources]]
+path = "bootstrap.md"
+sha256 = "1742a0e6a77d6ec35c81a994da1e8a5854e41ff34c5da8f5d8eed39101c76b0c"
+
+[[sources]]
+path = "workflow_core.md"
+sha256 = "dfa178cfca65631ad743f92ef8bc2d8cc889adc891cafe8bb47bc7fb4637ab9f"
+
+[[sources]]
+path = "skills/repo-control-implementation/SKILL.md"
+sha256 = "545f88556ad40248183f5bf7137ece7ea7421d91a66870dba01c1da7df4f55fe"
+
+[[sources]]
+path = "skills/repo-control-blocker-bug-escalation/SKILL.md"
+sha256 = "af5e430e1987c1bc6e8b5215a14bfe5653f11b3b153e105e51bdfbefa544b064"
+
+[[sources]]
+path = "skills/repo-control-validation-closeout/SKILL.md"
+sha256 = "ab9dab0689106dab353a2abacde3bf8ed46beee02345043c67cd013066e5a9bc"
+
+[[artifacts]]
+source = "bootstrap.md"
+target = ".github/copilot-instructions.md"
+renderer = "bootstrap"
+
+[[artifacts]]
+source = "workflow_core.md"
+target = ".repo-control/workflow_core.md"
+renderer = "copy"
+
+[[artifacts]]
+source = "skills/repo-control-implementation/SKILL.md"
+target = ".agents/skills/repo-control-implementation/SKILL.md"
+renderer = "copy"
+
+[[artifacts]]
+source = "skills/repo-control-blocker-bug-escalation/SKILL.md"
+target = ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md"
+renderer = "copy"
+
+[[artifacts]]
+source = "skills/repo-control-validation-closeout/SKILL.md"
+target = ".agents/skills/repo-control-validation-closeout/SKILL.md"
+renderer = "copy"
