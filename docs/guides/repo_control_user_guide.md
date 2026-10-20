@@ -133,14 +133,11 @@ target milestone, and status.
 - Approved **INSTRUCTION** and **RESPONSE** proposals apply only to their
   approved milestone and remain below the prompt, governing rules, and PO
   authority.
-- Approval does not mean the Coder has read or acted on the proposal. After an
-  approved instruction or correction, explicitly confirm it appears in current
-  `coder-context`.
-
-There is a known instruction-visibility workflow gap: a previously approved
-instruction was not immediately surfaced by the Coder until it was explicitly
-asked to check. See the related item in the
-[canonical parking lot](../context/canonical_parking_lot.md).
+- After the normal concise handoff, confirm an approved applicable instruction
+  appears in current `coder-context` and matches the intended repository and
+  milestone. M007.006 accepted fresh/resumed Coder-context convergence across
+  Repo Control II and Vocab, including approved applicable instruction
+  visibility; pending or rejected proposals remain excluded.
 
 ## Review Git state and actions
 
@@ -347,6 +344,14 @@ status and deterministic preview review; ordinary Git review remains required.
 M007.006 accepted fresh/resumed Coder-context resolution and approved
 instruction visibility across Repo Control II and Vocab. A `CURRENT` file
 status remains distinct from that host-consumption acceptance.
+
+Each managed repository is pinned to the shared-procedure release in its local
+lock. `CURRENT` means its installed release and hashes match the canonical
+target; `STALE_VERSION` means the installed release is older and needs
+deliberate per-repository reconciliation. Publishing a canonical release does
+not change managed repositories. The operator flow is status → preview →
+separately authorized guarded reconciliation → verify `CURRENT` → ordinary
+Git Review. No public or browser update button exists today.
 
 Status values are `CURRENT`, `MISSING`, `STALE_VERSION`, `HASH_MISMATCH`,
 `OVERLAY_INVALID`, and `INCOMPATIBLE`. Overlay checks validate its marker and

@@ -7,7 +7,7 @@
 **Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
+**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-006, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
 
 ---
 
@@ -629,6 +629,92 @@ Preserve accurate reporting without requiring a correction loop merely to descri
 ### Dependencies / Notes
 
 Keep closeout evidence auditable and distinguish repository status at preparation/submission from the subsequent workflow event. No fix is authorized by this entry.
+
+---
+
+## WORKFLOW-006 — Managed Shared-Procedure Update Workflow
+
+### Status
+
+Deferred — deterministic status, preview, and guarded materialization exist; Product Owner-facing update orchestration is not implemented.
+
+### Summary
+
+Provide a clear Product Owner workflow for identifying and reviewing canonical shared-procedure release drift in managed repositories, then safely applying an explicitly approved per-repository update.
+
+### Why It Is Parked
+
+The deterministic foundations already exist: `coder-procedure-status`, `coder-procedure-preview`, the per-repository release/hash lock, and a guarded internal materializer. A first-class Product Owner-facing maintenance experience has not been designed or implemented. Small, separately authorized reconciliation milestones remain the safe fallback.
+
+### Trigger for Reconsideration
+
+Revisit when another canonical release creates multi-repository drift, more managed repositories are onboarded, repeated reconciliation milestones become clerical overhead, or the Product Owner wants browser-visible status and routine one-repository update orchestration.
+
+### Likely Scope
+
+```text
+automatically evaluate shared-procedure status for a selected/managed repository
+show CURRENT, STALE_VERSION, HASH_MISMATCH, OVERLAY_INVALID, or INCOMPATIBLE
+explain installed release versus canonical target and warn that version drift is not inherently a broken repository
+provide a Review Update action backed by deterministic preview before writes
+list files to update, leave unchanged, adopt, block, or otherwise conflict
+show that the project overlay is valid and excluded from generic materialization
+allow Apply Update only after explicit PO approval and successful safety checks
+revalidate repository identity, target release, file snapshots/hashes, and preview before materialization
+verify post-write CURRENT state and leave resulting changes for ordinary Git Review
+stop for investigation when reconciliation is exceptional or conflicting
+optionally show CURRENT versus stale status across managed repositories
+```
+
+### Canonical / Materialized File Families
+
+Canonical shared-procedure sources in Repo Control II:
+
+```text
+shared/procedure/bootstrap.md
+shared/procedure/workflow_core.md
+shared/procedure/skills/repo-control-implementation/SKILL.md
+shared/procedure/skills/repo-control-blocker-bug-escalation/SKILL.md
+shared/procedure/skills/repo-control-validation-closeout/SKILL.md
+shared/procedure/manifest.toml (release and source-hash metadata)
+```
+
+Managed-repository materialized/generated files:
+
+```text
+.github/copilot-instructions.md
+.repo-control/workflow_core.md
+.repo-control/shared-procedure.lock.toml
+.agents/skills/repo-control-implementation/SKILL.md
+.agents/skills/repo-control-blocker-bug-escalation/SKILL.md
+.agents/skills/repo-control-validation-closeout/SKILL.md
+```
+
+Repository-owned governing documents and local overlays are excluded from
+generic automatic materialization and must never be overwritten by
+shared-procedure synchronization:
+
+```text
+docs/context/coding_agent_rules.md
+docs/context/project_context.md
+docs/context/project_architecture.md
+docs/context/project_workflow.md
+docs/context/canonical_parking_lot.md
+```
+
+These repository-owned documents may need independent factual maintenance.
+
+### Dependencies
+
+Preserve the central canonical bundle, per-repository physical copies and
+lock, preview-first safety checks, guarded internal write path, local overlay
+protection, Product Owner authority, and ordinary Git review.
+
+### Notes
+
+No automatic warning, browser Review Update control, Apply Update control, or
+public materialization command exists today. Do not implement this item
+without a separately approved milestone.
 
 ---
 

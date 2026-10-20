@@ -232,3 +232,26 @@ accepted fresh/resumed Coder-context convergence across Repo Control II and
 Vocab, including approved applicable instruction visibility after the normal
 handoff; fresh/resumed context convergence is a standard onboarding acceptance
 check.
+
+### Shared-procedure lifecycle after onboarding
+
+A new managed repository is onboarded directly to the canonical
+shared-procedure release current at that time; it does not repeat historical
+Vocab catch-up milestones. Successful onboarding ends with that repository
+reporting `CURRENT` and its local overlay valid.
+
+Later canonical releases do not propagate automatically. Each existing
+repository stays pinned to the release recorded in its local lock and may
+report `STALE_VERSION` when the canonical target advances. This is normal
+release drift when the installed files remain compatible, not by itself a
+broken repository or onboarding failure.
+
+For each repository, inspect status and the deterministic preview before any
+write. Only separately Product-Owner-authorized reconciliation may use the
+guarded internal materializer. When the preview is clean and expected,
+revalidate the result as `CURRENT` and review generated changes through the
+ordinary Git workflow. Invalid overlays, edited generated files, collisions,
+incompatible state, unexpected changes/removals, or any other blocker are not
+routine version maintenance: stop and investigate under appropriately scoped
+work. Local project overlays are never overwritten by shared-procedure
+materialization.

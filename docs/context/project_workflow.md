@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
+**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.006, and M007.007 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -12,17 +12,30 @@
 
 ## Shared procedure relationship
 
-The versioned generic Coder bootstrap, workflow core, and accepted Skills are
-maintained in [`shared/procedure`](../../shared/procedure/). The host entrypoint, local workflow-core copy, and local Skill copies are
-generated from that
-bundle and tracked with `.repo-control/shared-procedure.lock.toml`. This
-comprehensive workflow remains Repo Control II's project-specific operating
-and implementation document; it is not the canonical generic workflow source
-for other managed repositories.
-Use `coder-procedure-status` and `coder-procedure-preview` to inspect release
-drift and proposed outputs. These commands do not write managed repository
-files; any future operational reconciliation must be explicitly
-Product-Owner-controlled.
+Repo Control II owns the canonical, versioned generic Coder bootstrap,
+workflow core, and accepted Skills in
+[`shared/procedure`](../../shared/procedure/). Each managed repository has
+physical/generated copies of the host entrypoint, workflow core, and Skills,
+plus `.repo-control/shared-procedure.lock.toml` recording the release and
+hashes materialized there. Each repository is therefore pinned to its own
+installed release.
+
+Publishing a newer canonical release does not automatically update other
+managed repositories. A repository whose installed release is older may
+report `STALE_VERSION`; when caused only by a newer canonical release, this is
+expected version drift, not by itself an onboarding failure or product defect.
+Each repository must be reconciled separately under Product Owner
+authorization.
+
+Inspect with `coder-procedure-status`, then review the deterministic
+`coder-procedure-preview`. The accepted guarded internal materializer is used
+only for separately authorized reconciliation; there is no ordinary
+operator-facing/public update action. Revalidate the repository as `CURRENT`
+after materialization and use ordinary Git review for resulting changes.
+Project-specific local overlays are outside generic materialization and must
+remain protected. This comprehensive workflow remains Repo Control II's
+project-specific operating and implementation document, not the canonical
+generic workflow source for other managed repositories.
 
 ---
 
