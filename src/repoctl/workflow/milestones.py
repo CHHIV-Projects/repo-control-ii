@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ _WORKFLOW_SIDECAR_RE = re.compile(
     r"[a-z0-9]+(?:_[a-z0-9]+)*_workflow\.md$"
 )
 _POINTER_SCHEMA_VERSION = 1
+_MAX_PROMPT_IDENTITY_BYTES = 2 * 1024 * 1024
 
 
 class MilestoneArtifactError(RuntimeError):
@@ -75,6 +77,23 @@ def _contained_file(repository_root: Path, milestone_dir: Path, relative_path: s
     if not resolved.is_file():
         raise MilestoneArtifactError("Milestone artifact is not a regular file.")
     return resolved
+
+
+def prompt_identity(
+    repository_root: str | Path,
+    milestone_root: str,
+    candidate: dict[str, Any],
+) -> str:
+    repository, milestone_dir = _root_paths(Path(repository_root), milestone_root)
+    prompt = _contained_file(repository, milestone_dir, candidate["prompt_path"])
+    try:
+        with prompt.open("rb") as stream:
+            content = stream.read(_MAX_PROMPT_IDENTITY_BYTES + 1)
+    except OSError as exc:
+        raise MilestoneArtifactError(f"Cannot read selected milestone prompt: {exc}") from exc
+    if len(content) > _MAX_PROMPT_IDENTITY_BYTES:
+        raise MilestoneArtifactError("Selected milestone prompt exceeds the identity size limit.")
+    return hashlib.sha256(content).hexdigest()
 
 
 def _parse_filename(name: str) -> tuple[str, str, str] | None:

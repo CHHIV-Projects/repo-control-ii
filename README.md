@@ -114,8 +114,13 @@ inventory is now **18 tools**. Verify local `tools/list`; ChatGPT may also requi
 an explicit custom-app refresh (a Linux service restart alone may not refresh
 its catalog). No new listener or systemd unit is required.
 
-Open **Intelligence Value** (`/intelligence`), review repository identity, and
-explicitly approve **Build / Refresh Graph**. This copies only supported
+Product Owner **Approve & Start** checks graph freshness and, for supported
+repositories, builds or refreshes the graph to a verified CURRENT baseline
+before writing the start events. A failed required build leaves the milestone
+unstarted; a repository with no supported code source proceeds with an explicit
+`NOT_AVAILABLE` outcome. The deliberate **Build / Refresh Graph** button on
+**Intelligence Value** (`/intelligence`) remains available without a separate
+approval checkbox. This copies only supported
 nonignored tracked/untracked code into external state, then removes the source
 copy after extraction. Source scope excludes `.git`, virtual environments,
 dependencies and common generated directories; current suffixes and limits are
@@ -150,6 +155,16 @@ repoctl coder-intelligence context "architect dispatch" --max-nodes 20 --max-edg
 repoctl coder-intelligence path get_coder_context --target get_authorization_status --depth 4
 repoctl coder-intelligence-rate <use_id> USEFUL --inspected no
 ```
+
+During authorized `IN_PROGRESS` work, a Coder may run the bounded
+`repoctl coder-intelligence-refresh` command when the graph is non-CURRENT and
+fresh structural evidence would materially help. It takes no repository,
+provider, path, scope, or build options; it resolves the central managed
+workspace, verifies the active milestone and requires the running service's
+selected repository to match. A CURRENT graph is a no-op. The command changes
+only external derived graph state, never Git or lifecycle; other lifecycle or
+waiting states are refused. It reports `REFRESHED`, `CURRENT`,
+`NOT_AVAILABLE`, or an explicit failure.
 
 Commands print compact JSON. Exit 0 means OK/TRUNCATED; other outcomes return 2
 with explicit JSON (transport/invalid input errors use stderr). Ambiguity returns
@@ -194,8 +209,9 @@ Do not delete or replace the database while the service is using it.
 The review page shows totals/unrated uses, percentages **of rated uses**, median/
 nearest-rank p95 latency, median response bytes, truncation/ambiguity, operation
 breakdowns, optional source-inspection feedback and comparative tasks. A
-MISLEADING flag remains visible even after re-rating. Analytics store no query
-text, source bodies or full evidence. Ratings are optional, not automatic truth.
+MISLEADING flag remains visible even after re-rating. Bounded graph refresh
+receipts/counts are reported separately from query uses and retain provenance,
+not source/query bodies. Analytics store no query text, source bodies or full evidence. Ratings are optional, not automatic truth.
 They can be entered on the page or with the local feedback command.
 
 Comparative benchmarks are small trusted local records through

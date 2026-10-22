@@ -235,10 +235,29 @@ On **Intelligence Value**, check the selected repository and graph state:
 | `FAILED` | A build or graph check failed; review the explicit error. |
 | `INCOMPATIBLE` | The stored graph does not match the supported schema/producer. |
 
-Only `CURRENT` evidence is served; queries do not refresh it. The PO explicitly
-approves **Build / Refresh Graph** when structural evidence is useful. Static
-relationships can help target source inspection but do not establish runtime
-behavior, and missing graph edges do not prove that behavior is absent.
+Only `CURRENT` evidence is served; queries do not refresh it. Product Owner
+**Approve & Start** automatically establishes a CURRENT baseline for supported
+repositories before implementation begins. A required build failure leaves the
+milestone unstarted; repositories with no supported code source report
+`NOT_AVAILABLE`. The PO's deliberate **Build / Refresh Graph** button remains
+available on this page without a separate approval checkbox.
+
+During authorized `IN_PROGRESS` work, a Coder may run
+`repoctl coder-intelligence-refresh` only when the graph is non-CURRENT and
+fresh structural evidence would materially help. The command takes no
+repository, provider, path, or build options; it resolves the managed Coder
+workspace and active milestone, requires the service-selected repository to
+match, and changes only the existing external derived graph. It refuses other
+lifecycle/waiting states and does not change Git, lifecycle, repository
+selection, or graph configuration. `CURRENT` is a no-op; unsupported source
+scope is reported as `NOT_AVAILABLE`; failures are explicit and do not fall
+back to older evidence.
+
+Static relationships can help target source inspection but do not establish
+runtime behavior, and missing graph edges do not prove that behavior is absent.
+Refresh receipts and counts are shown separately from query-use ratings and
+comparative measurements; they contain bounded provenance, not source or query
+bodies.
 
 The consuming Coder should rate each materially relied-on use and add a concise
 rationale where useful. Ratings are evidence of the consumer's experience;

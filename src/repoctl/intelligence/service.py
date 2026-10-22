@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, ContextManager, TYPE_CHECKING
 import uuid
 
 from ..scanner.git_ops import ScanError, _run_git_bounded, get_branch, get_head_commit
@@ -30,6 +30,7 @@ OPTIONS = {"code_only": True, "max_workers": 2, "scope_version": 1, "excluded_pa
            "suffixes": sorted(SOURCE_SUFFIXES), "max_files": 10000, "max_source_bytes": 64 * 1024 * 1024}
 DEFAULT_BOUNDS = {"max_bytes": 48 * 1024, "max_nodes": 60, "max_edges": 120, "depth": 2, "timeout": 5}
 MAX_BOUNDS = {"max_bytes": 64 * 1024, "max_nodes": 120, "max_edges": 240, "depth": 4, "timeout": 10}
+REFRESH_ACTORS = frozenset({"po_lifecycle", "po_manual", "coder"})
 QUERY_PROPERTIES = {
     "operation": {"type": "string", "enum": list(OPERATIONS), "default": "stats"},
     "query": {"type": "string", "maxLength": 300, "description": "Node ID, symbol, repository-relative file::symbol, or lexical concept."},
@@ -170,7 +171,17 @@ def graph_status(repository: RepositoryEntry, root: Path) -> dict[str, Any]:
     return view
 
 
-def build_graph(repository: RepositoryEntry, state_root: Path, provider: Provider | None = None) -> dict[str, Any]:
+class RefreshAuthorizationError(IntelligenceError):
+    pass
+
+
+def build_graph(
+    repository: RepositoryEntry,
+    state_root: Path,
+    provider: Provider | None = None,
+    *,
+    publication_guard: Callable[[], ContextManager[Any]] | None = None,
+) -> dict[str, Any]:
     root = artifact_root(repository, state_root)
     provider = provider or GraphifyProvider()
     with safe_path(root, "build.lock").open("a") as lock:
@@ -220,7 +231,11 @@ def build_graph(repository: RepositoryEntry, state_root: Path, provider: Provide
                 graph_hash=hashlib.sha256(graph.read_bytes()).hexdigest(),
                 stats={"nodes": len(payload["nodes"]), "relationships": len(payload.get("links", payload.get("edges", [])))},
             )
-            write_json(root / "manifest.json", manifest)
+            if current and publication_guard is not None:
+                with publication_guard():
+                    write_json(root / "manifest.json", manifest)
+            else:
+                write_json(root / "manifest.json", manifest)
         except (IntelligenceError, ScanError, OSError, ValueError, KeyError) as exc:
             manifest.update(state="FAILED", error=str(exc)[:1500])
             write_json(root / "manifest.json", manifest)
@@ -228,6 +243,162 @@ def build_graph(repository: RepositoryEntry, state_root: Path, provider: Provide
         finally:
             shutil.rmtree(source)
         return graph_status(repository, root)
+
+
+def refresh_graph(
+    repository: RepositoryEntry,
+    state_root: Path,
+    *,
+    actor: str,
+    milestone_id: str | None = None,
+    registry_generation: int | None = None,
+    publication_guard: Callable[[], ContextManager[Any]] | None = None,
+    provider: Provider | None = None,
+) -> dict[str, Any]:
+    if actor not in REFRESH_ACTORS:
+        raise IntelligenceError("Unsupported intelligence refresh actor.")
+    if actor in {"po_lifecycle", "coder"} and (
+        not isinstance(milestone_id, str) or not milestone_id or len(milestone_id) > 64
+    ):
+        raise IntelligenceError("A selected milestone is required for this intelligence refresh.")
+    if registry_generation is not None and (
+        isinstance(registry_generation, bool)
+        or not isinstance(registry_generation, int)
+        or registry_generation < 0
+    ):
+        raise IntelligenceError("Invalid repository registry generation for intelligence refresh.")
+
+    started = time.monotonic()
+    root = artifact_root(repository, state_root)
+    initial = graph_status(repository, root)
+    receipt: dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "repository_key": repository.key,
+        "repository_id": repository.repository_id,
+        "actor": actor,
+        "registry_generation": registry_generation,
+        "milestone_id": milestone_id,
+        "triggering_freshness": initial["state"],
+        "action": "checking",
+        "generation_before": initial.get("generation"),
+        "generation_after": initial.get("generation"),
+        "source_identity_before": initial.get("source", {}).get("content_hash"),
+        "source_identity_after": initial.get("source", {}).get("content_hash"),
+        "final_freshness": initial["state"],
+        "elapsed_ms": 0.0,
+        "error_code": None,
+        "completed": False,
+    }
+    measurements.begin_refresh(root, receipt)
+
+    def finish(
+        outcome: str,
+        *,
+        action: str,
+        graph: dict[str, Any],
+        error_code: str | None = None,
+        error: str | None = None,
+        source_identity_before: str | None = None,
+    ) -> dict[str, Any]:
+        receipt.update(
+            action=action,
+            generation_after=graph.get("generation"),
+            source_identity_before=(
+                source_identity_before
+                if source_identity_before is not None
+                else receipt["source_identity_before"]
+            ),
+            source_identity_after=graph.get("source", {}).get("content_hash"),
+            final_freshness=graph["state"],
+            elapsed_ms=(time.monotonic() - started) * 1000,
+            error_code=error_code,
+            completed=outcome != "FAILED",
+        )
+        measurements.finish_refresh(root, receipt)
+        return {"outcome": outcome, "graph": graph, "receipt": dict(receipt), "error": error}
+
+    if initial["state"] == "CURRENT":
+        return finish("CURRENT", action="noop_current", graph=initial)
+
+    try:
+        snapshot = source_snapshot(repository)
+    except (IntelligenceError, ScanError, OSError, ValueError) as exc:
+        return finish(
+            "FAILED",
+            action="source_check_failed",
+            graph=initial,
+            error_code="source_check_failed",
+            error=str(exc)[:1200],
+        )
+    if not snapshot["files"]:
+        unavailable = {
+            "state": "NOT_AVAILABLE",
+            "generation": initial.get("generation"),
+            "source": {"content_hash": snapshot["content_hash"]},
+        }
+        return finish(
+            "NOT_AVAILABLE",
+            action="not_available",
+            graph=unavailable,
+            source_identity_before=snapshot["content_hash"],
+        )
+
+    measurements.finish_refresh(root, {
+        **receipt,
+        "action": "build",
+        "source_identity_before": snapshot["content_hash"],
+    })
+    try:
+        refreshed = build_graph(
+            repository,
+            state_root,
+            provider,
+            publication_guard=publication_guard,
+        )
+        if (
+            refreshed["state"] != "CURRENT"
+            or refreshed.get("source", {}).get("content_hash") != snapshot["content_hash"]
+        ):
+            reason = (
+                "Source identity changed during the graph build."
+                if refreshed["state"] == "STALE"
+                else f"Graph refresh did not produce CURRENT evidence ({refreshed['state']})."
+            )
+            return finish(
+                "FAILED",
+                action="build",
+                graph=refreshed,
+                error_code="source_changed" if refreshed["state"] == "STALE" else "non_current",
+                error=reason,
+                source_identity_before=snapshot["content_hash"],
+            )
+    except (IntelligenceError, ScanError, OSError, ValueError, KeyError) as exc:
+        try:
+            final_status = graph_status(repository, root)
+        except (IntelligenceError, ScanError, OSError, ValueError, KeyError):
+            final_status = {"state": "FAILED", "generation": None}
+        cause: BaseException | None = exc
+        authorization_changed = False
+        while cause is not None:
+            if isinstance(cause, RefreshAuthorizationError):
+                authorization_changed = True
+                break
+            cause = cause.__cause__
+        return finish(
+            "FAILED",
+            action="build",
+            graph=final_status,
+            error_code="authorization_changed" if authorization_changed else "build_failed",
+            error=str(exc)[:1200],
+            source_identity_before=snapshot["content_hash"],
+        )
+    return finish(
+        "REFRESHED",
+        action="build",
+        graph=refreshed,
+        source_identity_before=snapshot["content_hash"],
+    )
 
 
 def normalize(arguments: dict[str, Any]) -> dict[str, Any]:

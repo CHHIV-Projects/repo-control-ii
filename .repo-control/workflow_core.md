@@ -40,8 +40,21 @@ fresh-session acceptance remains a separate check.
 
 Use deterministic evidence proportionate to the change. Record the actual
 commands and outcomes, including failures and limits. Repository intelligence
-supports source inspection but does not prove runtime behavior. Do not refresh
-optional derived evidence without Product Owner authority.
+supports source inspection but does not prove runtime behavior. Inspect
+freshness and decide whether structural evidence is materially useful during
+preflight. Product Owner Approve & Start establishes a CURRENT graph baseline
+automatically where supported; unsupported repositories report NOT AVAILABLE.
+Do not rebuild a CURRENT graph ceremonially.
+
+During authorized `IN_PROGRESS` work, if source edits made the graph
+non-CURRENT and fresh structural evidence would materially help, the Coder may
+run `repoctl coder-intelligence-refresh`. It is a bounded, no-argument
+operation for the centrally registered Coder workspace and active milestone,
+and changes only the existing external derived graph. It grants no Git,
+lifecycle, repository-selection, provider/configuration, schema, or source
+scope authority. If refresh is not useful, do not run it; use direct evidence
+and record the decision. Closeout reports USED/NOT USED/NOT AVAILABLE and any
+refresh decision/outcome separately from query-use ratings.
 
 Repository Intelligence is optional deterministic evidence, not mandatory
 ceremony; implementation milestones explicitly disposition its use, non-use,

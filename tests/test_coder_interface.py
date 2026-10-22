@@ -732,6 +732,63 @@ class TestCoderInterface(unittest.TestCase):
         for cmd in prohibited:
             self.assertNotIn(cmd, subcommands)
 
+    def test_coder_intelligence_refresh_cli_is_fixed_and_authorization_gated(self):
+        parsed = build_parser().parse_args(["coder-intelligence-refresh"])
+        self.assertEqual(parsed.command, "coder-intelligence-refresh")
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["coder-intelligence-refresh", "--repository", str(self.repo)])
+
+        entry = resolve_repository_entry(self.repo)
+        status = {
+            "repository": {"repository_id": entry.repository_id, "key": entry.key},
+            "milestone": {"id": "M003.001", "phase": "IN_PROGRESS"},
+            "authorization": {"authorized": True},
+            "workflow": {
+                "waiting_category": None,
+                "waiting_reason": None,
+                "event_count": 2,
+            },
+            "prompt": {"path": self.candidate["prompt_path"], "identity": "a" * 64},
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=entry),
+            mock.patch("repoctl.workflow.coder_interface.get_coder_status", return_value=status),
+            mock.patch(
+                "repoctl.intelligence.client.refresh",
+                return_value={"outcome": "CURRENT"},
+            ) as refresh,
+            mock.patch("sys.stdout", stdout),
+        ):
+            result = main(["coder-intelligence-refresh"])
+        self.assertEqual(result, 0)
+        refresh.assert_called_once_with(
+            workspace_repository_key=entry.key,
+            workspace_repository_id=entry.repository_id,
+            milestone_id="M003.001",
+            prompt_path=self.candidate["prompt_path"],
+            prompt_identity="a" * 64,
+            event_count=2,
+        )
+        self.assertIn('"outcome":"CURRENT"', stdout.getvalue())
+
+        unauthorized = {
+            **status,
+            "milestone": {"id": "M003.001", "phase": "READY"},
+            "authorization": {"authorized": False},
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=entry),
+            mock.patch("repoctl.workflow.coder_interface.get_coder_status", return_value=unauthorized),
+            mock.patch("repoctl.intelligence.client.refresh") as refresh,
+            mock.patch("sys.stderr", stderr),
+        ):
+            result = main(["coder-intelligence-refresh"])
+        self.assertEqual(result, 2)
+        refresh.assert_not_called()
+        self.assertIn("authorized IN_PROGRESS", stderr.getvalue())
+
     def test_cli_execution_via_main(self):
         save_milestone_selection(self.repo, self.state_root, "M003.001")
         _record(

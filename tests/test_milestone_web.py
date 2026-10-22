@@ -8,6 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from repoctl.intelligence import measurements
+from repoctl.intelligence.provider import IntelligenceError
+from repoctl.intelligence.service import artifact_root, build_graph, graph_status
+from repoctl.web.repository_registry import RepositoryRegistry
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.app import create_web_app
 from repoctl.workflow.architect_dispatches import (
@@ -79,7 +83,389 @@ def _csrf(client) -> str:
         return session["csrf_token"]
 
 
+class FakeGraphProvider:
+    version = "0.9.91"
+
+    def build(self, source: Path, output: Path) -> None:
+        (output / "graph.json").write_text(
+            json.dumps({
+                "graph": {"schema_version": 1, "graphify_version": self.version},
+                "nodes": [{"id": "entry"}],
+                "links": [],
+            }),
+            encoding="utf-8",
+        )
+
+    def query(self, graph: Path, arguments: dict, timeout: float) -> dict:
+        return {"outcome": "OK", "nodes": [], "relationships": []}
+
+
 class MilestoneWebTests(unittest.TestCase):
+    def test_reads_queries_and_nonstart_events_do_not_refresh_graphs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = _repo(root, "repo", "R003.01")
+            state_root = root / "state"
+            client = create_web_app(
+                repository_path=str(repository),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            self.assertEqual(client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "default",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            ).status_code, 302)
+            selection = load_milestone_selection(repository, state_root)["selection"]
+            workflow = load_milestone_workflow(
+                repository, state_root, "docs/milestones", selection,
+            )
+            fragment = client.get(
+                "/milestones/workflow/fragment",
+                query_string={
+                    "repository_key": "default",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                    "prompt_path": selection["prompt_path"],
+                },
+            )
+            self.assertEqual(fragment.status_code, 200)
+            self.assertEqual(client.get("/api/architect/v1/status").status_code, 200)
+            query = client.get(
+                "/api/coder/v1/intelligence",
+                query_string={
+                    "expected_repository_key": "default",
+                    "expected_generation": "0",
+                    "request": json.dumps({"operation": "stats"}),
+                },
+            )
+            self.assertEqual(query.status_code, 200)
+            self.assertEqual(query.get_json()["graph"]["state"], "MISSING")
+            with mock.patch("repoctl.web.app.refresh_graph") as refresh:
+                approval = client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "default",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": selection["prompt_path"],
+                        "expected_phase": "PLANNING",
+                        "expected_event_count": str(workflow["event_count"]),
+                        "event_type": "prompt_approved",
+                        "summary": "Approve for the regression fixture.",
+                        "actor_role": "product_owner",
+                        "po_approved": "yes",
+                    },
+                )
+                self.assertEqual(approval.status_code, 302)
+                self.assertEqual(client.get("/milestones").status_code, 200)
+                refresh.assert_not_called()
+
+    def test_coder_refresh_api_requires_authorized_same_repository_and_is_bounded(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        repository = _repo(root, "repo", "R003.01")
+        source = repository / "src" / "entry.py"
+        source.parent.mkdir()
+        source.write_text("def entry():\n    return True\n", encoding="utf-8")
+        _git(repository, "add", "src/entry.py")
+        _git(repository, "commit", "-qm", "add source")
+        second = _repo(root, "other", "R004.01")
+        state_root = root / "state"
+        client = create_web_app(
+            repository_path=str(repository),
+            state_root=state_root,
+        ).test_client()
+        client.get("/milestones")
+        csrf = _csrf(client)
+        self.assertEqual(client.post(
+            "/milestones/select",
+            data={
+                "csrf_token": csrf,
+                "repository_key": "default",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+            },
+        ).status_code, 302)
+        entry = RepositoryRegistry.single(repository).active()
+        workflow = load_milestone_workflow(
+            repository,
+            state_root,
+            "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        payload = {
+            "expected_repository_key": "default",
+            "expected_generation": 0,
+            "workspace_repository_id": entry.repository_id,
+            "milestone_id": "R003.01",
+            "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+            "prompt_identity": workflow["prompt_identity"],
+            "event_count": workflow["event_count"],
+        }
+
+        for phase in ("PLANNING", "READY", "WAITING", "REVIEW", "CLOSED"):
+            simulated = dict(workflow, phase=phase)
+            if phase == "WAITING":
+                simulated.update(
+                    waiting_category="blocker",
+                    waiting_reason="waiting",
+                    open_blocker=True,
+                )
+            with self.subTest(phase=phase), mock.patch(
+                "repoctl.web.app.load_milestone_workflow",
+                return_value=simulated,
+            ):
+                response = client.post("/api/coder/v1/intelligence/refresh", json=payload)
+            self.assertEqual(response.status_code, 400)
+
+        with self.subTest("cross repository"):
+            response = client.post(
+                "/api/coder/v1/intelligence/refresh",
+                json={**payload, "workspace_repository_id": make_repository_id(second)},
+            )
+            self.assertEqual(response.status_code, 400)
+        with self.subTest("stale generation"):
+            response = client.post(
+                "/api/coder/v1/intelligence/refresh",
+                json={**payload, "expected_generation": 9},
+            )
+            self.assertEqual(response.status_code, 409)
+        with self.subTest("invalid parameter"):
+            response = client.post(
+                "/api/coder/v1/intelligence/refresh",
+                json={**payload, "provider": "arbitrary"},
+            )
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            measurements.summary(artifact_root(entry, state_root))["refresh_attempts"],
+            0,
+        )
+
+        start_workflow = load_milestone_workflow(
+            repository,
+            state_root,
+            "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        start_response = client.post(
+            "/milestones/workflow/event",
+            data={
+                "csrf_token": csrf,
+                "repository_key": "default",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+                "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                "expected_prompt_identity": start_workflow["prompt_identity"],
+                "expected_phase": "PLANNING",
+                "expected_event_count": "0",
+                "event_type": "approve_and_start",
+                "summary": "Start the authorized integration test.",
+            },
+        )
+        self.assertEqual(start_response.status_code, 302)
+        workflow = load_milestone_workflow(
+            repository,
+            state_root,
+            "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        authorized = {
+            **payload,
+            "prompt_identity": workflow["prompt_identity"],
+            "event_count": workflow["event_count"],
+        }
+        source.write_text("def entry():\n    return 2\n", encoding="utf-8")
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FakeGraphProvider(),
+        ):
+            first = client.post("/api/coder/v1/intelligence/refresh", json=authorized)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.get_json()["outcome"], "REFRESHED")
+        self.assertEqual(first.get_json()["graph"]["state"], "CURRENT")
+
+        second_refresh = client.post("/api/coder/v1/intelligence/refresh", json=authorized)
+        self.assertEqual(second_refresh.status_code, 200)
+        self.assertEqual(second_refresh.get_json()["outcome"], "CURRENT")
+        self.assertEqual(second_refresh.get_json()["receipt"]["action"], "noop_current")
+
+        source.write_text("def entry():\n    return False\n", encoding="utf-8")
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FakeGraphProvider(),
+        ):
+            stale = client.post("/api/coder/v1/intelligence/refresh", json=authorized)
+        self.assertEqual(stale.status_code, 200)
+        self.assertEqual(stale.get_json()["outcome"], "REFRESHED")
+        self.assertEqual(stale.get_json()["receipt"]["triggering_freshness"], "STALE")
+        summary = measurements.summary(artifact_root(entry, state_root))
+        self.assertEqual(summary["uses"], 0)
+        self.assertEqual(summary["refresh_attempts"], 4)
+        self.assertEqual(summary["completed_refreshes"], 4)
+        receipt_text = json.dumps(summary["refreshes"])
+        self.assertNotIn("def entry", receipt_text)
+        self.assertNotIn('"query"', receipt_text)
+
+    def test_start_baseline_current_missing_failure_and_ready_parity(self) -> None:
+        def create_fixture(name: str):
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            root = Path(temporary.name)
+            repository = _repo(root, name, "R003.01")
+            source = repository / "src" / "entry.py"
+            source.parent.mkdir()
+            source.write_text("def entry():\n    return True\n", encoding="utf-8")
+            _git(repository, "add", "src/entry.py")
+            _git(repository, "commit", "-qm", "add source")
+            state_root = root / "state"
+            client = create_web_app(
+                repository_path=str(repository),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            self.assertEqual(client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "default",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            ).status_code, 302)
+            return root, repository, state_root, client, csrf
+
+        def start_form(repository: Path, state_root: Path, csrf: str, *, phase: str, event: str):
+            selection = load_milestone_selection(repository, state_root)["selection"]
+            workflow = load_milestone_workflow(
+                repository, state_root, "docs/milestones", selection,
+            )
+            return {
+                "csrf_token": csrf,
+                "repository_key": "default",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+                "prompt_path": selection["prompt_path"],
+                "expected_prompt_identity": workflow["prompt_identity"],
+                "expected_phase": phase,
+                "expected_event_count": str(workflow["event_count"]),
+                "event_type": event,
+                "summary": "Start with the verified graph baseline.",
+            }
+
+        root, repository, state_root, client, csrf = create_fixture("current")
+        entry = RepositoryRegistry.single(repository).active()
+        before = build_graph(entry, state_root, FakeGraphProvider())
+        stale_form = start_form(repository, state_root, csrf, phase="PLANNING", event="approve_and_start")
+        (repository / "docs/milestones/R003.01_test_prompt.md").write_text(
+            "# Prompt changed after the form was rendered.\n",
+            encoding="utf-8",
+        )
+        stale_response = client.post("/milestones/workflow/event", data=stale_form)
+        self.assertEqual(stale_response.status_code, 409)
+        self.assertEqual(
+            measurements.summary(artifact_root(entry, state_root))["refresh_attempts"],
+            0,
+        )
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            side_effect=AssertionError("CURRENT baseline must not instantiate a provider"),
+        ) as provider_factory:
+            response = client.post(
+                "/milestones/workflow/event",
+                data=start_form(repository, state_root, csrf, phase="PLANNING", event="approve_and_start"),
+            )
+        self.assertEqual(response.status_code, 302)
+        provider_factory.assert_not_called()
+        after = graph_status(entry, artifact_root(entry, state_root))
+        self.assertEqual(after["generation"], before["generation"])
+        workflow = load_milestone_workflow(
+            repository, state_root, "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        self.assertEqual(workflow["phase"], "IN_PROGRESS")
+        self.assertEqual(
+            [item["event_type"] for item in workflow["event_history"]],
+            ["prompt_approved", "implementation_started"],
+        )
+        current_receipt = measurements.summary(artifact_root(entry, state_root))["refreshes"][0]
+        self.assertEqual(current_receipt["action"], "noop_current")
+
+        _, repository, state_root, client, csrf = create_fixture("missing")
+        entry = RepositoryRegistry.single(repository).active()
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FakeGraphProvider(),
+        ):
+            response = client.post(
+                "/milestones/workflow/event",
+                data=start_form(repository, state_root, csrf, phase="PLANNING", event="approve_and_start"),
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(graph_status(entry, artifact_root(entry, state_root))["state"], "CURRENT")
+        missing_receipt = measurements.summary(artifact_root(entry, state_root))["refreshes"][0]
+        self.assertEqual(missing_receipt["actor"], "po_lifecycle")
+        self.assertEqual(missing_receipt["action"], "build")
+
+        _, repository, state_root, client, csrf = create_fixture("failure")
+        class FailingGraphProvider(FakeGraphProvider):
+            def build(self, source: Path, output: Path) -> None:
+                raise IntelligenceError("expected provider failure")
+
+        entry = RepositoryRegistry.single(repository).active()
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FailingGraphProvider(),
+        ):
+            response = client.post(
+                "/milestones/workflow/event",
+                data=start_form(repository, state_root, csrf, phase="PLANNING", event="approve_and_start"),
+            )
+        self.assertEqual(response.status_code, 400)
+        workflow = load_milestone_workflow(
+            repository, state_root, "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        self.assertEqual(workflow["phase"], "PLANNING")
+        self.assertEqual(workflow["event_count"], 0)
+        failed_receipt = measurements.summary(artifact_root(entry, state_root))["refreshes"][0]
+        self.assertEqual(failed_receipt["actor"], "po_lifecycle")
+        self.assertFalse(failed_receipt["completed"])
+
+        _, repository, state_root, client, csrf = create_fixture("ready")
+        entry = RepositoryRegistry.single(repository).active()
+        approval = start_form(repository, state_root, csrf, phase="PLANNING", event="prompt_approved")
+        approval["po_approved"] = "yes"
+        self.assertEqual(client.post("/milestones/workflow/event", data=approval).status_code, 302)
+        self.assertEqual(measurements.summary(artifact_root(entry, state_root))["refresh_attempts"], 0)
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FakeGraphProvider(),
+        ):
+            response = client.post(
+                "/milestones/workflow/event",
+                data=start_form(repository, state_root, csrf, phase="READY", event="implementation_started"),
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(graph_status(entry, artifact_root(entry, state_root))["state"], "CURRENT")
+        workflow = load_milestone_workflow(
+            repository, state_root, "docs/milestones",
+            load_milestone_selection(repository, state_root)["selection"],
+        )
+        self.assertEqual(workflow["phase"], "IN_PROGRESS")
+        self.assertEqual(
+            [item["event_type"] for item in workflow["event_history"]],
+            ["prompt_approved", "implementation_started"],
+        )
+
     def test_combined_browser_cycle_staleness_errors_and_authority(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -108,6 +494,7 @@ class MilestoneWebTests(unittest.TestCase):
                     "csrf_token": csrf, "repository_key": "first",
                     "repository_generation": "0", "milestone_id": "R003.01",
                     "prompt_path": candidate["prompt_path"],
+                    "expected_prompt_identity": current["prompt_identity"],
                     "expected_phase": current["phase"],
                     "expected_event_count": str(current["event_count"]),
                     "event_type": action, "summary": "Controlled browser action",
@@ -225,6 +612,12 @@ class MilestoneWebTests(unittest.TestCase):
                 "actor_role": "product_owner",
                 "expected_phase": "PLANNING",
                 "expected_event_count": "0",
+                "expected_prompt_identity": load_milestone_workflow(
+                    first,
+                    state_root,
+                    "docs/milestones",
+                    load_milestone_selection(first, state_root)["selection"],
+                )["prompt_identity"],
             }
             self.assertNotIn('name="actor_role"', text)
             self.assertNotIn('name="po_approved"', text)
@@ -284,6 +677,8 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIsNotNone(initial_version            )
 
             def submit(phase: str, event_type: str, summary: str, **fields: str):
+                selected = load_milestone_selection(first, root / "state")["selection"]
+                workflow = load_milestone_workflow(first, root / "state", "docs/milestones", selected)
                 return client.post(
                     "/milestones/workflow/event",
                     data={
@@ -292,7 +687,9 @@ class MilestoneWebTests(unittest.TestCase):
                         "repository_generation": "0",
                         "milestone_id": "R003.01",
                         "prompt_path": "docs/milestones/R003.01_test_prompt.md",
+                        "expected_prompt_identity": workflow["prompt_identity"],
                         "expected_phase": phase,
+                        "expected_event_count": str(workflow["event_count"]),
                         "event_type": event_type,
                         "summary": summary,
                         "actor_role": "product_owner",
@@ -393,6 +790,7 @@ class MilestoneWebTests(unittest.TestCase):
                         "prompt_path": "docs/milestones/R003.01_test_prompt.md",
                         "expected_phase": phase,
                         "expected_event_count": str(workflow["event_count"]),
+                        "expected_prompt_identity": workflow["prompt_identity"],
                         "event_type": event_type,
                         "summary": summary,
                         "actor_role": "product_owner",
@@ -411,11 +809,10 @@ class MilestoneWebTests(unittest.TestCase):
             )
             assert_actions(page_text(), {"implementation_started"}, {"prompt_approved"})
 
-            self.assertEqual(
-                submit("READY", "implementation_started", "Start implementation").status_code,
-                302,
-            )
+            started = submit("READY", "implementation_started", "Start implementation")
+            self.assertEqual(started.status_code, 302)
             in_progress = page_text()
+            self.assertIn("Repository Intelligence: NOT_AVAILABLE", in_progress)
             assert_actions(
                 in_progress,
                 {"question_submitted", "bug_discovered", "closeout_submitted"},
@@ -805,6 +1202,7 @@ class MilestoneWebTests(unittest.TestCase):
                         "repository_generation": "0",
                         "milestone_id": selection["milestone_id"],
                         "prompt_path": selection["prompt_path"],
+                        "expected_prompt_identity": workflow["prompt_identity"],
                         "expected_phase": workflow["phase"],
                         "expected_event_count": str(workflow["event_count"]),
                         "event_type": event_type,
@@ -1017,6 +1415,7 @@ class MilestoneWebTests(unittest.TestCase):
                         "repository_generation": "0",
                         "milestone_id": selection["milestone_id"],
                         "prompt_path": selection["prompt_path"],
+                        "expected_prompt_identity": workflow["prompt_identity"],
                         "expected_phase": workflow["phase"],
                         "expected_event_count": str(workflow["event_count"]),
                         "event_type": action,

@@ -24,6 +24,16 @@ def request(path: str, arguments: dict[str, str] | None = None, payload: dict[st
             if len(raw) > 512000:
                 raise IntelligenceError("Repo Control response exceeds the transport byte cap.")
             value = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(512001)
+            value = json.loads(raw) if len(raw) <= 512000 else {}
+            message_text = value.get("error", {}).get("message")
+        except (ValueError, AttributeError):
+            message_text = None
+        raise IntelligenceError(
+            f"Repo Control intelligence request failed: {message_text or f'HTTP {exc.code}'}"
+        ) from exc
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         raise IntelligenceError(f"Repo Control intelligence request failed: {exc}") from exc
     if not isinstance(value, dict) or value.get("error") and "outcome" not in value:
@@ -49,4 +59,33 @@ def query(arguments: dict[str, Any]) -> dict[str, Any]:
 def rate(use_id: str, rating: str, inspected: bool | None) -> dict[str, Any]:
     return request("/api/coder/v1/intelligence/rating", payload={
         **preconditions(), "use_id": use_id, "rating": rating, "inspected": inspected,
+    })
+
+
+def refresh(
+    *,
+    workspace_repository_key: str,
+    workspace_repository_id: str,
+    milestone_id: str,
+    prompt_path: str,
+    prompt_identity: str,
+    event_count: int,
+) -> dict[str, Any]:
+    status = request("/api/architect/v1/status")
+    selected = status["repository"]
+    if (
+        selected.get("key") != workspace_repository_key
+        or selected.get("repository_id") != workspace_repository_id
+    ):
+        raise IntelligenceError(
+            "The service-selected repository does not match the Coder workspace; refresh was not attempted."
+        )
+    return request("/api/coder/v1/intelligence/refresh", payload={
+        "expected_repository_key": selected["key"],
+        "expected_generation": selected["registry_generation"],
+        "workspace_repository_id": workspace_repository_id,
+        "milestone_id": milestone_id,
+        "prompt_path": prompt_path,
+        "prompt_identity": prompt_identity,
+        "event_count": event_count,
     })

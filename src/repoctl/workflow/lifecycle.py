@@ -19,6 +19,7 @@ from .milestones import (
     _root_paths,
     discover_milestones,
     load_milestone_selection,
+    prompt_identity,
 )
 
 _LEDGER_SCHEMA_VERSION = 1
@@ -647,6 +648,7 @@ def _load_milestone_workflow_locked(
     state["latest_authoritative_decision"] = last_authoritative
     state["next_action"] = _next_action(state, candidate, open_questions)
     state["sidecar_path"] = sidecar_relative_path
+    state["prompt_identity"] = prompt_identity(root, milestone_root, candidate)
     state["event_count"] = len(ledger["events"])
     state["status"] = "valid"
     state["events"] = EVENT_OPTIONS

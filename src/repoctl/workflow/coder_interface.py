@@ -247,6 +247,7 @@ def get_coder_status(
         "prompt": {
             "path": candidate["prompt_path"],
             "size_bytes": prompt_size,
+            "identity": workflow["prompt_identity"],
         },
     }
 
@@ -304,6 +305,7 @@ def get_coder_context(
         "path": prompt_rel_path,
         "content": prompt_content,
         "size_bytes": len(prompt_content.encode("utf-8")),
+        "identity": status_data["prompt"]["identity"],
     }
     return context_data
 

@@ -11,15 +11,16 @@
   <p>{{ intelligence_status.source.file_count }} code files &middot; HEAD {{ intelligence_status.source.head }} &middot;
      content {{ intelligence_status.source.content_hash }}</p>
   {% endif %}
-  <p>Queries never rebuild. Only CURRENT evidence is served. Build/refresh deliberately after source changes.</p>
+  <p>Queries never rebuild. Only CURRENT evidence is served. Approve &amp; Start establishes a CURRENT graph where supported.
+     During authorized IN_PROGRESS work, Coder may refresh the fixed configured graph when fresh structural evidence would help.</p>
   <form method="post" action="{{ url_for('intelligence_build') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
     <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
-    <label><input type="checkbox" name="approve" value="yes" required> Product Owner: approve local code-only build/refresh</label>
     <button type="submit">Build / Refresh Graph</button>
   </form>
-  <p>No Git or milestone lifecycle changes. Local reported-role approval, not authenticated identity.</p>
+  <p>The deliberate button is the reported Product Owner action; identity is not authenticated. No separate checkbox,
+     Git change, or milestone lifecycle change.</p>
 </section>
 <section class="card">
   <h3>At a glance</h3>
@@ -57,6 +58,19 @@
   </table>
 </section>
 <section class="card">
+  <h3>Graph refresh receipts (separate from evidence queries)</h3>
+  <p>{{ measurements.refresh_attempts }} recorded attempts; {{ measurements.completed_refreshes }} completed.</p>
+  <table>
+    <thead><tr><th>Time / actor</th><th>Milestone</th><th>Trigger / action</th>
+      <th>Final state</th><th>Generation</th><th>Elapsed</th><th>Outcome</th></tr></thead>
+    <tbody>{% for row in measurements.refreshes %}
+    <tr><td>{{ row.timestamp }}<br>{{ row.actor }}</td><td>{{ row.milestone_id or "—" }}</td>
+      <td>{{ row.triggering_freshness }} / {{ row.action }}</td>
+      <td>{{ row.final_freshness }}</td><td>{{ row.generation_after or "none" }}</td>
+      <td>{{ "%.1f"|format(row.elapsed_ms) }} ms</td>
+      <td>{{ "completed" if row.completed else (row.error_code or "incomplete") }}</td></tr>
+    {% else %}<tr><td colspan="7">No graph maintenance attempts recorded.</td></tr>{% endfor %}</tbody>
+  </table>
   <h3>Comparative tasks: control &rarr; intelligence first</h3>
   <p>Each row states its methodology. Bytes are not model tokens. Mechanical replay time is not human reasoning time.
      Inspect correctness and unsupported cases alongside any savings; no automatic adoption score.</p>

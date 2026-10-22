@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -15,8 +16,8 @@ from repoctl.cli import main
 from repoctl.intelligence import client, measurements
 from repoctl.intelligence.provider import GraphifyProvider, IntelligenceError, RUNTIME
 from repoctl.intelligence.service import (
-    artifact_root, build_graph, encoded, graph_status, intelligence_query, normalize,
-    safe_path, source_snapshot, write_json,
+    RefreshAuthorizationError, artifact_root, build_graph, encoded, graph_status,
+    intelligence_query, normalize, refresh_graph, safe_path, source_snapshot, write_json,
 )
 from repoctl.mcp.architect_adapter import AdapterValidationError, handle_rpc_request, validate_tool_call
 from repoctl.web.app import create_web_app
@@ -102,6 +103,116 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(graph_status(self.repository, self.root)["state"], "FAILED")
         self.assertFalse(list((self.root / "generations").glob("*/source")))
         self.assertEqual(self.query()["evidence"]["nodes"], [])
+
+    def test_refresh_current_is_noop_and_maintenance_is_separate_from_query_uses(self):
+        current = self.build()
+        with patch("repoctl.intelligence.service.build_graph") as build:
+            result = refresh_graph(
+                self.repository,
+                self.state,
+                actor="po_manual",
+                registry_generation=0,
+            )
+        build.assert_not_called()
+        self.assertEqual(result["outcome"], "CURRENT")
+        self.assertEqual(result["receipt"]["action"], "noop_current")
+        self.assertTrue(result["receipt"]["completed"])
+        self.assertEqual(result["receipt"]["generation_before"], current["generation"])
+        self.assertEqual(result["receipt"]["generation_after"], current["generation"])
+        summary = measurements.summary(self.root)
+        self.assertEqual(summary["uses"], 0)
+        self.assertEqual(summary["refresh_attempts"], 1)
+        self.assertEqual(summary["completed_refreshes"], 1)
+        self.assertEqual(summary["refreshes"][0]["actor"], "po_manual")
+        self.assertNotIn("query", summary["refreshes"][0])
+
+    def test_refresh_missing_graph_builds_and_records_source_matched_receipt(self):
+        result = refresh_graph(
+            self.repository,
+            self.state,
+            actor="coder",
+            milestone_id="M003.001",
+            registry_generation=0,
+            provider=self.provider,
+        )
+        self.assertEqual(result["outcome"], "REFRESHED")
+        self.assertEqual(result["graph"]["state"], "CURRENT")
+        self.assertEqual(result["receipt"]["action"], "build")
+        self.assertEqual(result["receipt"]["triggering_freshness"], "MISSING")
+        self.assertEqual(
+            result["receipt"]["source_identity_before"],
+            result["receipt"]["source_identity_after"],
+        )
+        self.assertTrue(result["receipt"]["completed"])
+        self.assertEqual(measurements.summary(self.root)["uses"], 0)
+
+    def test_refresh_without_supported_code_is_explicitly_not_available(self):
+        (self.repository_path / "src/one.py").unlink()
+        with patch("repoctl.intelligence.service.build_graph") as build:
+            result = refresh_graph(
+                self.repository,
+                self.state,
+                actor="po_lifecycle",
+                milestone_id="M003.001",
+                registry_generation=0,
+            )
+        build.assert_not_called()
+        self.assertEqual(result["outcome"], "NOT_AVAILABLE")
+        self.assertEqual(result["receipt"]["action"], "not_available")
+        self.assertEqual(result["receipt"]["final_freshness"], "NOT_AVAILABLE")
+        self.assertTrue(result["receipt"]["completed"])
+
+    def test_refresh_authorization_change_prevents_current_publication(self):
+        @contextmanager
+        def reject_publication():
+            raise RefreshAuthorizationError("milestone authorization changed")
+            yield
+
+        result = refresh_graph(
+            self.repository,
+            self.state,
+            actor="coder",
+            milestone_id="M003.001",
+            registry_generation=0,
+            publication_guard=reject_publication,
+            provider=self.provider,
+        )
+        self.assertEqual(result["outcome"], "FAILED")
+        self.assertEqual(result["receipt"]["error_code"], "authorization_changed")
+        self.assertFalse(result["receipt"]["completed"])
+        self.assertEqual(graph_status(self.repository, self.root)["state"], "FAILED")
+
+    def test_refresh_contention_and_source_change_fail_explicitly(self):
+        with patch("repoctl.intelligence.service.fcntl.flock", side_effect=BlockingIOError):
+            contended = refresh_graph(
+                self.repository,
+                self.state,
+                actor="coder",
+                milestone_id="M003.001",
+                registry_generation=0,
+                provider=self.provider,
+            )
+        self.assertEqual(contended["outcome"], "FAILED")
+        self.assertEqual(contended["receipt"]["error_code"], "build_failed")
+        self.assertFalse(contended["receipt"]["completed"])
+
+        class EditingProvider(FakeProvider):
+            def build(inner_self, source, output):
+                super().build(source, output)
+                (self.repository_path / "src/one.py").write_text("changed_during_build = True\n")
+
+        changed = refresh_graph(
+            self.repository,
+            self.state,
+            actor="coder",
+            milestone_id="M003.001",
+            registry_generation=0,
+            provider=EditingProvider(),
+        )
+        self.assertEqual(changed["outcome"], "FAILED")
+        self.assertEqual(changed["receipt"]["error_code"], "source_changed")
+        self.assertFalse(changed["receipt"]["completed"])
+        self.assertEqual(graph_status(self.repository, self.root)["state"], "STALE")
 
     def test_source_identity_tracks_untracked_code_not_docs_or_state(self):
         before = source_snapshot(self.repository)
@@ -295,9 +406,18 @@ class IntelligenceTests(unittest.TestCase):
         with browser.session_transaction() as session:
             token = session["csrf_token"]
         form = {"csrf_token": token, "repository_key": "default", "repository_generation": "0"}
+        self.assertNotIn(b'name="approve"', browser.get("/intelligence").data)
         with patch("repoctl.intelligence.service.GraphifyProvider", return_value=self.provider):
-            self.assertEqual(browser.post("/intelligence/build", data=form).status_code, 400)
-            response = browser.post("/intelligence/build", data={**form, "approve": "yes"})
+            self.assertEqual(browser.post("/intelligence/build", data={**form, "approve": "yes"}).status_code, 400)
+            self.assertEqual(
+                browser.post("/intelligence/build", data={**form, "csrf_token": ""}).status_code,
+                400,
+            )
+            self.assertEqual(
+                browser.post("/intelligence/build", data={**form, "repository_generation": "9"}).status_code,
+                400,
+            )
+            response = browser.post("/intelligence/build", data=form)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(graph_status(self.repository, self.root)["state"], "CURRENT")
         result = self.query()

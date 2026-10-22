@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import secrets
 import threading
@@ -15,7 +16,15 @@ from ..compare.manager import compare_snapshots
 from ..context.generator import build_and_publish_context
 from ..intelligence import measurements as intelligence_measurements
 from ..intelligence.provider import IntelligenceError
-from ..intelligence.service import artifact_root, build_graph, encoded, graph_status, intelligence_query
+from ..intelligence.service import (
+    RefreshAuthorizationError,
+    artifact_root,
+    encoded,
+    graph_status,
+    intelligence_query,
+    refresh_graph,
+    source_snapshot,
+)
 from ..scanner.core import DEFAULT_STATE_ROOT, run_scan_with_artifacts
 from ..scanner.git_ops import ScanError
 from ..snapshot.manager import create_snapshot
@@ -419,6 +428,117 @@ def create_web_app(
                 "stale_repository_selection",
                 "The active repository changed during this request. Review the current repository and retry.",
                 status_code=409,
+            )
+
+    def prepare_milestone_start_baseline() -> dict[str, Any] | None:
+        action = request.form.get("event_type", "")
+        if action not in {"approve_and_start", "implementation_started"}:
+            return None
+        repository = current_repository()
+        required_phase = "PLANNING" if action == "approve_and_start" else "READY"
+
+        def validate_start_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+            active_repository, active_generation = registry.snapshot()
+            if (
+                active_repository.repository_id != repository.repository_id
+                or active_repository.key != repository.key
+                or active_generation != g.repository_registry_generation
+                or request.form.get("repository_key") != repository.key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+            ):
+                raise RefreshAuthorizationError(
+                    "Repository selection changed; reload the milestone page before starting."
+                )
+            try:
+                selection = load_milestone_selection(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                )
+                if (
+                    selection["status"] != "selected"
+                    or selection["selection"]["milestone_id"] != request.form.get("milestone_id")
+                    or selection["selection"]["prompt_path"] != request.form.get("prompt_path")
+                ):
+                    raise RefreshAuthorizationError(
+                        "Selected milestone or prompt changed; reload before starting."
+                    )
+                workflow = load_milestone_workflow(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                )
+            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                raise RefreshAuthorizationError(
+                    f"Cannot verify the selected milestone before graph preparation: {exc}"
+                ) from exc
+            if (
+                workflow["phase"] != required_phase
+                or request.form.get("expected_phase") != required_phase
+                or request.form.get("expected_event_count") != str(workflow["event_count"])
+                or request.form.get("expected_prompt_identity") != workflow["prompt_identity"]
+                or not request.form.get("summary", "").strip()
+                or len(request.form.get("summary", "")) > 2000
+            ):
+                raise RefreshAuthorizationError(
+                    "Milestone phase, prompt identity, event history, or summary changed; reload before starting."
+                )
+            return selection["selection"], workflow
+
+        @contextmanager
+        def publication_guard():
+            with STATE_ARTIFACT_LOCK:
+                validate_start_snapshot()
+                yield
+
+        with repository_action_lock:
+            try:
+                candidate, workflow = validate_start_snapshot()
+            except RefreshAuthorizationError as exc:
+                raise WebUIError(
+                    "stale_workflow_request",
+                    str(exc),
+                    status_code=409,
+                ) from exc
+            result = refresh_graph(
+                repository,
+                effective_state_root,
+                actor="po_lifecycle",
+                milestone_id=candidate["milestone_id"],
+                registry_generation=g.repository_registry_generation,
+                publication_guard=publication_guard,
+            )
+        if result["outcome"] == "FAILED":
+            raise IntelligenceError(
+                "Required Repository Intelligence baseline failed; no lifecycle event was written. "
+                f"Receipt {result['receipt']['id']}. {result.get('error') or 'Review graph status and retry.'}"
+            )
+        return result
+
+    def verify_milestone_start_baseline(
+        repository: RepositoryEntry,
+        baseline: dict[str, Any] | None,
+    ) -> None:
+        if baseline is None:
+            return
+        if baseline["outcome"] == "NOT_AVAILABLE":
+            current = source_snapshot(repository)
+            if current["files"]:
+                raise WorkflowRecordError(
+                    "Supported source appeared after the intelligence availability check; refresh and start again."
+                )
+            return
+        current = graph_status(repository, artifact_root(repository, effective_state_root))
+        expected = baseline["graph"]
+        if (
+            current["state"] != "CURRENT"
+            or current.get("generation") != expected.get("generation")
+            or current.get("source", {}).get("content_hash")
+            != expected.get("source", {}).get("content_hash")
+        ):
+            raise WorkflowRecordError(
+                "Repository Intelligence is no longer CURRENT for this source identity; refresh and start again."
             )
 
     @app.context_processor
@@ -857,6 +977,109 @@ def create_web_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.post("/api/coder/v1/intelligence/refresh")
+    def coder_intelligence_refresh_api():
+        if request.content_length is None or request.content_length > 2048:
+            raise IntelligenceError("Coder refresh requires a bounded JSON body.")
+        payload = request.get_json(silent=True)
+        required = {
+            "expected_repository_key", "expected_generation", "workspace_repository_id",
+            "milestone_id", "prompt_path", "prompt_identity", "event_count",
+        }
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise IntelligenceError("Coder refresh requires exact repository and milestone preconditions.")
+        if (
+            not isinstance(payload["workspace_repository_id"], str)
+            or not 1 <= len(payload["workspace_repository_id"]) <= 128
+            or not isinstance(payload["milestone_id"], str)
+            or not 1 <= len(payload["milestone_id"]) <= 64
+            or not isinstance(payload["prompt_path"], str)
+            or not 1 <= len(payload["prompt_path"]) <= 2000
+            or not isinstance(payload["prompt_identity"], str)
+            or len(payload["prompt_identity"]) != 64
+            or any(char not in "0123456789abcdef" for char in payload["prompt_identity"])
+            or isinstance(payload["event_count"], bool)
+            or not isinstance(payload["event_count"], int)
+            or payload["event_count"] < 0
+        ):
+            raise IntelligenceError("Invalid Coder refresh identity, prompt, or event-count precondition.")
+        with repository_action_lock:
+            dispatch_preconditions(payload)
+            repository = current_repository()
+            if payload["workspace_repository_id"] != repository.repository_id:
+                raise IntelligenceError(
+                    "Coder workspace and service-selected repository do not match; refresh was not attempted."
+                )
+
+            def validate_coder_refresh() -> dict[str, Any]:
+                active_repository, active_generation = registry.snapshot()
+                if (
+                    active_repository.repository_id != repository.repository_id
+                    or active_repository.key != repository.key
+                    or active_generation != g.repository_registry_generation
+                    or payload["expected_generation"] != active_generation
+                ):
+                    raise RefreshAuthorizationError(
+                        "Repository selection changed; Coder graph publication is no longer authorized."
+                    )
+                try:
+                    selection = load_milestone_selection(
+                        repository.path,
+                        effective_state_root,
+                        repository.milestone_root,
+                    )
+                    if (
+                        selection["status"] != "selected"
+                        or selection["selection"]["milestone_id"] != payload["milestone_id"]
+                        or selection["selection"]["prompt_path"] != payload["prompt_path"]
+                    ):
+                        raise RefreshAuthorizationError(
+                            "Selected Coder milestone changed; refresh was not authorized."
+                        )
+                    workflow = load_milestone_workflow(
+                        repository.path,
+                        effective_state_root,
+                        repository.milestone_root,
+                        selection["selection"],
+                    )
+                except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                    raise RefreshAuthorizationError(
+                        f"Cannot verify Coder milestone authorization: {exc}"
+                    ) from exc
+                if (
+                    workflow["phase"] != "IN_PROGRESS"
+                    or workflow["open_blocker"]
+                    or workflow["waiting_category"] is not None
+                    or workflow["waiting_reason"] is not None
+                    or workflow["event_count"] != payload["event_count"]
+                    or workflow["prompt_identity"] != payload["prompt_identity"]
+                ):
+                    raise RefreshAuthorizationError(
+                        "Coder refresh requires the same authorized IN_PROGRESS milestone, prompt, "
+                        "and event history with no active blocker."
+                    )
+                return selection["selection"]
+
+            candidate = validate_coder_refresh()
+
+            @contextmanager
+            def publication_guard():
+                with STATE_ARTIFACT_LOCK:
+                    validate_coder_refresh()
+                    yield
+
+            result = refresh_graph(
+                repository,
+                effective_state_root,
+                actor="coder",
+                milestone_id=candidate["milestone_id"],
+                registry_generation=g.repository_registry_generation,
+                publication_guard=publication_guard,
+            )
+        response = Response(encoded(result), mimetype="application/json")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.post("/api/coder/v1/intelligence/rating")
     def coder_intelligence_rating():
         if request.content_length is None or request.content_length > 2048:
@@ -886,9 +1109,17 @@ def create_web_app(
             measurements=intelligence_measurements.summary(root), ratings=intelligence_measurements.RATINGS,
         )
 
-    def intelligence_form_preconditions() -> None:
+    def intelligence_form_preconditions(allowed_fields: frozenset[str] = frozenset()) -> None:
         _require_csrf()
         require_current_repository_selection()
+        required_fields = {"csrf_token", "repository_key", "repository_generation"}
+        if (
+            not required_fields.issubset(request.form.keys())
+            or not request.form.keys() <= required_fields | allowed_fields
+        ):
+            raise IntelligenceError(
+                "Intelligence actions accept only CSRF, repository identity, and supported action fields."
+            )
         if (request.form.get("repository_key") != current_repository().key
             or request.form.get("repository_generation") != str(g.repository_registry_generation)):
             raise IntelligenceError("Repository selection changed; reload the intelligence page and retry.")
@@ -897,16 +1128,28 @@ def create_web_app(
     def intelligence_build():
         with repository_action_lock:
             intelligence_form_preconditions()
-            if request.form.get("approve") != "yes":
-                raise IntelligenceError("Explicit Product Owner graph build approval is required.")
-            status = build_graph(current_repository(), effective_state_root)
-        flash(f"Graph build completed: {status['state']}. No Git/lifecycle action.", "success")
+            result = refresh_graph(
+                current_repository(),
+                effective_state_root,
+                actor="po_manual",
+                registry_generation=g.repository_registry_generation,
+            )
+        if result["outcome"] == "FAILED":
+            raise IntelligenceError(
+                f"Graph refresh failed. Receipt {result['receipt']['id']}. "
+                f"{result.get('error') or 'Review graph status and retry.'}"
+            )
+        flash(
+            f"Graph action {result['outcome']}: {result['graph']['state']}. "
+            f"Receipt {result['receipt']['id']}. No Git/lifecycle action.",
+            "success" if result["outcome"] != "NOT_AVAILABLE" else "warning",
+        )
         return redirect(url_for("intelligence_page"))
 
     @app.post("/intelligence/rating")
     def intelligence_rating():
         with repository_action_lock:
-            intelligence_form_preconditions()
+            intelligence_form_preconditions(frozenset({"use_id", "rating", "inspected"}))
             inspected = request.form.get("inspected", "")
             if inspected not in {"", "yes", "no"}:
                 raise IntelligenceError("Invalid inspection flag.")
@@ -1764,6 +2007,7 @@ def create_web_app(
     @app.post("/milestones/workflow/event")
     def record_milestone_workflow_event():
         require_mutation_request()
+        intelligence_baseline = prepare_milestone_start_baseline()
         with repository_action_lock, STATE_ARTIFACT_LOCK:
             require_current_repository_selection()
             submitted_repository = request.form.get("repository_key", "")
@@ -1822,8 +2066,23 @@ def create_web_app(
                     "Workflow events changed since this form was rendered. Refresh before submitting.",
                     status_code=409,
                 )
+            action = request.form.get("event_type", "")
+            if action in {"approve_and_start", "implementation_started"}:
+                if request.form.get("expected_prompt_identity") != workflow["prompt_identity"]:
+                    raise WebUIError(
+                        "stale_workflow_prompt",
+                        "The selected prompt changed since this form was rendered. Refresh before starting.",
+                        status_code=409,
+                    )
+                try:
+                    verify_milestone_start_baseline(current_repository(), intelligence_baseline)
+                except (WorkflowRecordError, IntelligenceError, ScanError) as exc:
+                    raise WebUIError(
+                        "stale_intelligence_baseline",
+                        f"Repository Intelligence baseline changed before lifecycle start: {exc}",
+                        status_code=409,
+                    ) from exc
             try:
-                action = request.form.get("event_type", "")
                 closure_override_reason = None
                 outstanding_dispatch_ids = None
                 if action in {"approve_and_start", "resolve_and_resume", "accept_and_close"}:
@@ -1960,7 +2219,15 @@ def create_web_app(
                 ), 400
             except MilestoneArtifactError as exc:
                 raise WebUIError("invalid_workflow_event", str(exc), status_code=400) from exc
-        flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
+        if intelligence_baseline is None:
+            flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
+        else:
+            receipt = intelligence_baseline["receipt"]
+            flash(
+                f"Milestone workflow event recorded. Repository Intelligence: "
+                f"{intelligence_baseline['outcome']} ({receipt['id']}).",
+                "success" if intelligence_baseline["outcome"] != "NOT_AVAILABLE" else "warning",
+            )
         return redirect(url_for("milestone_page"))
 
     @app.post("/milestones/reopen")

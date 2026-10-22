@@ -13,6 +13,7 @@ from .provider import IntelligenceError
 
 RATINGS = ("USEFUL", "PARTIAL", "NO_VALUE", "MISLEADING", "UNSUPPORTED")
 MAX_USES = 10000
+MAX_REFRESHES = 10000
 
 
 @contextmanager
@@ -37,6 +38,15 @@ def database(root: Path) -> Iterator[sqlite3.Connection]:
             )
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS benchmarks (id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS refreshes (
+                id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, repository_key TEXT NOT NULL,
+                repository_id TEXT NOT NULL, actor TEXT NOT NULL, registry_generation INTEGER,
+                milestone_id TEXT, triggering_freshness TEXT NOT NULL, action TEXT NOT NULL,
+                generation_before TEXT, generation_after TEXT, source_identity_before TEXT,
+                source_identity_after TEXT, final_freshness TEXT NOT NULL, elapsed_ms REAL NOT NULL,
+                error_code TEXT, completed INTEGER NOT NULL)"""
             )
             yield connection
     except sqlite3.Error as exc:
@@ -96,10 +106,60 @@ def add_benchmark(root: Path, payload: dict[str, Any]) -> None:
         db.execute("INSERT INTO benchmarks VALUES (?,?)", (payload["id"], json.dumps(payload)))
 
 
+def begin_refresh(root: Path, row: dict[str, Any]) -> None:
+    required = {
+        "id", "timestamp", "repository_key", "repository_id", "actor", "registry_generation",
+        "milestone_id", "triggering_freshness", "action", "generation_before", "generation_after",
+        "source_identity_before", "source_identity_after", "final_freshness", "elapsed_ms",
+        "error_code", "completed",
+    }
+    if set(row) != required or row["completed"] is not False:
+        raise IntelligenceError("Invalid intelligence refresh receipt.")
+    with database(root) as db:
+        if db.execute("SELECT COUNT(*) FROM refreshes").fetchone()[0] >= MAX_REFRESHES:
+            raise IntelligenceError("Intelligence refresh receipt capacity reached; review/archive before further refreshes.")
+        db.execute(
+            """INSERT INTO refreshes
+            (id,timestamp,repository_key,repository_id,actor,registry_generation,milestone_id,
+             triggering_freshness,action,generation_before,generation_after,source_identity_before,
+             source_identity_after,final_freshness,elapsed_ms,error_code,completed)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(row[key] for key in (
+                "id", "timestamp", "repository_key", "repository_id", "actor", "registry_generation",
+                "milestone_id", "triggering_freshness", "action", "generation_before", "generation_after",
+                "source_identity_before", "source_identity_after", "final_freshness", "elapsed_ms",
+                "error_code", "completed",
+            )),
+        )
+
+
+def finish_refresh(root: Path, row: dict[str, Any]) -> None:
+    with database(root) as db:
+        updated = db.execute(
+            """UPDATE refreshes SET action=?,generation_after=?,source_identity_before=?,
+            source_identity_after=?,final_freshness=?,elapsed_ms=?,error_code=?,completed=?
+            WHERE id=?""",
+            tuple(row[key] for key in (
+                "action", "generation_after", "source_identity_before", "source_identity_after",
+                "final_freshness", "elapsed_ms", "error_code", "completed", "id",
+            )),
+        )
+        if updated.rowcount != 1:
+            raise IntelligenceError("Intelligence refresh receipt could not be finalized.")
+
+
 def summary(root: Path) -> dict[str, Any]:
     with database(root) as db:
         rows = [dict(row) for row in db.execute("SELECT * FROM uses ORDER BY timestamp DESC,id DESC")]
         benchmarks = [json.loads(row[0]) for row in db.execute("SELECT payload FROM benchmarks ORDER BY id")]
+        refreshes = [
+            dict(row)
+            for row in db.execute("SELECT * FROM refreshes ORDER BY timestamp DESC,id DESC LIMIT 30")
+        ]
+        refresh_attempts = db.execute("SELECT COUNT(*) FROM refreshes").fetchone()[0]
+        completed_refreshes = db.execute(
+            "SELECT COUNT(*) FROM refreshes WHERE completed=1"
+        ).fetchone()[0]
     counts = Counter(row["rating"] for row in rows if row["rating"])
     rated = sum(counts.values())
     latencies = sorted(row["latency_ms"] for row in rows)
@@ -127,4 +187,7 @@ def summary(root: Path) -> dict[str, Any]:
         "misleading_uses": [row for row in rows if row["misleading_ever"]][:100],
         "omitted_misleading_uses": max(0, sum(row["misleading_ever"] for row in rows) - 100),
         "operations": operations, "recent": rows[:30], "benchmarks": benchmarks,
+        "refresh_attempts": refresh_attempts,
+        "completed_refreshes": completed_refreshes,
+        "refreshes": refreshes,
     }

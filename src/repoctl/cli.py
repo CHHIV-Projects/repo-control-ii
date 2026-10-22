@@ -136,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     rating_parser.add_argument("use_id")
     rating_parser.add_argument("rating", choices=RATINGS)
     rating_parser.add_argument("--inspected", choices=["yes", "no"])
+    subparsers.add_parser(
+        "coder-intelligence-refresh",
+        help="Refresh the fixed configured graph for this authorized managed Coder workspace",
+    )
 
     coder_question_parser = subparsers.add_parser(
         "coder-question", help="Submit a bounded question or blocker from the Coder"
@@ -558,6 +562,46 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(encoded(result).decode("ascii"))
         return 0 if result.get("outcome", "OK") in {"OK", "TRUNCATED"} else 2
+
+    if args.command == "coder-intelligence-refresh":
+        from .intelligence import client
+        from .intelligence.provider import IntelligenceError
+        from .intelligence.service import encoded
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            get_coder_status,
+            resolve_repository_entry,
+        )
+
+        try:
+            entry = resolve_repository_entry()
+            status = get_coder_status(repository_path=entry.path)
+            workflow = status["workflow"]
+            if (
+                status["repository"]["repository_id"] != entry.repository_id
+                or status["repository"]["key"] != entry.key
+                or status["milestone"]["phase"] != "IN_PROGRESS"
+                or not status["authorization"]["authorized"]
+                or workflow.get("waiting_category") is not None
+                or workflow.get("waiting_reason") is not None
+            ):
+                raise CoderInterfaceError(
+                    "Intelligence refresh requires this managed workspace's authorized IN_PROGRESS milestone "
+                    "with no active blocking condition."
+                )
+            result = client.refresh(
+                workspace_repository_key=entry.key,
+                workspace_repository_id=entry.repository_id,
+                milestone_id=status["milestone"]["id"],
+                prompt_path=status["prompt"]["path"],
+                prompt_identity=status["prompt"]["identity"],
+                event_count=workflow["event_count"],
+            )
+        except (CoderInterfaceError, IntelligenceError) as exc:
+            print(f"coder intelligence refresh failed: {exc}", file=sys.stderr)
+            return 2
+        print(encoded(result).decode("ascii"))
+        return 0 if result.get("outcome") in {"CURRENT", "REFRESHED", "NOT_AVAILABLE"} else 2
 
     if args.command == "coder-context":
         from .workflow.coder_interface import (
