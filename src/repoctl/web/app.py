@@ -36,6 +36,7 @@ from ..workflow.architect_dispatches import (
     ArchitectDispatchError,
     get_dispatch,
     list_dispatches,
+    list_outstanding_guidance,
     list_owner_dispatches,
     submit_dispatch,
     update_dispatch_status,
@@ -52,6 +53,7 @@ from ..workflow.lifecycle import (
     load_milestone_workflow,
     record_milestone_event,
     record_milestone_action,
+    record_milestone_reopen,
     waiting_resolution,
 )
 from ..scanner.core import STATE_ARTIFACT_LOCK
@@ -261,6 +263,41 @@ def _decorate_milestone_workflow(
         milestone=milestone_id, related=related_label,
     )
     return workflow
+
+
+def _outstanding_architect_dispatches(
+    repository: RepositoryEntry,
+    state_root: Path,
+    milestone_id: str,
+    event_history: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    closeouts = [
+        event for event in event_history
+        if event["event_type"] == "closeout_submitted"
+    ]
+    if not closeouts:
+        return []
+    outstanding: list[dict[str, str]] = []
+    for dispatch in list_outstanding_guidance(
+        repository.path,
+        state_root,
+        repository.repository_id,
+        milestone_id,
+        closeouts[-1]["timestamp"],
+    ):
+        clean_body = " ".join(dispatch["body"].split())
+        excerpt = clean_body[:320]
+        if len(clean_body) > 320:
+            excerpt = excerpt.rstrip() + "..."
+        outstanding.append(
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "type": dispatch["type"],
+                "approved_at": dispatch["approved_at"],
+                "excerpt": excerpt,
+            }
+        )
+    return outstanding
 
 
 class WebUIError(RuntimeError):
@@ -1621,6 +1658,12 @@ def create_web_app(
                     selection["selection"]["milestone_id"],
                     has_closeout=selection["selection"]["closeout_exists"],
                 )
+                workflow["outstanding_dispatches"] = _outstanding_architect_dispatches(
+                    repository,
+                    effective_state_root,
+                    selection["selection"]["milestone_id"],
+                    workflow["event_history"],
+                )
             except (MilestoneArtifactError, WorkflowRecordError) as exc:
                 workflow = {"status": "invalid", "reason": str(exc)}
         return render_template(
@@ -1666,6 +1709,12 @@ def create_web_app(
             workflow,
             selection["selection"]["milestone_id"],
             has_closeout=selection["selection"]["closeout_exists"],
+        )
+        workflow["outstanding_dispatches"] = _outstanding_architect_dispatches(
+            repository,
+            effective_state_root,
+            selection["selection"]["milestone_id"],
+            workflow["event_history"],
         )
         response = app.make_response(
             render_template(
@@ -1775,9 +1824,81 @@ def create_web_app(
                 )
             try:
                 action = request.form.get("event_type", "")
+                closure_override_reason = None
+                outstanding_dispatch_ids = None
                 if action in {"approve_and_start", "resolve_and_resume", "accept_and_close"}:
                     if submitted_count is None:
                         raise WorkflowRecordError("Refresh to load the current workflow event count.")
+                    if action == "accept_and_close":
+                        outstanding = _outstanding_architect_dispatches(
+                            repository,
+                            effective_state_root,
+                            selection["selection"]["milestone_id"],
+                            workflow["event_history"],
+                        )
+                        submitted_ids = request.form.getlist("closure_guard_dispatch_id")
+                        confirmed = request.form.get("closure_guard_confirmed") == "yes"
+                        submitted_reason = request.form.get("closure_override_reason", "").strip()
+                        if outstanding:
+                            current_ids = [item["dispatch_id"] for item in outstanding]
+                            workflow["outstanding_dispatches"] = outstanding
+                            if not confirmed:
+                                workflow["closure_confirmation"] = {
+                                    "dispatches": outstanding,
+                                    "dispatch_ids": current_ids,
+                                    "summary": request.form.get("summary", ""),
+                                    "reason": submitted_reason,
+                                }
+                                _decorate_milestone_workflow(
+                                    workflow,
+                                    selection["selection"]["milestone_id"],
+                                    has_closeout=selection["selection"]["closeout_exists"],
+                                )
+                                inventory = discover_milestones(repository.path, repository.milestone_root)
+                                return render_template(
+                                    "milestones.html",
+                                    candidates=inventory["candidates"],
+                                    inventory_issues=inventory["issues"],
+                                    selection=selection,
+                                    milestone_root=repository.milestone_root,
+                                    workflow=workflow,
+                                )
+                            if submitted_ids != current_ids:
+                                raise WebUIError(
+                                    "stale_closure_confirmation",
+                                    "Approved Architect guidance changed since the confirmation was prepared. Review the current dispatches and retry.",
+                                    status_code=409,
+                                )
+                            if not submitted_reason:
+                                workflow["closure_confirmation"] = {
+                                    "dispatches": outstanding,
+                                    "dispatch_ids": current_ids,
+                                    "summary": request.form.get("summary", ""),
+                                    "reason": request.form.get("closure_override_reason", ""),
+                                    "error": "Enter a reason to override the outstanding-guidance guard.",
+                                }
+                                _decorate_milestone_workflow(
+                                    workflow,
+                                    selection["selection"]["milestone_id"],
+                                    has_closeout=selection["selection"]["closeout_exists"],
+                                )
+                                inventory = discover_milestones(repository.path, repository.milestone_root)
+                                return render_template(
+                                    "milestones.html",
+                                    candidates=inventory["candidates"],
+                                    inventory_issues=inventory["issues"],
+                                    selection=selection,
+                                    milestone_root=repository.milestone_root,
+                                    workflow=workflow,
+                                ), 400
+                            closure_override_reason = submitted_reason
+                            outstanding_dispatch_ids = tuple(current_ids)
+                        elif confirmed or submitted_ids or submitted_reason:
+                            raise WebUIError(
+                                "stale_closure_confirmation",
+                                "The outstanding-guidance condition has changed. Refresh and review the milestone before closing.",
+                                status_code=409,
+                            )
                     record_milestone_action(
                         repository.path, effective_state_root, repository.milestone_root,
                         selection["selection"],
@@ -1787,8 +1908,12 @@ def create_web_app(
                         expected_event_count=workflow["event_count"],
                         related_event_id=request.form.get("related_event_id") or None,
                         lock_in_summary=request.form.get("lock_in_summary") or None,
+                        closure_override_reason=closure_override_reason,
+                        outstanding_dispatch_ids=outstanding_dispatch_ids,
                     )
                 else:
+                    if action == "milestone_closed":
+                        raise WorkflowRecordError("Use the guarded Accept & Close action to close a milestone.")
                     record_milestone_event(
                         repository.path,
                         effective_state_root,
@@ -1818,6 +1943,12 @@ def create_web_app(
                     selection["selection"]["milestone_id"],
                     has_closeout=selection["selection"]["closeout_exists"],
                 )
+                workflow["outstanding_dispatches"] = _outstanding_architect_dispatches(
+                    repository,
+                    effective_state_root,
+                    selection["selection"]["milestone_id"],
+                    workflow["event_history"],
+                )
                 return render_template(
                     "milestones.html",
                     candidates=inventory["candidates"],
@@ -1830,6 +1961,73 @@ def create_web_app(
             except MilestoneArtifactError as exc:
                 raise WebUIError("invalid_workflow_event", str(exc), status_code=400) from exc
         flash("Milestone workflow event recorded in the tracked workflow sidecar.", "success")
+        return redirect(url_for("milestone_page"))
+
+    @app.post("/milestones/reopen")
+    def reopen_milestone():
+        require_mutation_request()
+        with repository_action_lock, STATE_ARTIFACT_LOCK:
+            require_current_repository_selection()
+            repository = current_repository()
+            if (
+                request.form.get("repository_key") != repository.key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+            ):
+                raise WebUIError(
+                    "stale_milestone_reopen",
+                    "The selected repository changed since this form was rendered. Refresh and retry.",
+                    status_code=409,
+                )
+            selection = load_milestone_selection(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+            )
+            if (
+                selection["status"] != "selected"
+                or selection["selection"]["milestone_id"] != request.form.get("milestone_id")
+                or selection["selection"]["prompt_path"] != request.form.get("prompt_path")
+            ):
+                raise WebUIError(
+                    "stale_milestone_reopen",
+                    "The selected milestone changed or is invalid. Refresh and retry.",
+                    status_code=409,
+                )
+            workflow = load_milestone_workflow(
+                repository.path,
+                effective_state_root,
+                repository.milestone_root,
+                selection["selection"],
+            )
+            if (
+                request.form.get("expected_phase") != "CLOSED"
+                or workflow["phase"] != "CLOSED"
+                or request.form.get("expected_event_count") != str(workflow["event_count"])
+            ):
+                raise WebUIError(
+                    "stale_milestone_reopen",
+                    "The milestone is no longer CLOSED or its history changed. Refresh and retry.",
+                    status_code=409,
+                )
+            if request.form.get("confirm_reopen") != "yes":
+                raise WebUIError(
+                    "reopen_confirmation_required",
+                    "Explicit Product Owner confirmation is required to reopen a milestone.",
+                    status_code=400,
+                )
+            try:
+                record_milestone_reopen(
+                    repository.path,
+                    effective_state_root,
+                    repository.milestone_root,
+                    selection["selection"],
+                    reason=request.form.get("reason", ""),
+                    target_phase=request.form.get("target_phase", ""),
+                    expected_event_count=workflow["event_count"],
+                )
+            except WorkflowRecordError as exc:
+                raise WebUIError("invalid_milestone_reopen", str(exc), status_code=400) from exc
+        flash("Milestone reopened. Prior acceptance/closure and Git history were not changed.", "success")
         return redirect(url_for("milestone_page"))
 
     @app.post("/milestones/handoff")

@@ -437,6 +437,7 @@ PLANNING
       ↔ WAITING
 → REVIEW
 → CLOSED
+  ↘ Product Owner append-only reopen to REVIEW or IN_PROGRESS
 ```
 
 Key architectural foundations established in this arc include:
@@ -774,6 +775,8 @@ Product Owner
 → performs guarded Git staging, commit, and push via Repo Control UI (or manual Git)
 → deliberately submits Accept & Close: REVIEW → CLOSED
   (acceptance_recorded and milestone_closed remain distinct ordered events)
+→ may explicitly reopen CLOSED to REVIEW or IN_PROGRESS with a reason;
+  prior acceptance/closure remain historical and no Git mutation occurs
 ```
 
 The iterative exchange between prompt and closeout is intentional.

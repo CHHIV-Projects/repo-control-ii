@@ -6,9 +6,15 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.app import create_web_app
+from repoctl.workflow.architect_dispatches import (
+    list_outstanding_guidance,
+    submit_dispatch,
+    update_dispatch_status,
+)
 from repoctl.workflow.lifecycle import load_milestone_workflow
 from repoctl.workflow.milestones import load_milestone_selection
 
@@ -275,7 +281,7 @@ class MilestoneWebTests(unittest.TestCase):
                 r'data-state-version="([^"]+)"',
                 initial_panel.get_data(as_text=True),
             )
-            self.assertIsNotNone(initial_version)
+            self.assertIsNotNone(initial_version            )
 
             def submit(phase: str, event_type: str, summary: str, **fields: str):
                 return client.post(
@@ -348,9 +354,10 @@ class MilestoneWebTests(unittest.TestCase):
             closeout = first / "docs" / "milestones" / "R003.01_test_closeout.md"
             closeout.write_text("# Closeout\n", encoding="utf-8")
             registry = _registry(root, first, second)
+            state_root = root / "state"
             client = create_web_app(
                 repository_registry_path=registry,
-                state_root=root / "state",
+                state_root=state_root,
             ).test_client()
             client.get("/milestones")
             csrf = _csrf(client)
@@ -374,6 +381,8 @@ class MilestoneWebTests(unittest.TestCase):
                     self.assertNotRegex(text, rf'<option value="{event_type}"')
 
             def submit(phase: str, event_type: str, summary: str, **fields: str):
+                selected = load_milestone_selection(first, state_root)["selection"]
+                workflow = load_milestone_workflow(first, state_root, "docs/milestones", selected)
                 return client.post(
                     "/milestones/workflow/event",
                     data={
@@ -383,6 +392,7 @@ class MilestoneWebTests(unittest.TestCase):
                         "milestone_id": "R003.01",
                         "prompt_path": "docs/milestones/R003.01_test_prompt.md",
                         "expected_phase": phase,
+                        "expected_event_count": str(workflow["event_count"]),
                         "event_type": event_type,
                         "summary": summary,
                         "actor_role": "product_owner",
@@ -480,12 +490,22 @@ class MilestoneWebTests(unittest.TestCase):
                 302,
             )
             assert_actions(page_text(), {"accept_and_close"})
+            direct_close = submit("REVIEW", "milestone_closed", "Bypass guarded action")
+            self.assertEqual(direct_close.status_code, 400)
+            self.assertEqual(
+                load_milestone_workflow(
+                    first,
+                    state_root,
+                    "docs/milestones",
+                    load_milestone_selection(first, state_root)["selection"],
+                )["phase"],
+                "REVIEW",
+            )
             self.assertEqual(
                 submit(
                     "REVIEW",
-                    "milestone_closed",
+                    "accept_and_close",
                     "Close accepted milestone",
-                    po_approved="yes",
                 ).status_code,
                 302,
             )
@@ -750,6 +770,372 @@ class MilestoneWebTests(unittest.TestCase):
             )
             self.assertEqual(repaired.status_code, 200)
             self.assertIn("Selected milestone: R003.01", repaired.get_data(as_text=True))
+
+
+    def test_closed_milestone_reopen_browser_action_preserves_history_and_git(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            state_root = root / "state"
+            client = create_web_app(
+                repository_registry_path=_registry(root, first, second),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post("/milestones/select", data={
+                "csrf_token": csrf,
+                "repository_key": "first",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+            })
+
+            def current():
+                selection = load_milestone_selection(first, state_root)["selection"]
+                return selection, load_milestone_workflow(first, state_root, "docs/milestones", selection)
+
+            def submit_event(event_type: str, summary: str, **fields):
+                selection, workflow = current()
+                return client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": selection["milestone_id"],
+                        "prompt_path": selection["prompt_path"],
+                        "expected_phase": workflow["phase"],
+                        "expected_event_count": str(workflow["event_count"]),
+                        "event_type": event_type,
+                        "summary": summary,
+                        **fields,
+                    },
+                )
+
+            self.assertEqual(submit_event("approve_and_start", "Start").status_code, 302)
+            (first / "docs/milestones/R003.01_test_closeout.md").write_text("# Closeout\n", encoding="utf-8")
+            self.assertEqual(submit_event("closeout_submitted", "Submit closeout").status_code, 302)
+            self.assertEqual(submit_event("accept_and_close", "Accept closeout").status_code, 302)
+            selection, closed = current()
+            prior_events = list(closed["event_history"])
+            head = subprocess.run(
+                ["git", "-C", str(first), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            refs = subprocess.run(
+                ["git", "-C", str(first), "for-each-ref", "--format=%(refname) %(objectname)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            index = subprocess.run(
+                ["git", "-C", str(first), "diff", "--cached", "--name-only"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            page = client.get("/milestones").get_data(as_text=True)
+            self.assertIn("Reopen milestone", page)
+            self.assertIn("Prior acceptance and closure remain in the workflow history", page)
+            self.assertIn("Reopening does not modify Git", page)
+
+            reopen = {
+                "csrf_token": csrf,
+                "repository_key": "first",
+                "repository_generation": "0",
+                "milestone_id": selection["milestone_id"],
+                "prompt_path": selection["prompt_path"],
+                "expected_phase": "CLOSED",
+                "expected_event_count": str(closed["event_count"]),
+                "target_phase": "REVIEW",
+                "reason": "Accidental premature closure; return to review.",
+                "confirm_reopen": "yes",
+            }
+            self.assertEqual(
+                client.post("/milestones/reopen", data={**reopen, "csrf_token": ""}).status_code,
+                400,
+            )
+            self.assertEqual(
+                client.post("/milestones/reopen", data={**reopen, "repository_generation": "1"}).status_code,
+                409,
+            )
+            self.assertEqual(
+                client.post("/milestones/reopen", data={**reopen, "confirm_reopen": ""}).status_code,
+                400,
+            )
+            self.assertEqual(client.post("/milestones/reopen", data=reopen).status_code, 302)
+            _, reopened = current()
+            self.assertEqual(reopened["phase"], "REVIEW")
+            self.assertEqual(reopened["event_history"][:-1], prior_events)
+            self.assertEqual(reopened["event_history"][-1]["reopen_target_phase"], "REVIEW")
+
+            self.assertEqual(submit_event("acceptance_recorded", "Accept after review").status_code, 302)
+            self.assertEqual(submit_event("accept_and_close", "Close after review").status_code, 302)
+            selection, closed_again = current()
+            reopen["expected_event_count"] = str(closed_again["event_count"])
+            reopen["target_phase"] = "IN_PROGRESS"
+            reopen["reason"] = "Continue bounded work under the original milestone."
+            self.assertEqual(client.post("/milestones/reopen", data=reopen).status_code, 302)
+            self.assertEqual(current()[1]["phase"], "IN_PROGRESS")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+                ).stdout.strip(),
+                head,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "for-each-ref", "--format=%(refname) %(objectname)"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                refs,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "diff", "--cached", "--name-only"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                index,
+            )
+
+    def test_outstanding_dispatch_guard_uses_latest_closeout_and_applicability(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = _repo(Path(td), "repo", "R003.01")
+            repository_id = make_repository_id(repo)
+            closeout = {"event_type": "closeout_submitted", "timestamp": "2026-01-02T00:00:00+00:00"}
+
+            def dispatch(
+                dispatch_id: str,
+                *,
+                dispatch_type: str = "INSTRUCTION",
+                status: str = "APPROVED",
+                approved_at: str = "2026-01-03T00:00:00+00:00",
+                repository_key: str = repository_id,
+                milestone_id: str = "R003.01",
+                approved_milestone_id: str = "R003.01",
+            ):
+                return {
+                    "dispatch_id": dispatch_id,
+                    "repository_id": repository_key,
+                    "milestone_id": milestone_id,
+                    "approved_milestone_id": approved_milestone_id,
+                    "type": dispatch_type,
+                    "status": status,
+                    "approved_at": approved_at,
+                    "body": f"Guidance {dispatch_id}",
+                }
+
+            def outstanding(records, events=None):
+                history = [closeout] if events is None else events
+                if not history:
+                    return []
+                with mock.patch("repoctl.workflow.architect_dispatches.list_dispatches", return_value=records):
+                    return list_outstanding_guidance(
+                        repo,
+                        Path(td) / "state",
+                        repository_id,
+                        "R003.01",
+                        history[-1]["timestamp"],
+                    )
+
+            instruction = dispatch("a" * 32)
+            response = dispatch("b" * 32, dispatch_type="RESPONSE")
+            self.assertEqual([item["dispatch_id"] for item in outstanding([instruction])], ["a" * 32])
+            self.assertEqual([item["dispatch_id"] for item in outstanding([response])], ["b" * 32])
+            self.assertEqual(
+                outstanding([dispatch("c" * 32, approved_at="2026-01-01T23:59:59+00:00")]),
+                [],
+            )
+            self.assertEqual(outstanding([dispatch("d" * 32, status="PENDING")]), [])
+            self.assertEqual(outstanding([dispatch("e" * 32, status="REJECTED")]), [])
+            self.assertEqual(outstanding([dispatch("f" * 32, dispatch_type="PROMPT")]), [])
+            self.assertEqual(outstanding([dispatch("1" * 32, milestone_id="R004.01")]), [])
+            self.assertEqual(outstanding([dispatch("2" * 32, approved_milestone_id="R004.01")]), [])
+            self.assertEqual(outstanding([dispatch("3" * 32, repository_key="another-repository")]), [])
+            self.assertEqual(
+                outstanding(
+                    [instruction],
+                    [
+                        closeout,
+                        {"event_type": "closeout_submitted", "timestamp": "2026-01-04T00:00:00+00:00"},
+                    ],
+                ),
+                [],
+            )
+            self.assertEqual(outstanding([instruction], events=[]), [])
+
+    def test_accept_close_guard_requires_second_confirmation_and_revalidates_dispatches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = _repo(root, "first", "R003.01")
+            second = _repo(root, "second", "R004.01")
+            state_root = root / "state"
+            repository_id = make_repository_id(first)
+            git_head = subprocess.run(
+                ["git", "-C", str(first), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            git_refs = subprocess.run(
+                ["git", "-C", str(first), "for-each-ref", "--format=%(refname) %(objectname)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            git_index = subprocess.run(
+                ["git", "-C", str(first), "diff", "--cached", "--name-only"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            client = create_web_app(
+                repository_registry_path=_registry(root, first, second),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post("/milestones/select", data={
+                "csrf_token": csrf,
+                "repository_key": "first",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+            })
+
+            def current():
+                selection = load_milestone_selection(first, state_root)["selection"]
+                return selection, load_milestone_workflow(first, state_root, "docs/milestones", selection)
+
+            def post(action: str, **fields):
+                selection, workflow = current()
+                return client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": selection["milestone_id"],
+                        "prompt_path": selection["prompt_path"],
+                        "expected_phase": workflow["phase"],
+                        "expected_event_count": str(workflow["event_count"]),
+                        "event_type": action,
+                        "summary": "Product Owner closure decision.",
+                        **fields,
+                    },
+                )
+
+            self.assertEqual(post("approve_and_start").status_code, 302)
+            (first / "docs/milestones/R003.01_test_closeout.md").write_text("# Closeout\n", encoding="utf-8")
+            self.assertEqual(post("closeout_submitted").status_code, 302)
+
+            def create_approved(dispatch_type: str, body: str, approved_at: str):
+                dispatch = submit_dispatch(
+                    first,
+                    state_root,
+                    repository_id,
+                    dispatch_type=dispatch_type,
+                    milestone_id="R003.01",
+                    body=body,
+                )
+                with mock.patch(
+                    "repoctl.workflow.architect_dispatches._now",
+                    return_value=approved_at,
+                ):
+                    update_dispatch_status(
+                        first,
+                        state_root,
+                        repository_id,
+                        dispatch["dispatch_id"],
+                        "APPROVED",
+                        milestone_root="docs/milestones",
+                        active_milestone_id="R003.01",
+                    )
+                return dispatch["dispatch_id"]
+
+            first_id = create_approved(
+                "INSTRUCTION",
+                "Run isolated database validation before closure.",
+                "2030-01-01T00:00:00+00:00",
+            )
+            _, review = current()
+            count_before = review["event_count"]
+            first_confirmation = post("accept_and_close")
+            self.assertEqual(first_confirmation.status_code, 200)
+            self.assertIn(first_id, first_confirmation.get_data(as_text=True))
+            self.assertEqual(current()[1]["event_count"], count_before)
+
+            second_id = create_approved(
+                "RESPONSE",
+                "Clarify the required validation environment.",
+                "2031-01-01T00:00:00+00:00",
+            )
+            stale_confirmation = post(
+                "accept_and_close",
+                closure_guard_dispatch_id=first_id,
+                closure_override_reason="Reviewed, but stale dispatch list.",
+                closure_guard_confirmed="yes",
+            )
+            self.assertEqual(stale_confirmation.status_code, 409)
+            self.assertEqual(current()[1]["event_count"], count_before)
+
+            confirmation = post("accept_and_close")
+            self.assertEqual(confirmation.status_code, 200)
+            self.assertIn(first_id, confirmation.get_data(as_text=True))
+            self.assertIn(second_id, confirmation.get_data(as_text=True))
+            missing_checkbox = post(
+                "accept_and_close",
+                closure_guard_dispatch_id=[first_id, second_id],
+                closure_override_reason="Reviewed the outstanding guidance.",
+            )
+            self.assertEqual(missing_checkbox.status_code, 200)
+            self.assertEqual(current()[1]["event_count"], count_before)
+            missing_reason = post(
+                "accept_and_close",
+                closure_guard_dispatch_id=[first_id, second_id],
+                closure_guard_confirmed="yes",
+            )
+            self.assertEqual(missing_reason.status_code, 400)
+            self.assertEqual(current()[1]["event_count"], count_before)
+            closed = post(
+                "accept_and_close",
+                closure_guard_dispatch_id=[first_id, second_id],
+                closure_override_reason="The Product Owner deliberately accepts this risk.",
+                closure_guard_confirmed="yes",
+            )
+            self.assertEqual(closed.status_code, 302, closed.get_data(as_text=True))
+            final = current()[1]
+            self.assertEqual(final["phase"], "CLOSED")
+            closure = final["event_history"][-1]
+            self.assertEqual(
+                closure["closure_override_reason"],
+                "The Product Owner deliberately accepts this risk.",
+            )
+            self.assertEqual(closure["outstanding_dispatch_ids"], [first_id, second_id])
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+                ).stdout.strip(),
+                git_head,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "for-each-ref", "--format=%(refname) %(objectname)"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                git_refs,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(first), "diff", "--cached", "--name-only"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                git_index,
+            )
 
 
 if __name__ == "__main__":

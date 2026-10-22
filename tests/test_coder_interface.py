@@ -24,7 +24,12 @@ from repoctl.workflow.coder_interface import (
     submit_coder_question,
     submit_coder_test_result,
 )
-from repoctl.workflow.lifecycle import record_milestone_event
+from repoctl.workflow.lifecycle import (
+    load_milestone_workflow,
+    record_milestone_event,
+    record_milestone_reopen,
+)
+from repoctl.workflow.architect_dispatches import submit_dispatch, update_dispatch_status
 from repoctl.workflow.milestones import (
     discover_milestones,
     save_milestone_selection,
@@ -385,6 +390,120 @@ class TestCoderInterface(unittest.TestCase):
         self.assertFalse(ctx["authorization"]["authorized"])
         self.assertEqual(ctx["authorization"]["status"], "NOT_AUTHORIZED")
         self.assertIn("CLOSED", ctx["authorization"]["message"])
+
+    def test_reopened_phase_controls_coder_authority_without_changing_prompt(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approve prompt",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start work")
+        dispatch = submit_dispatch(
+            self.repo,
+            self.state_root,
+            make_repository_id(self.repo),
+            dispatch_type="INSTRUCTION",
+            milestone_id="M003.001",
+            body="Continue the approved bounded validation.",
+        )
+        update_dispatch_status(
+            self.repo,
+            self.state_root,
+            make_repository_id(self.repo),
+            dispatch["dispatch_id"],
+            "APPROVED",
+            milestone_root="docs/milestones",
+            active_milestone_id="M003.001",
+        )
+        (self.repo / "docs/milestones/M003.001_test_milestone_closeout.md").write_text(
+            "# Closeout\n",
+            encoding="utf-8",
+        )
+        self.candidate = discover_milestones(self.repo)["candidates"][0]
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "closeout_submitted",
+            "Submit closeout",
+        )
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "milestone_closed",
+            "Accept and close",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        closed = load_milestone_workflow(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+        )
+        original_prompt_path = self.candidate["prompt_path"]
+
+        review = record_milestone_reopen(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+            reason="Reconsider the closeout without authorizing edits.",
+            target_phase="REVIEW",
+            expected_event_count=closed["event_count"],
+        )
+        context = get_coder_context(self.repo, state_root=self.state_root)
+        self.assertEqual(context["milestone"]["phase"], "REVIEW")
+        self.assertFalse(context["authorization"]["authorized"])
+        self.assertEqual(context["prompt"]["path"], original_prompt_path)
+
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "acceptance_recorded",
+            "Accept the reviewed closeout",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "milestone_closed",
+            "Close after review",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        closed_again = load_milestone_workflow(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+        )
+        record_milestone_reopen(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+            reason="Resume bounded work under the same objective.",
+            target_phase="IN_PROGRESS",
+            expected_event_count=closed_again["event_count"],
+        )
+        context = get_coder_context(self.repo, state_root=self.state_root)
+        self.assertEqual(context["milestone"]["phase"], "IN_PROGRESS")
+        self.assertTrue(context["authorization"]["authorized"])
+        self.assertEqual(context["prompt"]["path"], original_prompt_path)
+        self.assertEqual(
+            [item["dispatch_id"] for item in context["approved_architect_dispatches"]],
+            [dispatch["dispatch_id"]],
+        )
 
     def test_coder_context_and_status_payload(self):
         save_milestone_selection(self.repo, self.state_root, "M003.001")

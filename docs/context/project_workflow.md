@@ -739,7 +739,11 @@ Closeout/evidence is available for Architect/Product Owner review.
 ## CLOSED
 The milestone has been explicitly accepted and closed by Product Owner action.
 
-`CLOSED` is terminal.
+`CLOSED` normally ends Coder authority. The Product Owner may explicitly reopen
+it through the append-only **Reopen milestone** action, targeting `REVIEW`
+(reconsideration without edit authority) or `IN_PROGRESS` (bounded continuation
+under the same milestone). The reopen reason is required; prior acceptance and
+closure events remain unchanged, and reopening performs no Git mutation.
 
 ---
 
@@ -770,6 +774,10 @@ REVIEW → IN_PROGRESS
 REVIEW → CLOSED
 → explicit Product Owner acceptance
 → explicit closure
+
+CLOSED → REVIEW or IN_PROGRESS
+→ explicit Product Owner reopen with a reason
+→ append milestone_reopened; preserve all prior events
 ```
 
 Do not infer transitions from prompt existence, closeout existence, Git cleanliness, commits, pushes, or passing tests.
@@ -779,6 +787,13 @@ The normal single-user browser actions combine deliberate operator submissions, 
 - **Approve & Start** (PLANNING): prompt_approved, then implementation_started; result IN_PROGRESS.
 - **Resolve & Resume** (WAITING): answer the active blocking question or resolve the active escalation, optionally record a separate binding lock-in, then implementation_resumed; result IN_PROGRESS. An unrelated open question cannot resolve the active blocker. If a resolution was already separately recorded, the existing Resume action remains available.
 - **Accept & Close** (REVIEW): acceptance_recorded, then milestone_closed; result CLOSED. An immediately preceding acceptance can be reused without duplicating it.
+- **Reopen milestone** (CLOSED): append milestone_reopened with a required reason and target REVIEW or IN_PROGRESS. It does not change the prompt, lock-ins, selection, Git state, or prior acceptance/closure events.
+
+Before Accept & Close, Repo Control compares approved applicable Architect
+INSTRUCTION/RESPONSE timestamps with the latest closeout submission. Newer
+guidance requires an amended closeout or an explicit second confirmation that
+identifies the dispatches and records a reason on the closure event. Pending,
+rejected, PROMPT, and other-milestone dispatches do not trigger the guard.
 
 All constituent events are validated before one atomic sidecar replacement; no partial advancement is saved. The server checks repository selection, milestone identity, expected phase, and event count. Approval/start and acceptance/closure do not mutate Git. A service restart/reload and one page refresh to load changed JavaScript are required before live browser acceptance of runtime changes.
 
@@ -807,10 +822,15 @@ review_requested
 correction_requested
 acceptance_recorded
 milestone_closed
+milestone_reopened
 git_disposition_recorded
 ```
 
 Events preserve chronology and are not automatically lifecycle states.
+`milestone_reopened` records the previous CLOSED phase, the Product Owner
+reported actor, the reason, and the REVIEW or IN_PROGRESS target. An explicit
+closure-guard override is durably recorded as reason and dispatch IDs on the
+`milestone_closed` event.
 
 ---
 

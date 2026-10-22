@@ -12,6 +12,7 @@ from typing import Any
 
 from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..scanner.util import make_repository_id
+from .architect_dispatches import list_outstanding_guidance
 from .milestones import (
     MilestoneArtifactError,
     _contained_file,
@@ -43,9 +44,11 @@ _EVENT_TYPES = {
     "correction_requested",
     "acceptance_recorded",
     "milestone_closed",
+    "milestone_reopened",
     "git_disposition_recorded",
 }
 _ACTOR_ROLES = {"product_owner", "architect", "coder", "repo_control"}
+_DISPATCH_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _WAITING_CATEGORIES = {"clarification", "decision", "blocker", "escalation", "other"}
 EVENT_OPTIONS = (
     ("prompt_approved", "Mark prompt READY (Product Owner approval)"),
@@ -152,17 +155,32 @@ def _apply_event(
     actor_role = event["actor_role"]
     if phase not in _PHASES:
         raise WorkflowRecordError("Workflow record contains an unknown lifecycle phase.")
-    if phase == "CLOSED":
-        raise WorkflowRecordError("A closed milestone cannot accept additional workflow events.")
     if event_type not in _EVENT_TYPES:
         raise WorkflowRecordError(f"Unsupported workflow event type: {event_type}")
 
-    if event_type in {"prompt_approved", "lock_in_approved", "acceptance_recorded", "milestone_closed"}:
+    if phase == "CLOSED" and event_type != "milestone_reopened":
+        raise WorkflowRecordError("A closed milestone cannot accept additional workflow events.")
+    if event_type in {
+        "prompt_approved",
+        "lock_in_approved",
+        "acceptance_recorded",
+        "milestone_closed",
+        "milestone_reopened",
+    }:
         if not po_approved or actor_role != "product_owner":
             raise WorkflowRecordError(
                 f"{event_type} requires explicit Product Owner confirmation in the UI."
             )
 
+    if event_type == "milestone_reopened":
+        target_phase = event.get("reopen_target_phase")
+        if phase != "CLOSED":
+            raise WorkflowRecordError("Only a closed milestone can be reopened.")
+        if not isinstance(target_phase, str) or target_phase not in {"REVIEW", "IN_PROGRESS"}:
+            raise WorkflowRecordError("A reopened milestone must target REVIEW or IN_PROGRESS.")
+        if not summary.strip() or len(summary) > 1000:
+            raise WorkflowRecordError("A reopen reason is required and must not exceed 1000 characters.")
+        return target_phase, None, None
     if event_type == "prompt_approved":
         if phase != "PLANNING":
             raise WorkflowRecordError("Prompt approval is valid only while the milestone is PLANNING.")
@@ -281,6 +299,8 @@ def _apply_event(
         if not previous_events or previous_events[-1]["event_type"] != "acceptance_recorded":
             raise WorkflowRecordError("Milestone closure requires a preceding explicit acceptance event.")
         return "CLOSED", None, None
+    if event_type == "milestone_reopened":
+        raise WorkflowRecordError("Only a closed milestone can be reopened.")
     if event_type == "git_disposition_recorded":
         return phase, waiting_category, waiting_reason
     raise WorkflowRecordError(f"Unsupported workflow event type: {event_type}")
@@ -324,6 +344,36 @@ def _validate_event_shape(event: Any) -> None:
         and event["bug_scope"] not in {"in_scope", "needs_escalation"}
     ):
         raise WorkflowRecordError("Workflow record contains an invalid bug classification.")
+    reopen_target = event.get("reopen_target_phase")
+    if reopen_target is not None and (
+        not isinstance(reopen_target, str) or reopen_target not in {"REVIEW", "IN_PROGRESS"}
+    ):
+        raise WorkflowRecordError("Workflow record contains an invalid reopen target phase.")
+    closure_override_reason = event.get("closure_override_reason")
+    if closure_override_reason is not None and (
+        not isinstance(closure_override_reason, str)
+        or not closure_override_reason.strip()
+        or len(closure_override_reason) > 1000
+    ):
+        raise WorkflowRecordError("Workflow record contains an invalid closure override reason.")
+    dispatch_ids = event.get("outstanding_dispatch_ids")
+    if dispatch_ids is not None and (
+        not isinstance(dispatch_ids, list)
+        or not 1 <= len(dispatch_ids) <= 100
+        or any(not isinstance(item, str) or not _DISPATCH_ID_RE.fullmatch(item) for item in dispatch_ids)
+        or len(set(dispatch_ids)) != len(dispatch_ids)
+    ):
+        raise WorkflowRecordError("Workflow record contains invalid outstanding dispatch identifiers.")
+    if event["event_type"] == "milestone_reopened":
+        if reopen_target is None:
+            raise WorkflowRecordError("A reopen event requires a target phase.")
+    elif reopen_target is not None:
+        raise WorkflowRecordError("Only a reopen event may contain a reopen target phase.")
+    if event["event_type"] == "milestone_closed":
+        if (closure_override_reason is None) != (dispatch_ids is None):
+            raise WorkflowRecordError("A closure override requires both a reason and dispatch identifiers.")
+    elif closure_override_reason is not None or dispatch_ids is not None:
+        raise WorkflowRecordError("Closure override evidence is valid only on a milestone closure event.")
     text_limits = {
         "waiting_reason_after": 1000,
         "waiting_reason": 1000,
@@ -480,6 +530,16 @@ def _render_sidecar(ledger: dict[str, Any]) -> str:
             lines.append(f"- Result: {_markdown_safe(event['result'])}")
         if event.get("evidence_path"):
             lines.append(f"- Supporting artifact: `{_markdown_safe(event['evidence_path'])}`")
+        if event.get("reopen_target_phase"):
+            lines.append(f"- Reopened to: **{event['reopen_target_phase']}**")
+        if event.get("event_type") == "milestone_reopened":
+            lines.append("- Prior acceptance and closure events remain unchanged in this history.")
+        if event.get("closure_override_reason"):
+            lines.append(f"- Closure guard override reason: {_markdown_safe(event['closure_override_reason'])}")
+            lines.append(
+                "- Outstanding Architect dispatches explicitly acknowledged: "
+                + ", ".join(f"`{dispatch_id}`" for dispatch_id in event["outstanding_dispatch_ids"])
+            )
         lines.append("")
     machine_json = json.dumps(
         {key: value for key, value in ledger.items() if key != "derived_state"},
@@ -519,7 +579,7 @@ def _next_action(state: dict[str, Any], candidate: dict[str, Any], open_question
         return "Coder: continue implementation/validation and record only meaningful durable events."
     if phase == "REVIEW":
         return "Product Owner: explicitly accept and close, or request a bounded correction."
-    return "Milestone is closed; no further lifecycle action is available."
+    return "Milestone is closed; the Product Owner may reopen it to REVIEW or IN_PROGRESS with a reason."
 
 
 def _load_milestone_workflow_locked(
@@ -626,6 +686,9 @@ def _record_milestone_event_locked(
     bug_scope: str | None = None,
     evidence_source: str | None = None,
     result: str | None = None,
+    reopen_target_phase: str | None = None,
+    closure_override_reason: str | None = None,
+    outstanding_dispatch_ids: tuple[str, ...] | None = None,
     following_events: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
     summary = summary.strip()
@@ -635,9 +698,46 @@ def _record_milestone_event_locked(
         raise WorkflowRecordError("Event summary contains unsupported control characters.")
     if actor_role not in _ACTOR_ROLES:
         raise WorkflowRecordError("Select a supported reported actor context.")
-    if event_type in {"prompt_approved", "lock_in_approved", "acceptance_recorded", "milestone_closed"}:
+    if event_type in {
+        "prompt_approved",
+        "lock_in_approved",
+        "acceptance_recorded",
+        "milestone_closed",
+        "milestone_reopened",
+    }:
         if actor_role != "product_owner" or not po_approved:
             raise WorkflowRecordError("Select Product Owner and explicitly confirm this approval action.")
+    if event_type == "milestone_reopened":
+        if (
+            not isinstance(reopen_target_phase, str)
+            or reopen_target_phase not in {"REVIEW", "IN_PROGRESS"}
+        ):
+            raise WorkflowRecordError("Choose REVIEW or IN_PROGRESS as the reopen target.")
+        summary = summary.strip()
+        if not summary or len(summary) > 1000:
+            raise WorkflowRecordError("A reopen reason is required and must not exceed 1000 characters.")
+    elif reopen_target_phase is not None:
+        raise WorkflowRecordError("Only a reopen event may specify a reopen target phase.")
+    if event_type == "milestone_closed":
+        if (closure_override_reason is None) != (outstanding_dispatch_ids is None):
+            raise WorkflowRecordError("A closure override requires both a reason and dispatch identifiers.")
+        if closure_override_reason is not None:
+            closure_override_reason = closure_override_reason.strip()
+            if not closure_override_reason or len(closure_override_reason) > 1000:
+                raise WorkflowRecordError("A closure override reason is required and must not exceed 1000 characters.")
+            if (
+                not isinstance(outstanding_dispatch_ids, tuple)
+                or not outstanding_dispatch_ids
+                or len(outstanding_dispatch_ids) > 100
+                or any(
+                    not isinstance(item, str) or not _DISPATCH_ID_RE.fullmatch(item)
+                    for item in outstanding_dispatch_ids
+                )
+                or len(set(outstanding_dispatch_ids)) != len(outstanding_dispatch_ids)
+            ):
+                raise WorkflowRecordError("Closure override requires valid outstanding dispatch identifiers.")
+    elif closure_override_reason is not None or outstanding_dispatch_ids is not None:
+        raise WorkflowRecordError("Closure override evidence is valid only when closing a milestone.")
     if waiting_reason is not None:
         waiting_reason = waiting_reason.strip() or None
         if waiting_reason and len(waiting_reason) > 1000:
@@ -690,6 +790,39 @@ def _record_milestone_event_locked(
         state = _reduce_events(events)
         additions: list[dict[str, Any]] = []
         if event_type == "milestone_closed":
+            latest_closeout = next(
+                (
+                    event for event in reversed(events)
+                    if event["event_type"] == "closeout_submitted"
+                ),
+                None,
+            )
+            outstanding = (
+                list_outstanding_guidance(
+                    root,
+                    state_root,
+                    repository_id,
+                    current_candidate["milestone_id"],
+                    latest_closeout["timestamp"],
+                )
+                if latest_closeout is not None
+                else []
+            )
+            current_dispatch_ids = tuple(item["dispatch_id"] for item in outstanding)
+            if current_dispatch_ids:
+                if (
+                    not closure_override_reason
+                    or tuple(outstanding_dispatch_ids or ()) != current_dispatch_ids
+                ):
+                    raise WorkflowRecordError(
+                        "Approved applicable Architect guidance is newer than the latest closeout; "
+                        "review and explicitly confirm the current dispatches with a reason."
+                    )
+            elif closure_override_reason is not None or outstanding_dispatch_ids is not None:
+                raise WorkflowRecordError(
+                    "The outstanding-guidance condition changed; refresh before confirming closure."
+                )
+        if event_type == "milestone_closed":
             events_with_acceptance = events
             if not events or events[-1]["event_type"] != "acceptance_recorded":
                 acceptance = _new_event(
@@ -729,7 +862,17 @@ def _record_milestone_event_locked(
                 phase=state["phase"],
                 waiting_category=state["waiting_category"],
                 waiting_reason=state["waiting_reason"],
-                event_fields={"binding": True},
+                event_fields={
+                    "binding": True,
+                    **(
+                        {
+                            "closure_override_reason": closure_override_reason,
+                            "outstanding_dispatch_ids": list(outstanding_dispatch_ids or ()),
+                        }
+                        if closure_override_reason is not None
+                        else {}
+                    ),
+                },
             )
             phase_after, category_after, reason_after = _apply_event(
                 state["phase"],
@@ -764,6 +907,8 @@ def _record_milestone_event_locked(
                 event_fields.update(evidence_source=evidence_source, result=result)
             if event_type == "closeout_submitted":
                 event_fields["evidence_path"] = current_candidate["closeout_path"]
+            if event_type == "milestone_reopened":
+                event_fields["reopen_target_phase"] = reopen_target_phase
             event = _new_event(
                 event_type=event_type,
                 summary=summary,
@@ -851,6 +996,8 @@ def record_milestone_action(
     expected_event_count: int,
     related_event_id: str | None = None,
     lock_in_summary: str | None = None,
+    closure_override_reason: str | None = None,
+    outstanding_dispatch_ids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Validate the entire browser action before one atomic sidecar replacement."""
     with STATE_ARTIFACT_LOCK:
@@ -876,6 +1023,10 @@ def record_milestone_action(
             raise WorkflowRecordError("Unsupported combined milestone action.")
         if lock_in_summary and action != "resolve_and_resume":
             raise WorkflowRecordError("An optional lock-in is supported only by Resolve & Resume.")
+        if action != "accept_and_close" and (
+            closure_override_reason is not None or outstanding_dispatch_ids is not None
+        ):
+            raise WorkflowRecordError("Closure override evidence is valid only for Accept & Close.")
         return _record_milestone_event_locked(
             repository_root, state_root, milestone_root, candidate,
             event_type=event_type,
@@ -883,7 +1034,43 @@ def record_milestone_action(
             actor_role="product_owner",
             po_approved=True,
             related_event_id=related_event_id,
+            closure_override_reason=closure_override_reason,
+            outstanding_dispatch_ids=outstanding_dispatch_ids,
             following_events=following,
+        )
+
+
+def record_milestone_reopen(
+    repository_root: str | Path,
+    state_root: str | Path,
+    milestone_root: str,
+    candidate: dict[str, Any],
+    *,
+    reason: str,
+    target_phase: str,
+    expected_event_count: int,
+) -> dict[str, Any]:
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if not reason or len(reason) > 1000:
+        raise WorkflowRecordError("A reopen reason is required and must not exceed 1000 characters.")
+    if not isinstance(target_phase, str) or target_phase not in {"REVIEW", "IN_PROGRESS"}:
+        raise WorkflowRecordError("Choose REVIEW or IN_PROGRESS as the reopen target.")
+    with STATE_ARTIFACT_LOCK:
+        workflow = _load_milestone_workflow_locked(
+            repository_root, state_root, milestone_root, candidate,
+        )
+        if workflow["phase"] != "CLOSED" or workflow["event_count"] != expected_event_count:
+            raise WorkflowRecordError("The milestone is no longer CLOSED or its history changed; refresh and retry.")
+        return _record_milestone_event_locked(
+            repository_root,
+            state_root,
+            milestone_root,
+            candidate,
+            event_type="milestone_reopened",
+            summary=reason,
+            actor_role="product_owner",
+            po_approved=True,
+            reopen_target_phase=target_phase,
         )
 
 

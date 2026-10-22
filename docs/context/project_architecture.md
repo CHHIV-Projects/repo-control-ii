@@ -689,6 +689,7 @@ PLANNING
       ↔ WAITING
 → REVIEW
 → CLOSED
+  ↘ Product Owner append-only reopen to REVIEW or IN_PROGRESS
 ```
 
 Lifecycle state meanings:
@@ -716,8 +717,10 @@ REVIEW
   review. The phase itself does not independently verify passing tests.
 
 CLOSED
-→ Product Owner has accepted and explicitly closed the milestone. Git completion
-  or deferral remains a separate Product Owner decision, not a lifecycle side effect.
+→ Product Owner has accepted and explicitly closed the milestone. Coder
+  authority ends. A guarded Product Owner reopen may append a transition to
+  REVIEW (no edit authority) or IN_PROGRESS (bounded work under the same
+  objective); prior acceptance and closure events remain historical.
 ```
 
 Transitions are explicit and recorded in the per-milestone workflow sidecar. Transition into `READY` and `REVIEW` is gated on zero open blocking conditions.
@@ -758,6 +761,7 @@ review_requested
 correction_requested
 acceptance_recorded
 milestone_closed
+milestone_reopened
 git_disposition_recorded
 ```
 
@@ -767,11 +771,18 @@ This event model preserves a full audit trail of questions, answers, bug classif
 
 ## Single-User Browser Action Compression
 
-Approve & Start records prompt_approved followed by implementation_started; Resolve & Resume records the active condition's answer/resolution, an optional distinct lock_in_approved, then implementation_resumed; Accept & Close records acceptance_recorded followed by milestone_closed. A valid immediately preceding acceptance may be reused by closure, preserving existing ledger semantics.
+Approve & Start records prompt_approved followed by implementation_started; Resolve & Resume records the active condition's answer/resolution, an optional distinct lock_in_approved, then implementation_resumed; Accept & Close records acceptance_recorded followed by milestone_closed. A valid immediately preceding acceptance may be reused by closure, preserving existing ledger semantics. Reopen appends `milestone_reopened` with the required reason and target phase; it never edits prior events or mutates Git.
+
+Before closure, approved applicable Architect INSTRUCTION/RESPONSE dispatches
+are compared deterministically with the most recent `closeout_submitted`
+timestamp. Newer guidance requires a later amended closeout or a deliberate
+second confirmation that identifies the outstanding dispatches and records
+the reason and IDs on the closure event. Pending, rejected, PROMPT, or
+non-applicable dispatches do not trigger the guard.
 
 The authoritative lifecycle primitives validate the complete sequence in memory before one bounded, atomic sidecar replacement. Failure of any constituent event, event/byte limit, or persistence leaves the prior sidecar intact. Repository/selection, phase, and event-count preconditions reject stale browser submissions. READY remains a real intermediate event phase even when Approve & Start passes through it in one deliberate action.
 
-Normal lifecycle browser actions hardcode reported Product Owner attribution and approval; the submit button authorizes the action without an actor selector or additional confirmation checkbox. This is single-user UI simplification, not authentication or delegated Architect/Coder authority. Existing individual lifecycle primitives remain available for compatibility. Architect proposal approval/save remains separate and cannot start or resume lifecycle work. Server-authoritative polling and edited-form stale protection remain unchanged.
+Normal lifecycle browser actions hardcode reported Product Owner attribution and approval; the submit button authorizes the action without an actor selector or additional confirmation checkbox. Reopen requires a separate explicit confirmation and reason; overriding the newer-guidance closure guard requires a second confirmation and durable reason/dispatch evidence. These are single-user UI controls, not authentication or delegated Architect/Coder authority. Architect proposal approval/save remains separate and cannot start or resume lifecycle work. Server-authoritative polling and edited-form stale protection remain unchanged.
 
 ---
 

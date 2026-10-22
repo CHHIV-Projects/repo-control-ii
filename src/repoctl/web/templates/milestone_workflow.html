@@ -50,7 +50,52 @@
     {% endif %}
   </article>
 
-  {% if workflow.phase != "CLOSED" %}
+  {% if workflow.outstanding_dispatches %}
+    <article class="card warning spaced-top">
+      <h3>Approved Architect guidance is newer than this closeout</h3>
+      <p>Accept &amp; Close is guarded because the latest submitted closeout predates the following approved guidance. Review it before continuing.</p>
+      <ul>
+        {% for dispatch in workflow.outstanding_dispatches %}
+          <li>
+            <strong>{{ dispatch.dispatch_id }} · {{ dispatch.type }}</strong>
+            <span class="muted">(approved {{ dispatch.approved_at }})</span>
+            <p>{{ dispatch.excerpt }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+      {% if workflow.closure_confirmation %}
+        <h4>Second confirmation required</h4>
+        <p>To close without submitting an amended closeout, explicitly acknowledge each listed dispatch and provide a reason. The override will be recorded with the closure event.</p>
+        {% if workflow.closure_confirmation.error %}
+          <p class="error" role="alert">{{ workflow.closure_confirmation.error }}</p>
+        {% endif %}
+        <form method="post" action="{{ url_for('record_milestone_workflow_event') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+          <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+          <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
+          <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+          <input type="hidden" name="expected_phase" value="REVIEW">
+          <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
+          <input type="hidden" name="event_type" value="accept_and_close">
+          {% for dispatch_id in workflow.closure_confirmation.dispatch_ids %}
+            <input type="hidden" name="closure_guard_dispatch_id" value="{{ dispatch_id }}">
+          {% endfor %}
+          <label for="closure-override-reason">Reason for deliberately closing despite this newer approved guidance</label>
+          <textarea id="closure-override-reason" name="closure_override_reason" maxlength="1000" required>{{ workflow.closure_confirmation.reason }}</textarea>
+          <label>
+            <input type="checkbox" name="closure_guard_confirmed" value="yes" required>
+            I reviewed the listed dispatches and explicitly choose to close without an amended closeout.
+          </label>
+          <input type="hidden" name="summary" value="{{ workflow.closure_confirmation.summary }}">
+          <button type="submit">Confirm override and close</button>
+          <a class="button secondary" href="{{ url_for('milestone_page') }}">Cancel and review milestone</a>
+        </form>
+      {% endif %}
+    </article>
+  {% endif %}
+
+  {% if workflow.phase != "CLOSED" and not workflow.closure_confirmation %}
     {% set primary_action = workflow.ui_events[0][0] if workflow.ui_events else "" %}
     {% set submitted_event = request.form.get("event_type", primary_action if primary_action in ["approve_and_start", "resolve_and_resume", "accept_and_close"] else "") %}
     {% set submitted_related = request.form.get("related_event_id", "") %}
@@ -137,6 +182,38 @@
           <textarea id="lock-in-summary" name="lock_in_summary" maxlength="2000">{{ request.form.get("lock_in_summary", "") }}</textarea>
         </div>
         <button type="submit" id="workflow-submit">{% if submitted_event %}{% for event_type, event_label in workflow.ui_events %}{% if event_type == submitted_event %}{{ event_label }}{% endif %}{% endfor %}{% else %}Record workflow event{% endif %}</button>
+      </form>
+    </article>
+  {% endif %}
+
+  {% if workflow.phase == "CLOSED" %}
+    <article class="card spaced-top">
+      <h3>Reopen milestone</h3>
+      <p><strong>Repository:</strong> {{ repository_name }}</p>
+      <p><strong>Milestone:</strong> {{ selection.selection.milestone_id }}{% if selection.selection.title_slug %} — {{ selection.selection.title_slug }}{% endif %}</p>
+      <p><strong>Current phase:</strong> CLOSED</p>
+      <p>Prior acceptance and closure remain in the workflow history. Reopening appends a new event; it does not erase or rewrite that history.</p>
+      <p>Reopening does not modify Git or rewrite prior Git history. Any subsequent implementation will follow the normal later-commit workflow.</p>
+      <form method="post" action="{{ url_for('reopen_milestone') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+        <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+        <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
+        <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+        <input type="hidden" name="expected_phase" value="CLOSED">
+        <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
+        <label for="reopen-target-phase">Target phase</label>
+        <select id="reopen-target-phase" name="target_phase" required>
+          <option value="REVIEW">REVIEW — reconsider/review only; no implementation authority</option>
+          <option value="IN_PROGRESS">IN_PROGRESS — authorize bounded work under this milestone</option>
+        </select>
+        <label for="reopen-reason">Required reason</label>
+        <textarea id="reopen-reason" name="reason" maxlength="1000" required></textarea>
+        <label>
+          <input type="checkbox" name="confirm_reopen" value="yes" required>
+          I am the Product Owner and confirm this append-only reopen action.
+        </label>
+        <button type="submit">Reopen milestone</button>
       </form>
     </article>
   {% endif %}

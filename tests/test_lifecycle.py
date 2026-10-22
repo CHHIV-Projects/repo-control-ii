@@ -11,6 +11,7 @@ from repoctl.workflow.lifecycle import (
     load_milestone_workflow,
     record_milestone_event,
     record_milestone_action,
+    record_milestone_reopen,
 )
 from repoctl.workflow.milestones import (
     discover_milestones,
@@ -86,6 +87,132 @@ class MilestoneLifecycleTests(unittest.TestCase):
             expected_phase=fields.pop("expected_phase", workflow["phase"]),
             expected_event_count=fields.pop("expected_event_count", workflow["event_count"]),
             **fields,
+        )
+
+    def close_milestone(self) -> dict:
+        self.action("approve_and_start")
+        (self.repo / "docs/milestones/M003.001_example_closeout.md").write_text(
+            "# Closeout\n",
+            encoding="utf-8",
+        )
+        self.candidate = _candidate(self.repo)
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "closeout_submitted",
+            "Closeout submitted.",
+        )
+        return self.action("accept_and_close")
+
+    def test_closed_milestone_reopens_append_only_to_review_or_in_progress(self) -> None:
+        closed = self.close_milestone()
+        prior_events = list(closed["event_history"])
+        head = _git(self.repo, "rev-parse", "HEAD")
+        refs = _git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)")
+        index = _git(self.repo, "diff", "--cached", "--name-only")
+
+        reopened = record_milestone_reopen(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+            reason="The close was premature; bounded review remains necessary.",
+            target_phase="IN_PROGRESS",
+            expected_event_count=closed["event_count"],
+        )
+        self.assertEqual(reopened["phase"], "IN_PROGRESS")
+        self.assertEqual(reopened["event_history"][:-1], prior_events)
+        reopen_event = reopened["event_history"][-1]
+        self.assertEqual(reopen_event["event_type"], "milestone_reopened")
+        self.assertEqual(reopen_event["phase_before"], "CLOSED")
+        self.assertEqual(reopen_event["phase_after"], "IN_PROGRESS")
+        self.assertEqual(reopen_event["reopen_target_phase"], "IN_PROGRESS")
+        self.assertEqual(reopen_event["summary"], "The close was premature; bounded review remains necessary.")
+        self.assertEqual(reopen_event["actor_role"], "product_owner")
+        self.assertTrue(reopen_event["po_approved"])
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD"), head)
+        self.assertEqual(_git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"), refs)
+        self.assertEqual(_git(self.repo, "diff", "--cached", "--name-only"), index)
+
+        self.candidate = _candidate(self.repo)
+        self._record_closeout_again()
+        closed_again = self.action("accept_and_close")
+        self.assertEqual(closed_again["phase"], "CLOSED")
+        reopened_again = record_milestone_reopen(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+            reason="Return to review without authorizing edits.",
+            target_phase="REVIEW",
+            expected_event_count=closed_again["event_count"],
+        )
+        self.assertEqual(reopened_again["phase"], "REVIEW")
+        self.assertEqual(
+            [event["event_type"] for event in reopened_again["event_history"]].count("milestone_closed"),
+            2,
+        )
+        self.assertEqual(
+            [event["event_type"] for event in reopened_again["event_history"]].count("milestone_reopened"),
+            2,
+        )
+        self.assertEqual(
+            reopened_again["event_history"][-1]["reopen_target_phase"],
+            "REVIEW",
+        )
+
+    def _record_closeout_again(self) -> None:
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "closeout_submitted",
+            "Amended closeout submitted.",
+        )
+
+    def test_reopen_requires_closed_phase_reason_and_product_owner(self) -> None:
+        with self.assertRaisesRegex(WorkflowRecordError, "no longer CLOSED"):
+            record_milestone_reopen(
+                self.repo,
+                self.state_root,
+                "docs/milestones",
+                self.candidate,
+                reason="A reason",
+                target_phase="REVIEW",
+                expected_event_count=0,
+            )
+        with self.assertRaisesRegex(WorkflowRecordError, "Product Owner"):
+            _record(
+                self.repo,
+                self.state_root,
+                self.candidate,
+                "milestone_reopened",
+                "Unauthorized reopen",
+                actor_role="coder",
+            )
+
+        closed = self.close_milestone()
+        for reason, target_phase in (("", "REVIEW"), (" ", "IN_PROGRESS"), ("Required", "CLOSED")):
+            with self.subTest(reason=reason, target_phase=target_phase):
+                with self.assertRaises(WorkflowRecordError):
+                    record_milestone_reopen(
+                        self.repo,
+                        self.state_root,
+                        "docs/milestones",
+                        self.candidate,
+                        reason=reason,
+                        target_phase=target_phase,
+                        expected_event_count=closed["event_count"],
+                    )
+        self.assertEqual(
+            load_milestone_workflow(
+                self.repo,
+                self.state_root,
+                "docs/milestones",
+                self.candidate,
+            )["phase"],
+            "CLOSED",
         )
 
     def test_combined_actions_preserve_order_and_distinct_events(self) -> None:

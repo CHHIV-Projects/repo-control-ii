@@ -298,6 +298,51 @@ def list_dispatches(
     return [dict(item) for item in reversed(records[-limit:])]
 
 
+def list_outstanding_guidance(
+    repository_root: str | Path,
+    state_root: str | Path,
+    repository_id: str,
+    milestone_id: str,
+    closeout_timestamp: str,
+) -> list[dict[str, Any]]:
+    try:
+        latest_closeout_at = datetime.fromisoformat(closeout_timestamp)
+    except (TypeError, ValueError) as exc:
+        raise ArchitectDispatchError("The latest closeout has an invalid timestamp.") from exc
+    if latest_closeout_at.utcoffset() is None:
+        raise ArchitectDispatchError("The latest closeout timestamp has no UTC offset.")
+
+    outstanding: list[tuple[datetime, dict[str, Any]]] = []
+    for dispatch in list_dispatches(
+        repository_root,
+        state_root,
+        repository_id,
+        milestone_id=milestone_id,
+        status="APPROVED",
+    ):
+        if (
+            dispatch.get("repository_id") != repository_id
+            or dispatch.get("status") != "APPROVED"
+            or dispatch.get("milestone_id") != milestone_id
+            or dispatch.get("approved_milestone_id") != milestone_id
+            or dispatch.get("type") not in {"INSTRUCTION", "RESPONSE"}
+        ):
+            continue
+        try:
+            approved_at = datetime.fromisoformat(dispatch["approved_at"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArchitectDispatchError(
+                f"Approved dispatch {dispatch['dispatch_id']} has no valid approval timestamp."
+            ) from exc
+        if approved_at.utcoffset() is None:
+            raise ArchitectDispatchError(
+                f"Approved dispatch {dispatch['dispatch_id']} has no UTC offset."
+            )
+        if approved_at > latest_closeout_at:
+            outstanding.append((approved_at, dispatch))
+    return [dict(record) for _, record in sorted(outstanding, key=lambda item: item[0])]
+
+
 def list_owner_dispatches(
     repository_root: str | Path,
     state_root: str | Path,

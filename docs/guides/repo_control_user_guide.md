@@ -46,7 +46,7 @@ the authoritative repository, Git, or milestone records.
 | `IN_PROGRESS` | Authorized implementation or validation is active. | Monitor meaningful evidence and answer escalations. |
 | `WAITING` | Work is paused for a recorded question, blocker, or decision. | Review the reason and resolve it before work resumes. |
 | `REVIEW` | Closeout and evidence are submitted for review. | Review the result; accept, reject, or request a bounded correction. |
-| `CLOSED` | The PO accepted and closed the milestone. This state is terminal. | Git completion or deferral remains a separate PO decision. |
+| `CLOSED` | The PO accepted and closed the milestone; Coder authority ends. | The PO may explicitly reopen to `REVIEW` or `IN_PROGRESS`; Git completion or deferral remains separate. |
 
 The normal implementation loop is distinct from waiting, correction, and
 re-scoping:
@@ -85,6 +85,14 @@ re-scoping:
    for a small correction inside the approved objective.
 6. Use **Accept & Close** only after review is complete. Decide separately
    whether to complete Git actions or defer them.
+   If approved applicable Architect INSTRUCTION/RESPONSE guidance is newer
+   than the latest closeout, submit an amended closeout or review the
+   dispatches and provide a reason in the explicit second confirmation.
+7. To recover an accidentally or prematurely closed milestone, the PO may use
+   **Reopen milestone** and provide a reason and target phase. `REVIEW` grants
+   no edit authority; `IN_PROGRESS` authorizes only the same bounded objective.
+   Reopening appends history, preserves prior acceptance/closure, and does not
+   modify Git or rewrite Git history.
 
 The available action and prerequisites are shown in the Milestone page. Do not
 try to bypass a missing action; check the lifecycle, open conditions, repository
