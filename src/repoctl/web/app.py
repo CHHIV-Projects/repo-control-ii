@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import (
+    Flask, Response, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for,
+)
 from werkzeug.exceptions import HTTPException
 
 from ..analysis.manager import AnalysisError, analyze_comparison
@@ -1108,6 +1110,11 @@ def create_web_app(
             "intelligence.html", intelligence_status=status,
             measurements=intelligence_measurements.summary(root), ratings=intelligence_measurements.RATINGS,
         )
+
+    @app.get("/intelligence/guide")
+    def intelligence_value_guide():
+        guide_path = Path(__file__).resolve().parents[3] / "docs/guides/intelligence_value_tutorial.md"
+        return send_file(guide_path, mimetype="text/markdown")
 
     def intelligence_form_preconditions(allowed_fields: frozenset[str] = frozenset()) -> None:
         _require_csrf()

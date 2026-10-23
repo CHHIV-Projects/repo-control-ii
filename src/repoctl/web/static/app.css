@@ -66,7 +66,7 @@ body {
 }
 
 .main { padding-bottom: 2rem; }
-.main.main-wide { width: min(98vw, 1920px); }
+.main.main-intelligence { width: min(96vw, 1680px); min-width: 0; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; overflow-x: auto; }
 .dispatch-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .card { background: #fffefb; border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; }
@@ -141,6 +141,18 @@ table {
   margin-top: 0.8rem;
   table-layout: auto;
 }
+
+.benchmark-table { min-width: 680px; }
+.benchmark-details dl { grid-template-columns: minmax(9rem, auto) minmax(0, 1fr); }
+.benchmark-details dd { overflow-wrap: anywhere; }
+.recent-use { border-bottom: 1px solid var(--line); padding: 0.55rem 0; }
+.recent-use summary, .benchmark-details summary { cursor: pointer; }
+.benchmark-highlight { border-left: 4px solid var(--accent); padding-left: 1rem; }
+.benchmark-metrics { display: flex; flex-wrap: wrap; gap: 0.7rem 1.5rem; }
+.benchmark-metrics > div { min-width: 10rem; }
+.benchmark-metrics strong { display: block; font-size: 1.3rem; }
+.intelligence-tutorial { margin-bottom: 1rem; }
+.intelligence-tutorial li { margin: 0.35rem 0; }
 
 th, td {
   border-bottom: 1px solid var(--line);
@@ -520,6 +532,9 @@ ul {
 @media (max-width: 760px) {
   .site-header { flex-direction: column; gap: 0.8rem; }
   .dashboard-grid { grid-template-columns: 1fr; }
+  .main.main-intelligence { width: 100%; }
+  .benchmark-details dl { grid-template-columns: 1fr; gap: 0.15rem; }
+  .benchmark-details dd { margin: 0 0 0.5rem; }
   .dashboard-grid > .card,
   .dashboard-grid > .dashboard-primary,
   .dashboard-grid > .dashboard-wide {

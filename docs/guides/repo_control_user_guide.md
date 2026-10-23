@@ -259,6 +259,140 @@ Refresh receipts and counts are shown separately from query-use ratings and
 comparative measurements; they contain bounded provenance, not source or query
 bodies.
 
+The **Intelligence Value** page includes an interpretation disclosure and
+serves the [Reading Intelligence Value tutorial](./intelligence_value_tutorial.md)
+at `/intelligence/guide`. The guide explains the rated-use denominator,
+negative benchmark reductions, the one-task scope of the latest result, and
+why older unmatched byte-only measurements remain historical rather than
+comparable.
+
+Each new query's byte count is the UTF-8 length of the compact normalized JSON
+response after evidence pruning and count metadata updates. Measurements are
+stored separately from the response, preserving the existing `response_bytes`
+meaning, response shape, and evidence budget. The measured text includes returned
+outcome, warnings, errors, and truncation/omission metadata; it excludes the CLI
+pretty-print whitespace/newline, MCP result wrapper/protocol framing, and HTTP
+headers. This is the canonical compact service-JSON boundary shared by Coder and
+Architect before transport formatting. Character count is the Python Unicode
+code-point count of that serialized JSON text (non-ASCII content is JSON-escaped
+by the serializer). The estimate is `ceil(characters / 4)`, method
+`char4-ceil-v1` version `1`; it is a rough evidence-text estimate, not exact tokens
+for any model (`~1 token = 4 English characters ≈ 0.75 English words` is only an
+approximation). Languages, JSON, whitespace, paths, and identifiers can differ
+substantially. The dashboard displays code-point counts and estimated tokens for
+each measured use from separate analytics. Existing SQLite rows keep
+their original bytes and have NULL character/token provenance, shown as “Not
+measured”; they are not backfilled.
+
+Normal query paths remain network-free and use only the explicitly versioned
+char4 estimate. The separate deliberate benchmark runner uses one fixed
+cross-agent reference: `o200k_base` from `tiktoken==0.11.0`, method
+`o200k-base-reference-v1` version `1`. This reference count is exact only for
+the counted text and encoding; it is not a model-native, Copilot, or billed
+token count. It is computed with `encode_ordinary`, so strings resembling
+special tokens are treated as ordinary text.
+
+The benchmark-only Python 3.12 environment and vocabulary cache are user-owned
+and outside the application environment. The hash-locked dependency manifest is
+[`tools/intelligence-benchmark-requirements.txt`](../../tools/intelligence-benchmark-requirements.txt).
+For a one-time online provisioning, download only the locked wheels, install
+from that wheelhouse, then fetch and verify the official encoding asset:
+
+```sh
+root="$HOME/.local/share/repoctl/intelligence-benchmark"
+venv="$HOME/.local/share/repoctl/intelligence-benchmark-venv"
+cache="$HOME/.cache/repoctl/intelligence-benchmark/tiktoken"
+mkdir -p "$root/wheelhouse" "$cache"
+python3.12 -m venv "$venv"
+"$venv/bin/python" -m pip download --require-hashes --only-binary=:all: \
+  -r tools/intelligence-benchmark-requirements.txt -d "$root/wheelhouse"
+"$venv/bin/python" -m pip install --no-index --find-links "$root/wheelhouse" \
+  --require-hashes -r tools/intelligence-benchmark-requirements.txt
+curl --fail --location \
+  https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken \
+  --output "$cache/fb374d419588a4632f3f557e76b4b70aebbca790"
+printf '%s  %s\n' \
+  446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d \
+  "$cache/fb374d419588a4632f3f557e76b4b70aebbca790" | sha256sum --check
+```
+
+The `tiktoken` wheel SHA-256 is pinned in the manifest and was checked against
+the exact release-file entry in `https://pypi.org/pypi/tiktoken/0.11.0/json`;
+the asset SHA-256 above matches the hash embedded by that pinned package.
+Subsequent benchmark execution is offline:
+the runner verifies the local asset and package version before importing
+`tiktoken` or requesting the encoding, and refuses if either does not match.
+It accepts bounded JSON from standard input; each `tool_evidence` item must be
+the exact compact normalized JSON text delivered, while
+`source_windows_read` items are the exact source text actually read. Items are
+counted separately, so delivered duplicates count twice. Only bounded counts
+and provenance may be persisted; raw input is not stored. Omit
+`--database-root` to print the bounded record without persisting it.
+After provisioning, use the isolated interpreter and local asset cache, for
+example:
+
+```sh
+printf '%s' '<bounded controlled-evidence-v1 JSON>' |
+  "$venv/bin/python" tools/intelligence_benchmark.py --cache-dir "$cache"
+```
+
+The fixed `tiktoken==0.11.0` wheel SHA-256 is
+`7f929255c705efec7a28bf515e29dc74220b2f07544a8c81b8d69e8efc4578bd`;
+the official `o200k_base` vocabulary SHA-256 is
+`446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d`.
+
+A controlled comparison is a deliberate local experiment, separate from automatic
+query and refresh records. Fix a repository snapshot/HEAD/source identity, question,
+protocol version, and identical completion/stopping criteria before either arm.
+Run source-first (for example, bounded search and source reads) and
+Intelligence-first (a CURRENT graph query followed by source validation); record
+which source windows were read versus only located, files inspected, interactions,
+and monotonic elapsed milliseconds. Count UTF-8 bytes and Unicode code points on
+the actual delivered tool text and actually read source text, then apply the same
+`char4-ceil-v1` rule and fixed reference tokenizer to both. The controlled
+protocol counts each delivered occurrence, including a source excerpt delivered
+twice if actually returned twice.
+Count source windows actually read separately from windows only located/scanned.
+Do not retain the literal question, source, or evidence text in the benchmark
+record; retain a stable question/task ID instead. Store protocol/snapshot/timestamp/method provenance and both arms' separate source,
+tool, and total units through the trusted-local
+`intelligence.measurements.add_benchmark` interface. Mark stopping rules matched
+only when equivalent completion criteria were actually followed. Char4 and byte
+reductions require matched stop rules and counting provenance; fixed-reference
+reductions additionally require matched completion criteria and the same
+tokenizer method, package, encoding, vocabulary asset and counted surface. Zero
+control cannot produce a percentage, and a negative reduction means
+more evidence in the Intelligence-first arm. If equivalence was not established,
+retain descriptive measurements but do not present a savings comparison.
+
+The controlled record schema is versioned: `provenance` includes
+`recorded_at`, `protocol_version`, `corpus_id`, `repository_id`, `source_head`,
+`source_identity`, `generation`, `question_id`, both arm strategies,
+`stopping_rule`, `stopping_rules_matched`, `completion_criteria_matched`,
+`counting_boundary`, and `overlap_policy`. Each `control` and `graphify` arm
+retains the legacy `files`, `source_bytes`, `evidence_bytes`, `interactions`, and
+`elapsed_ms` fields, plus `files_inspected`, `source_evidence_bytes`,
+`tool_evidence_bytes`, `total_evidence_bytes`, source/tool/total character counts,
+`estimated_evidence_tokens`, `evidence_metric_method`,
+`evidence_metric_version`, `evidence_metric_surface`,
+`evidence_metric_quality`, `source_windows_read`, and
+`source_windows_located_only`. Fixed-reference records additionally contain
+nullable per-arm `reference_tokenizer_evidence_tokens`, method and version,
+package version, encoding, asset SHA-256, exact surface, and measurement
+quality. Char4-only and historical byte-only records remain unchanged and
+their reference counts display as “Not measured.” The aliases remain internally consistent:
+`source_bytes` equals `source_evidence_bytes`, and `evidence_bytes` equals the
+source-plus-tool total. `controlled-evidence-v1` fixes the counted surface and
+the count-each-delivered-occurrence overlap policy; char4 and fixed
+`o200k_base` reference figures remain separately identified.
+
+The comparative table is empty until an explicit controlled record is added;
+ordinary queries populate Recent uses instead. Historical M004.002 rows remain
+byte-only with their original non-blind/unequal-stopping-rule caveats. Their byte
+figures are not converted into token counts. None of these measurements captures
+hidden host context, model prompts, reasoning, output tokens, provider billing, or
+human reasoning time.
+
 The consuming Coder should rate each materially relied-on use and add a concise
 rationale where useful. Ratings are evidence of the consumer's experience;
 the PO is not expected to judge technical usefulness for evidence they did not
@@ -391,7 +525,7 @@ local content does not conflict with generic authority.
 |---|---|
 | Wrong repository selected | Stop before acting. Select the intended configured repository and re-check its displayed name/path. If the browser, Architect, or Coder still disagree, contact the operator. |
 | Dashboard **Refresh Status** returns HTTP 500 / `unexpected_error` | Do not infer a Git or lifecycle change from the failed refresh. Verify the repository on **Git Review** and **Milestone**, preserve the error details, and report it; this known UI defect candidate is tracked in the parking lot. |
-| Intelligence is stale, missing, failed, or incompatible | Do not use it as current evidence. Ask the PO to review/approve a refresh when useful, or proceed with targeted source evidence if the task allows it. |
+| Intelligence is stale, missing, failed, or incompatible | Do not use it as current evidence. During authorized `IN_PROGRESS` work, a Coder may run `repoctl coder-intelligence-refresh` when fresh structural evidence would materially help; it refreshes only the existing configured graph. Otherwise use targeted source evidence if the task allows it. The PO's deliberate **Build / Refresh Graph** action remains available. |
 | Coder asks a blocking question / workflow is `WAITING` | Read the recorded question and reason. Resolve the decision through the PO workflow and resume explicitly. Do not ask the Coder to continue while waiting. |
 | Closeout needs a small correction | From `REVIEW`, authorize only the bounded correction. If it changes scope or direction materially, plan a separate milestone. |
 | Unexpected dirty file appears | Identify the exact path and owner. Do not discard, stage, or commit it. Stop if it may be unrelated to the active milestone. |

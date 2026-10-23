@@ -6,14 +6,16 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from repoctl.cli import main
-from repoctl.intelligence import client, measurements
+from repoctl.intelligence import client, measurements, reference_tokens
 from repoctl.intelligence.provider import GraphifyProvider, IntelligenceError, RUNTIME
 from repoctl.intelligence.service import (
     RefreshAuthorizationError, artifact_root, build_graph, encoded, graph_status,
@@ -63,6 +65,95 @@ class IntelligenceTests(unittest.TestCase):
             self.repository, self.state, arguments or {"operation": "lookup", "query": "one"},
             consumer="Coder", registry_generation=0, provider=kwargs.get("provider", self.provider),
         )
+
+    @staticmethod
+    def controlled_arm(tool_text, source_text, *, elapsed_ms=2, source_windows_read=None, source_windows_located_only=None):
+        tool_bytes = len(tool_text.encode("utf-8"))
+        source_bytes = len(source_text.encode("utf-8"))
+        tool_characters = len(tool_text)
+        source_characters = len(source_text)
+        total_characters = tool_characters + source_characters
+        total_bytes = tool_bytes + source_bytes
+        source_windows_read = int(bool(source_text)) if source_windows_read is None else source_windows_read
+        source_windows_located_only = 0 if source_windows_located_only is None else source_windows_located_only
+        return {
+            "files": int(bool(source_text)), "files_inspected": int(bool(source_text)),
+            "source_bytes": source_bytes, "evidence_bytes": total_bytes,
+            "interactions": 2, "elapsed_ms": elapsed_ms,
+            "source_evidence_bytes": source_bytes, "tool_evidence_bytes": tool_bytes,
+            "total_evidence_bytes": total_bytes,
+            "source_evidence_characters": source_characters,
+            "tool_evidence_characters": tool_characters,
+            "total_evidence_characters": total_characters,
+            "estimated_evidence_tokens": (total_characters + 3) // 4,
+            "evidence_metric_method": measurements.CHAR4_ESTIMATOR_ID,
+            "evidence_metric_version": measurements.CHAR4_ESTIMATOR_VERSION,
+            "evidence_metric_surface": measurements.CONTROLLED_EVIDENCE_SURFACE,
+            "evidence_metric_quality": "MEASURED",
+            "source_windows_read": source_windows_read,
+            "source_windows_located_only": source_windows_located_only,
+        }
+
+    def controlled_benchmark(self, identifier, control, graphify, *, stopping_rules_matched=True):
+        return {
+            "id": identifier, "task": "Locate function one", "control": control,
+            "graphify": graphify, "assessment": "Synthetic protocol fixture only",
+            "method": "Matched source/tool evidence units; not a production result",
+            "provenance": {
+                "recorded_at": "2026-10-23T03:00:00+00:00",
+                "protocol_version": "controlled-evidence-v1",
+                "corpus_id": "fixture-intelligence-one",
+                "repository_id": self.repository.repository_id,
+                "source_head": "0123456789abcdef",
+                "source_identity": "a" * 64,
+                "question_id": "function-one-definition-v1",
+                "stopping_rule": "Stop when definition is source-verified.",
+                "stopping_rules_matched": stopping_rules_matched,
+                "counting_boundary": measurements.CONTROLLED_COUNTING_BOUNDARY,
+                "overlap_policy": measurements.CONTROLLED_OVERLAP_POLICY,
+            },
+        }
+
+    @staticmethod
+    def reference_arm(arm, token_count, *, quality="MEASURED"):
+        result = copy.deepcopy(arm)
+        result.update({
+            "reference_tokenizer_evidence_tokens": token_count,
+            "reference_tokenizer_method": reference_tokens.REFERENCE_METHOD if quality == "MEASURED" else None,
+            "reference_tokenizer_method_version": reference_tokens.REFERENCE_METHOD_VERSION if quality == "MEASURED" else None,
+            "reference_tokenizer_package_version": reference_tokens.TOKENIZER_PACKAGE_VERSION if quality == "MEASURED" else None,
+            "reference_tokenizer_encoding": reference_tokens.ENCODING_NAME if quality == "MEASURED" else None,
+            "reference_tokenizer_asset_sha256": reference_tokens.ENCODING_ASSET_SHA256 if quality == "MEASURED" else None,
+            "reference_tokenizer_surface": reference_tokens.REFERENCE_TOKEN_SURFACE if quality == "MEASURED" else None,
+            "reference_tokenizer_quality": quality,
+        })
+        return result
+
+    def fixed_reference_benchmark(self, identifier, control_count, graphify_count, **kwargs):
+        benchmark = self.controlled_benchmark(
+            identifier,
+            self.reference_arm(self.controlled_arm("{}", "source"), control_count),
+            self.reference_arm(self.controlled_arm("{}", "source"), graphify_count),
+            stopping_rules_matched=kwargs.get("stopping_rules_matched", True),
+        )
+        benchmark["provenance"].update({
+            "generation": "fixed-generation",
+            "control_strategy": "Source-first; stop after source verification.",
+            "intelligence_strategy": "Intelligence-first; stop after equivalent source verification.",
+            "completion_criteria_matched": kwargs.get("completion_criteria_matched", True),
+        })
+        if kwargs.get("mismatched_asset"):
+            benchmark["graphify"]["reference_tokenizer_asset_sha256"] = "0" * 64
+        if kwargs.get("mismatched_method"):
+            benchmark["graphify"]["reference_tokenizer_method"] = "other-reference-v1"
+        if kwargs.get("unmeasured"):
+            benchmark["control"] = self.reference_arm(
+                self.controlled_arm("{}", "source"), None, quality="NOT_MEASURED",
+            )
+            benchmark["graphify"] = self.reference_arm(
+                self.controlled_arm("{}", "source"), None, quality="NOT_MEASURED",
+            )
+        return benchmark
 
     def test_freshness_all_states_and_dirty_add_delete(self):
         self.assertEqual(graph_status(self.repository, self.root)["state"], "MISSING")
@@ -317,7 +408,16 @@ class IntelligenceTests(unittest.TestCase):
         row = overview["recent"][0]
         self.assertNotIn("DO_NOT_STORE_THIS", json.dumps(row))
         self.assertIsNone(row["inspected"])
-        self.assertEqual(row["response_bytes"], len(encoded(result)))
+        expected = measurements.measure_text(
+            encoded(result).decode("ascii"), surface=measurements.NORMAL_EVIDENCE_SURFACE,
+        )
+        self.assertNotIn("evidence_metrics", result)
+        self.assertLessEqual(len(encoded(result)), 48 * 1024)
+        self.assertEqual(row["response_bytes"], expected["evidence_bytes"])
+        self.assertEqual(row["evidence_characters"], expected["evidence_characters"])
+        self.assertEqual(row["estimated_evidence_tokens"], expected["estimated_evidence_tokens"])
+        self.assertEqual(row["evidence_metric_method"], "char4-ceil-v1")
+        self.assertEqual(overview["evidence_token_aggregates"][0]["uses"], 1)
         measurements.rate(self.root, result["use_id"], "MISLEADING", True)
         measurements.rate(self.root, result["use_id"], "PARTIAL", False)
         overview = measurements.summary(self.root)
@@ -330,6 +430,72 @@ class IntelligenceTests(unittest.TestCase):
             measurements.rate(self.root, "absent", "USEFUL")
         with self.assertRaises(IntelligenceError):
             measurements.rate(self.root, result["use_id"], "invalid")
+
+    def test_char4_measurement_counts_utf8_bytes_and_unicode_code_points(self):
+        value = measurements.measure_text("aé𝄞", surface="fixture")
+        self.assertEqual(value["evidence_bytes"], 7)
+        self.assertEqual(value["evidence_characters"], 3)
+        self.assertEqual(value["estimated_evidence_tokens"], 1)
+        self.assertEqual(measurements.measure_text("abcd", surface="fixture")["estimated_evidence_tokens"], 1)
+        self.assertEqual(measurements.measure_text("abcde", surface="fixture")["estimated_evidence_tokens"], 2)
+        self.assertEqual(measurements.measure_text("", surface="fixture")["estimated_evidence_tokens"], 0)
+        escaped_json = encoded({"text": "é\n"}).decode("ascii")
+        escaped = measurements.measure_text(escaped_json, surface="fixture")
+        self.assertEqual(escaped["evidence_characters"], len(escaped_json))
+        self.assertEqual(escaped["evidence_bytes"], len(escaped_json.encode("utf-8")))
+        self.assertEqual(measurements.measure_text("a \n", surface="fixture")["evidence_characters"], 3)
+
+    def test_measurement_counts_only_final_pruned_bounded_envelope(self):
+        self.build()
+
+        class OversizedProvider(FakeProvider):
+            def query(self, graph, arguments, timeout):
+                return {
+                    "outcome": "OK",
+                    "nodes": [{
+                        "id": "one", "label": "é" * 5000,
+                        "source_file": "src/one.py", "source_location": "L1",
+                    }],
+                    "relationships": [],
+                }
+
+        result = self.query(
+            {"operation": "lookup", "query": "one", "max_bytes": 4096},
+            provider=OversizedProvider(),
+        )
+        self.assertTrue(result["truncated"])
+        self.assertGreater(result["counts"]["omitted_nodes"], 0)
+        self.assertEqual(
+            measurements.summary(self.root)["recent"][0]["response_bytes"],
+            len(encoded(result)),
+        )
+        self.assertLessEqual(len(encoded(result)), 4096)
+
+    def test_legacy_sqlite_rows_migrate_without_relabeling_history(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        database_path = self.root / "measurements.sqlite3"
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                """CREATE TABLE uses (
+                id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, repository_key TEXT NOT NULL,
+                generation TEXT, consumer TEXT NOT NULL, operation TEXT NOT NULL,
+                latency_ms REAL NOT NULL, response_bytes INTEGER NOT NULL,
+                nodes INTEGER NOT NULL, relationships INTEGER NOT NULL, outcome TEXT NOT NULL,
+                truncated INTEGER NOT NULL, rating TEXT, inspected INTEGER,
+                misleading_ever INTEGER NOT NULL DEFAULT 0)"""
+            )
+            connection.execute(
+                "INSERT INTO uses VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("old-use", "2026-01-01T00:00:00+00:00", "default", "g1", "Coder", "lookup",
+                 12.5, 321, 2, 1, "OK", 0, "MISLEADING", 1, 1),
+            )
+        row = measurements.summary(self.root)["recent"][0]
+        self.assertEqual(row["response_bytes"], 321)
+        self.assertEqual(row["rating"], "MISLEADING")
+        self.assertEqual(row["misleading_ever"], 1)
+        self.assertIsNone(row["evidence_characters"])
+        self.assertIsNone(row["estimated_evidence_tokens"])
+        self.assertIsNone(row["evidence_metric_method"])
 
     def test_aggregate_percentiles_and_benchmarks(self):
         for i in range(20):
@@ -349,7 +515,267 @@ class IntelligenceTests(unittest.TestCase):
             "id": "one", "task": "Find symbol", "control": arm, "graphify": arm,
             "assessment": "Equivalent", "method": "Mechanical replay, not model tokens",
         })
-        self.assertEqual(len(measurements.summary(self.root)["benchmarks"]), 1)
+        control = self.controlled_arm("grep output", "def one():\n    return 1\n")
+        graphify = self.controlled_arm("node one", "def one():\n    return 1\n")
+        measurements.add_benchmark(
+            self.root,
+            self.controlled_benchmark("matched", control, graphify),
+        )
+        overview = measurements.summary(self.root)
+        self.assertEqual(len(overview["benchmarks"]), 2)
+        matched = next(row for row in overview["benchmarks"] if row["id"] == "matched")
+        expected = round(
+            (control["estimated_evidence_tokens"] - graphify["estimated_evidence_tokens"])
+            / control["estimated_evidence_tokens"] * 100, 1,
+        )
+        self.assertTrue(matched["comparison"]["eligible"])
+        self.assertEqual(matched["comparison"]["token_reduction_percent"], expected)
+        serialized = json.dumps(overview["benchmarks"])
+        self.assertNotIn("grep output", serialized)
+        self.assertNotIn("def one():", serialized)
+        self.assertNotIn("Where is function one defined?", serialized)
+        legacy = next(row for row in overview["benchmarks"] if row["id"] == "one")
+        self.assertFalse(legacy["comparison"]["eligible"])
+        self.assertIsNone(legacy["control"].get("estimated_evidence_tokens"))
+        self.assertEqual(overview["comparable_token_benchmarks"], 1)
+        page = create_web_app(
+            repository_path=str(self.repository_path), state_root=self.state,
+        ).test_client().get("/intelligence")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(f"{expected:.1f}%".encode(), page.data)
+        self.assertIn(b"Not measured", page.data)
+        self.assertIn(b"Legacy byte-only", page.data)
+        self.assertIn(b"10.5", page.data)
+        self.assertIn(b"19.0 ms", page.data)
+        self.assertIn(b"Typical response: 110 bytes", page.data)
+
+    def test_controlled_benchmark_negative_zero_and_unmatched_comparisons(self):
+        control = self.controlled_arm("", "")
+        larger = self.controlled_arm("a much longer tool response", "source")
+        measurements.add_benchmark(
+            self.root, self.controlled_benchmark("zero", control, control),
+        )
+        measurements.add_benchmark(
+            self.root,
+            self.controlled_benchmark(
+                "negative", self.controlled_arm("x", "y"), larger,
+            ),
+        )
+        measurements.add_benchmark(
+            self.root,
+            self.controlled_benchmark("unmatched", larger, control, stopping_rules_matched=False),
+        )
+        rows = {row["id"]: row for row in measurements.summary(self.root)["benchmarks"]}
+        self.assertTrue(rows["zero"]["comparison"]["eligible"])
+        self.assertIsNone(rows["zero"]["comparison"]["token_reduction_percent"])
+        self.assertLess(rows["negative"]["comparison"]["token_reduction_percent"], 0)
+        self.assertFalse(rows["unmatched"]["comparison"]["eligible"])
+        self.assertIsNone(rows["unmatched"]["comparison"]["token_reduction_percent"])
+
+    def test_fixed_reference_comparison_provenance_and_savings_gates(self):
+        measurements.add_benchmark(self.root, self.fixed_reference_benchmark("negative-reference", 2, 3))
+        measurements.add_benchmark(self.root, self.fixed_reference_benchmark("zero-reference", 0, 3))
+        measurements.add_benchmark(
+            self.root, self.fixed_reference_benchmark("different-asset", 3, 2, mismatched_asset=True),
+        )
+        measurements.add_benchmark(
+            self.root, self.fixed_reference_benchmark("different-method", 3, 2, mismatched_method=True),
+        )
+        measurements.add_benchmark(
+            self.root,
+            self.fixed_reference_benchmark("incomplete", 3, 2, completion_criteria_matched=False),
+        )
+        measurements.add_benchmark(
+            self.root, self.fixed_reference_benchmark("unknown", 3, 2, unmeasured=True),
+        )
+        rows = {row["id"]: row for row in measurements.summary(self.root)["benchmarks"]}
+        self.assertTrue(rows["negative-reference"]["reference_comparison"]["eligible"])
+        self.assertEqual(
+            rows["negative-reference"]["reference_comparison"]["token_reduction_percent"], -50.0,
+        )
+        self.assertIsNone(rows["zero-reference"]["reference_comparison"]["token_reduction_percent"])
+        for identifier in ("different-asset", "different-method", "incomplete", "unknown"):
+            self.assertFalse(rows[identifier]["reference_comparison"]["eligible"])
+            self.assertIsNone(rows[identifier]["reference_comparison"]["token_reduction_percent"])
+        self.assertFalse(rows["incomplete"]["comparison"]["eligible"])
+        self.assertEqual(
+            measurements.summary(self.root)["comparable_reference_token_benchmarks"], 2,
+        )
+        page = create_web_app(
+            repository_path=str(self.repository_path), state_root=self.state,
+        ).test_client().get("/intelligence")
+        self.assertIn(b"o200k_base reference-tokenizer evidence tokens", page.data)
+        self.assertIn(b"o200k-base-reference-v1 v1", page.data)
+
+    def test_benchmark_projection_orders_comparable_rows_and_preserves_history(self):
+        older = self.fixed_reference_benchmark("older", 320, 300)
+        older["provenance"]["recorded_at"] = "2026-01-01T00:00:00+00:00"
+        latest = self.fixed_reference_benchmark("latest", 310, 670)
+        latest["provenance"]["recorded_at"] = "2026-02-01T00:00:00+00:00"
+        measurements.add_benchmark(self.root, older)
+        measurements.add_benchmark(self.root, latest)
+        for index in range(20):
+            arm = {
+                "files": 1, "source_bytes": 10, "evidence_bytes": 20,
+                "interactions": 1, "elapsed_ms": 2,
+            }
+            measurements.add_benchmark(self.root, {
+                "id": f"legacy-{index:02}", "task": f"Historical task {index}",
+                "control": arm, "graphify": arm,
+                "assessment": "Historical", "method": "Byte-only",
+            })
+
+        overview = measurements.summary(self.root)
+        self.assertEqual(overview["latest_reference_benchmark"]["id"], "latest")
+        self.assertEqual([row["id"] for row in overview["reference_benchmarks"]], ["latest", "older"])
+        self.assertEqual(len(overview["historical_benchmarks"]), 20)
+        self.assertEqual(
+            {row["id"] for row in overview["historical_benchmarks"]},
+            {f"legacy-{index:02}" for index in range(20)},
+        )
+
+        browser = create_web_app(
+            repository_path=str(self.repository_path), state_root=self.state,
+        ).test_client()
+        page = browser.get("/intelligence")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Latest comparable benchmark", page.data)
+        self.assertIn(b"310 - 670", page.data)
+        self.assertIn(b"-116.1%", page.data)
+        self.assertIn(b"116.1%", page.data)
+        self.assertIn(b"Historical / not fixed-reference-token-comparable records (20)", page.data)
+        self.assertIn(b"Historical task 19", page.data)
+        self.assertIn(b"source windows read / located", page.data)
+        self.assertIn(b"asset SHA-256", page.data)
+        self.assertIn(b"Graph generation", page.data)
+        self.assertIn(b"Repository snapshot", page.data)
+        self.assertIn(b"/intelligence/guide", page.data)
+        guide = browser.get("/intelligence/guide")
+        guide_body = guide.get_data()
+        self.assertEqual(guide.status_code, 200)
+        self.assertIn(b"(310 - 670) / 310 = -116.1%", guide_body)
+        guide.close()
+
+    def test_reference_tokenizer_fails_closed_before_import_for_missing_or_corrupt_asset(self):
+        import socket
+
+        for contents in (None, b"corrupt"):
+            with tempfile.TemporaryDirectory() as temporary:
+                cache = Path(temporary)
+                cache.mkdir(exist_ok=True)
+                asset = reference_tokens.asset_path(cache)
+                if contents is not None:
+                    asset.write_bytes(contents)
+                with patch.object(reference_tokens.importlib, "import_module") as import_module, \
+                     patch.object(socket, "create_connection") as create_connection:
+                    with self.assertRaises(IntelligenceError):
+                        reference_tokens.load_encoding(cache)
+                import_module.assert_not_called()
+                create_connection.assert_not_called()
+
+    def test_reference_tokenizer_verifies_asset_before_loading_and_counts_ordinary_text(self):
+        import hashlib
+        from types import SimpleNamespace
+
+        class OrdinaryEncoding:
+            name = "o200k_base"
+
+            def encode_ordinary(self, text):
+                self.seen = text
+                return list(text)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            asset = reference_tokens.asset_path(cache)
+            asset.write_bytes(b"verified fixture vocabulary")
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+            encoding = OrdinaryEncoding()
+            def get_encoding(name):
+                self.assertEqual(name, "o200k_base")
+                self.assertEqual(os.environ["TIKTOKEN_CACHE_DIR"], str(cache.resolve()))
+                return encoding
+            module = SimpleNamespace(get_encoding=get_encoding)
+            with patch.object(reference_tokens, "ENCODING_ASSET_SHA256", digest), \
+                 patch.object(reference_tokens.metadata, "version", return_value="0.11.0"), \
+                 patch.object(reference_tokens.importlib, "import_module", return_value=module):
+                loaded = reference_tokens.load_encoding(cache)
+            text = "<|im_start|>café\t雪"
+            self.assertIs(loaded, encoding)
+            self.assertEqual(reference_tokens.count_reference_tokens(loaded, text), len(text))
+            self.assertEqual(encoding.seen, text)
+
+    def test_benchmark_runner_counts_normalized_json_and_source_items_separately(self):
+        from tools.intelligence_benchmark import create_benchmark
+
+        class OrdinaryEncoding:
+            def __init__(self):
+                self.seen = []
+
+            def encode_ordinary(self, text):
+                self.seen.append(text)
+                return list(text)
+
+        canonical_json = json.dumps(
+            {"path": "src/café.py", "text": "<|im_start|> \n"},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        )
+        source_text = "def target():\n    return '雪'\n"
+        arm = {
+            "tool_evidence": [canonical_json],
+            "source_windows_read": [source_text],
+            "source_windows_located_only": 1,
+            "files_inspected": 1,
+            "interactions": 3,
+            "elapsed_ms": 12.5,
+        }
+        payload = {
+            "id": "runner-fixture", "task": "Locate target", "corpus_id": "fixture",
+            "repository_id": "repo-control-ii", "source_head": "0123456789abcdef",
+            "source_identity": "a" * 64, "generation": "fixture-generation",
+            "question_id": "target-definition", "control_strategy": "Source-first",
+            "intelligence_strategy": "Intelligence-first",
+            "stopping_rule": "Stop after source verification.",
+            "stopping_rules_matched": True, "completion_criteria_matched": True,
+            "control": arm, "graphify": arm,
+        }
+        encoding = OrdinaryEncoding()
+        record = create_benchmark(payload, encoding)
+        measured = record["control"]
+        self.assertEqual(encoding.seen, [canonical_json, source_text] * 2)
+        self.assertEqual(
+            measured["reference_tokenizer_evidence_tokens"],
+            len(canonical_json) + len(source_text),
+        )
+        self.assertEqual(measured["total_evidence_characters"], len(canonical_json) + len(source_text))
+        self.assertEqual(
+            measured["total_evidence_bytes"],
+            len(canonical_json.encode("utf-8")) + len(source_text.encode("utf-8")),
+        )
+        self.assertEqual(measured["estimated_evidence_tokens"], (measured["total_evidence_characters"] + 3) // 4)
+
+    def test_benchmark_runner_rejects_noncanonical_and_duplicate_key_json(self):
+        from tools.intelligence_benchmark import _canonical_json_list
+
+        for text in (
+            '{"b": 1, "a": 2}', '{"a":1,"a":2}', '{"value":NaN}',
+            "[" * 10000 + "0" + "]" * 10000,
+        ):
+            with self.subTest(text=text), self.assertRaises(IntelligenceError):
+                _canonical_json_list([text], "tool_evidence")
+
+    def test_production_query_import_does_not_load_reference_tokenizer(self):
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        code = (
+            "import sys; import repoctl.intelligence.service; "
+            "assert 'repoctl.intelligence.reference_tokens' not in sys.modules; "
+            "assert 'tiktoken' not in sys.modules"
+        )
+        subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[1], env=environment,
+            check=True, capture_output=True, text=True,
+        )
 
     def test_architect_schema_rejects_passthrough_and_requires_preconditions(self):
         for args in ({}, {"expected_repository_key": "default", "expected_generation": 0, "graph": "/tmp/a"},
@@ -385,6 +811,11 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"Repository Intelligence Value", page.data)
         self.assertIn(b"2</strong> recorded uses", page.data)
+        self.assertIn(b"Only explicit controlled benchmark runs appear here", page.data)
+        self.assertIn(b"Latest comparable benchmark:</strong> Not measured", page.data)
+        self.assertIn(b"% of rated uses (n=0)", page.data)
+        self.assertIn(b"Feedback / details", page.data)
+        self.assertIn(b"char4-ceil-v1", page.data)
         self.assertEqual(
             before, subprocess.check_output(["git", "-C", str(self.repository_path), "status", "--porcelain=v1"])
         )

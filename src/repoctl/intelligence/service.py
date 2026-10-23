@@ -545,7 +545,7 @@ def intelligence_query(
         "impact_candidates": len(result["evidence"].get("impact", [])),
         "omitted_impact": result["evidence"].get("omitted_impact", 0),
     }
-    # Account for count metadata in the byte limit too.
+    # Account for count metadata without changing the established response budget.
     bound_envelope(result, arguments["max_bytes"] - 256)
     result["counts"].update(
         nodes=len(result["evidence"]["nodes"]), relationships=len(result["evidence"]["relationships"]),
@@ -554,10 +554,20 @@ def intelligence_query(
         impact_candidates=len(result["evidence"].get("impact", [])),
         omitted_impact=result["evidence"].get("omitted_impact", 0),
     )
+    evidence_metrics = measurements.measure_text(
+        encoded(result).decode("ascii"), surface=measurements.NORMAL_EVIDENCE_SURFACE,
+    )
     measurements.record(root, {
         "id": result["use_id"], "timestamp": datetime.now(UTC).isoformat(), "repository_key": repository.key,
         "generation": result["graph"].get("generation"), "consumer": consumer, "operation": arguments["operation"],
-        "latency_ms": (time.monotonic() - started) * 1000, "response_bytes": len(encoded(result)),
+        "latency_ms": (time.monotonic() - started) * 1000,
+        "response_bytes": evidence_metrics["evidence_bytes"],
+        "evidence_characters": evidence_metrics["evidence_characters"],
+        "estimated_evidence_tokens": evidence_metrics["estimated_evidence_tokens"],
+        "evidence_metric_method": evidence_metrics["evidence_metric_method"],
+        "evidence_metric_version": evidence_metrics["evidence_metric_version"],
+        "evidence_metric_surface": evidence_metrics["evidence_metric_surface"],
+        "evidence_metric_quality": evidence_metrics["evidence_metric_quality"],
         "nodes": result["counts"]["nodes"], "relationships": result["counts"]["relationships"],
         "outcome": result["outcome"], "truncated": result["truncated"],
     })

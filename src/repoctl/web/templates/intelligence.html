@@ -1,4 +1,60 @@
 {% extends "base.html" %}
+{% macro benchmark_details(row) -%}
+<details id="benchmark-{{ row.id }}" class="benchmark-details">
+  <summary>Details</summary>
+  <dl>
+    <dt>Task</dt><dd>{{ row.task }}</dd>
+    <dt>Status</dt><dd>{{ row.reference_comparison.note }}</dd>
+    <dt>Reference counts</dt>
+    <dd>Source-first {{ row.control.get("reference_tokenizer_evidence_tokens", "Not measured") }} &rarr;
+      Intelligence-first {{ row.graphify.get("reference_tokenizer_evidence_tokens", "Not measured") }}
+      (o200k_base reference-tokenizer evidence tokens)</dd>
+    <dt>Evidence bytes</dt><dd>
+      Source: {{ row.control.get("source_evidence_bytes", row.control.source_bytes) }} &rarr; {{ row.graphify.get("source_evidence_bytes", row.graphify.source_bytes) }};
+      tools: {{ row.control.get("tool_evidence_bytes", "Not measured") }} &rarr; {{ row.graphify.get("tool_evidence_bytes", "Not measured") }};
+      total: {{ row.control.get("total_evidence_bytes", row.control.evidence_bytes) }} &rarr;
+      {{ row.graphify.get("total_evidence_bytes", row.graphify.evidence_bytes) }}</dd>
+    <dt>Characters</dt><dd>Source-first {{ row.control.get("total_evidence_characters", "Not measured") }} &rarr;
+      Intelligence-first {{ row.graphify.get("total_evidence_characters", "Not measured") }}</dd>
+    <dt>char4 estimates</dt><dd>Source-first {{ row.control.get("estimated_evidence_tokens", "Not measured") }} &rarr;
+      Intelligence-first {{ row.graphify.get("estimated_evidence_tokens", "Not measured") }}
+      ({{ row.control.get("evidence_metric_method", "Not measured") }} v{{ row.control.get("evidence_metric_version", "—") }})</dd>
+    <dt>Other measures</dt><dd>
+      Files {{ row.control.get("files_inspected", row.control.files) }} &rarr; {{ row.graphify.get("files_inspected", row.graphify.files) }};
+      source windows read / located {{ row.control.get("source_windows_read", "Not measured") }} / {{ row.control.get("source_windows_located_only", "Not measured") }}
+      &rarr; {{ row.graphify.get("source_windows_read", "Not measured") }} / {{ row.graphify.get("source_windows_located_only", "Not measured") }};
+      interactions {{ row.control.interactions }} &rarr; {{ row.graphify.interactions }};
+      elapsed {{ "%.1f"|format(row.control.elapsed_ms) }} ms &rarr; {{ "%.1f"|format(row.graphify.elapsed_ms) }} ms
+    </dd>
+    <dt>Other reductions</dt><dd>
+      {% if row.comparison.eligible %}
+        char4 {% if row.comparison.token_reduction_percent is none %}Not available (zero control){% else %}{{ "%.1f"|format(row.comparison.token_reduction_percent) }}%{% endif %};
+        bytes {% if row.comparison.byte_reduction_percent is none %}Not available (zero control){% else %}{{ "%.1f"|format(row.comparison.byte_reduction_percent) }}%{% endif %}
+      {% else %}Not comparable{% endif %}
+    </dd>
+    <dt>Assessment / method</dt><dd>{{ row.assessment }} {{ row.method }}</dd>
+    {% if row.provenance %}
+    <dt>Recorded</dt><dd>{{ row.provenance.recorded_at }}</dd>
+    <dt>Repository snapshot</dt><dd>{{ row.provenance.repository_id }} &middot; HEAD {{ row.provenance.source_head }}
+      &middot; source identity {{ row.provenance.source_identity }}</dd>
+    <dt>Graph generation</dt><dd>{{ row.provenance.get("generation", "Not recorded") }}</dd>
+    <dt>Question / stopping</dt><dd>{{ row.provenance.question_id }} &middot; {{ row.provenance.stopping_rule }}
+      &middot; stopping matched {{ row.provenance.stopping_rules_matched }}
+      &middot; completion matched {{ row.provenance.get("completion_criteria_matched", "Not recorded") }}</dd>
+    {% endif %}
+    {% if row.control.get("reference_tokenizer_method") %}
+    <dt>Reference tokenizer</dt><dd>{{ row.control.reference_tokenizer_method }} v{{ row.control.reference_tokenizer_method_version }}
+      &middot; tiktoken {{ row.control.reference_tokenizer_package_version }}
+      &middot; {{ row.control.reference_tokenizer_encoding }}
+      &middot; asset SHA-256 {{ row.control.reference_tokenizer_asset_sha256 }}
+      &middot; surface {{ row.control.reference_tokenizer_surface }}</dd>
+    {% endif %}
+    <dt>Comparison qualification</dt><dd>{{ row.comparison.method }}; {{ row.comparison.note }}
+      {{ row.reference_comparison.note }}</dd>
+  </dl>
+</details>
+{%- endmacro %}
+{% block main_class %}main-intelligence{% endblock %}
 {% block content %}
 <section class="card">
   <h2>Repository Intelligence Value</h2>
@@ -13,6 +69,7 @@
   {% endif %}
   <p>Queries never rebuild. Only CURRENT evidence is served. Approve &amp; Start establishes a CURRENT graph where supported.
      During authorized IN_PROGRESS work, Coder may refresh the fixed configured graph when fresh structural evidence would help.</p>
+  <p><a href="#intelligence-value-tutorial">How to interpret the measurements</a></p>
   <form method="post" action="{{ url_for('intelligence_build') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
@@ -22,13 +79,33 @@
   <p>The deliberate button is the reported Product Owner action; identity is not authenticated. No separate checkbox,
      Git change, or milestone lifecycle change.</p>
 </section>
+<details id="intelligence-value-tutorial" class="card intelligence-tutorial">
+  <summary>How to read Intelligence Value</summary>
+  <ul>
+    <li><strong>Freshness:</strong> queries serve only a CURRENT graph. A refresh receipt records maintenance, not a structural query or proof of value.</li>
+    <li><strong>At a glance:</strong> use counts and response estimates describe recorded requests; rated and unrated counts are shown separately. Rating percentages use only the rated-use denominator.</li>
+    <li><strong>Recent uses:</strong> open a row for its generation, source-inspection status, and optional feedback. Ratings are subjective reports; MISLEADING ever remains visible after a rating changes.</li>
+    <li><strong>Comparisons:</strong> only matched controlled runs with the same fixed reference tokenizer support reference-token reduction. Positive means fewer Intelligence-first evidence tokens; negative means more. Older incomparable records remain available below.</li>
+    <li><strong>Refresh receipts:</strong> show graph maintenance attempts and are not evidence queries, benchmark records, or user feedback.</li>
+  </ul>
+  <p>The latest measured fixed-reference example is one bounded function-location task. Its result is calculated from the stored counts below; it is not model-native/session usage or a conclusion about general Graphify value. Earlier M004.002 bytes fell from 2,342 to 1,386, but unequal stopping rules make that historical byte-only comparison noncomparable.</p>
+  <p><a href="{{ url_for('intelligence_value_guide') }}">Read the Intelligence Value guide</a></p>
+</details>
 <section class="card">
   <h3>At a glance</h3>
   <p><strong>{{ measurements.uses }}</strong> recorded uses &middot; {{ measurements.rated }} rated &middot;
      {{ measurements.unrated }} unrated. Ratings are optional; percentages below use rated uses only.</p>
-  <p>Median / p95 query latency: {{ measurements.median_latency_ms if measurements.median_latency_ms is not none else "n/a" }}
-     / {{ measurements.p95_latency_ms if measurements.p95_latency_ms is not none else "n/a" }} ms.
-     Typical response: {{ measurements.median_response_bytes if measurements.median_response_bytes is not none else "n/a" }} bytes.</p>
+  <p>Median / p95 query latency: {% if measurements.median_latency_ms is none %}n/a{% else %}{{ "%.1f"|format(measurements.median_latency_ms) }}{% endif %}
+     / {% if measurements.p95_latency_ms is none %}n/a{% else %}{{ "%.1f"|format(measurements.p95_latency_ms) }}{% endif %} ms.
+     Typical response: {% if measurements.median_response_bytes is none %}n/a{% else %}{{ measurements.median_response_bytes|round|int }}{% endif %} bytes.</p>
+  <p>Estimated evidence tokens:
+    {% for aggregate in measurements.evidence_token_aggregates %}
+      {{ aggregate.method }} v{{ aggregate.version }}: median {{ aggregate.median }}, total {{ aggregate.total }}
+      across {{ aggregate.uses }} measured uses
+      ({{ aggregate.surface }}).
+    {% else %}Not measured for existing uses.{% endfor %}
+    Estimates use ceil(Unicode code points / 4) (roughly 4 English characters or 0.75 English words per token);
+    this is a rule of thumb, not model-native or billed tokens. Other languages and JSON/paths/identifiers can differ.</p>
   <p>Truncated: {{ measurements.truncated }} / {{ measurements.uses }} &middot;
      Ambiguous: {{ measurements.ambiguous }} / {{ measurements.uses }}</p>
   <p class="{% if measurements.misleading_ever %}flash error{% endif %}">
@@ -42,25 +119,25 @@
     {% if measurements.omitted_misleading_uses %}<p>{{ measurements.omitted_misleading_uses }} older flagged uses omitted here, retained in measurements.</p>{% endif %}
   </details>
   {% endif %}
-  <table>
-    <thead><tr><th>Usefulness</th><th>Count</th><th>% of rated uses</th></tr></thead>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Usefulness</th><th>Count</th><th>% of rated uses (n={{ measurements.rated }})</th></tr></thead>
     <tbody>{% for row in measurements.ratings %}
     <tr><td>{{ row.rating }}</td><td>{{ row.count }}</td><td>{{ "%.1f"|format(row.percent) }}%</td></tr>
     {% endfor %}</tbody>
-  </table>
+  </table></div>
   <h3>Value and noise by operation</h3>
-  <table>
+  <div class="table-scroll"><table>
     <thead><tr><th>Operation</th><th>Uses</th><th>Ratings</th><th>Outcomes</th><th>Misleading ever</th></tr></thead>
     <tbody>{% for row in measurements.operations %}
     <tr><td>{{ row.operation }}</td><td>{{ row.uses }}</td><td>{{ row.ratings }}</td>
       <td>{{ row.outcomes }}</td><td>{{ row.misleading_ever }}</td></tr>
     {% else %}<tr><td colspan="5">No measured uses yet. Targeted Architect/Coder queries create records.</td></tr>{% endfor %}</tbody>
-  </table>
+  </table></div>
 </section>
 <section class="card">
   <h3>Graph refresh receipts (separate from evidence queries)</h3>
   <p>{{ measurements.refresh_attempts }} recorded attempts; {{ measurements.completed_refreshes }} completed.</p>
-  <table>
+  <div class="table-scroll"><table>
     <thead><tr><th>Time / actor</th><th>Milestone</th><th>Trigger / action</th>
       <th>Final state</th><th>Generation</th><th>Elapsed</th><th>Outcome</th></tr></thead>
     <tbody>{% for row in measurements.refreshes %}
@@ -70,32 +147,77 @@
       <td>{{ "%.1f"|format(row.elapsed_ms) }} ms</td>
       <td>{{ "completed" if row.completed else (row.error_code or "incomplete") }}</td></tr>
     {% else %}<tr><td colspan="7">No graph maintenance attempts recorded.</td></tr>{% endfor %}</tbody>
-  </table>
-  <h3>Comparative tasks: control &rarr; intelligence first</h3>
-  <p>Each row states its methodology. Bytes are not model tokens. Mechanical replay time is not human reasoning time.
-     Inspect correctness and unsupported cases alongside any savings; no automatic adoption score.</p>
-  <table>
-    <thead><tr><th>Task</th><th>Files inspected</th><th>Source bytes read</th><th>Total evidence bytes</th>
-      <th>Interactions</th><th>Elapsed ms</th><th>Assessment / method</th></tr></thead>
-    <tbody>{% for row in measurements.benchmarks %}
-    <tr><td>{{ row.task }}</td><td>{{ row.control.files }} &rarr; {{ row.graphify.files }}</td>
-      <td>{{ row.control.source_bytes }} &rarr; {{ row.graphify.source_bytes }}</td>
-      <td>{{ row.control.evidence_bytes }} &rarr; {{ row.graphify.evidence_bytes }}</td>
-      <td>{{ row.control.interactions }} &rarr; {{ row.graphify.interactions }}</td>
-      <td>{{ row.control.elapsed_ms }} &rarr; {{ row.graphify.elapsed_ms }}</td>
-      <td>{{ row.assessment }}<br>{{ row.method }}</td></tr>
-    {% else %}<tr><td colspan="7">No comparative tasks recorded.</td></tr>{% endfor %}</tbody>
-  </table>
+  </table></div>
+  <h3>Controlled comparisons: source-first vs Intelligence-first</h3>
+  <p>Only explicit controlled benchmark runs appear here; ordinary queries are in Recent uses. Reductions use
+     (source-first - Intelligence-first) / source-first: positive means fewer measured evidence tokens, negative means more.
+     Fixed o200k_base reference counts are for the measured evidence only, not model-native, Copilot, host-context, or session usage.
+     {{ measurements.comparable_reference_token_benchmarks }} comparable task(s) are available; this is not a broad ROI sample.
+     char4 estimates use ceil(code points / 4) and are a rough rule of thumb.</p>
+  {% set latest = measurements.latest_reference_benchmark %}
+  {% if latest %}
+  <div class="benchmark-highlight">
+    <h4>Latest comparable benchmark</h4>
+    <p>{{ latest.task }} — one bounded task only; not a general Graphify-value or ROI conclusion.</p>
+    <div class="benchmark-metrics">
+      <div><span>Source-first reference evidence</span><strong>{{ latest.control.reference_tokenizer_evidence_tokens }}</strong> tokens</div>
+      <div><span>Intelligence-first reference evidence</span><strong>{{ latest.graphify.reference_tokenizer_evidence_tokens }}</strong> tokens</div>
+      <div><span>Reference reduction</span>
+        <strong>{% if latest.reference_comparison.token_reduction_percent is none %}Not available (zero control){% else %}
+          {{ "%.1f"|format(latest.reference_comparison.token_reduction_percent) }}%{% endif %}</strong>
+      </div>
+      {% if latest.reference_comparison.token_reduction_percent is not none and latest.reference_comparison.token_reduction_percent < 0 %}
+      <div><span>More evidence used by Intelligence-first</span>
+        <strong>{{ "%.1f"|format(0 - latest.reference_comparison.token_reduction_percent) }}%</strong></div>
+      {% endif %}
+    </div>
+    {% if latest.reference_comparison.token_reduction_percent is not none %}
+    <p>Formula: ({{ latest.control.reference_tokenizer_evidence_tokens }} - {{ latest.graphify.reference_tokenizer_evidence_tokens }}) /
+      {{ latest.control.reference_tokenizer_evidence_tokens }} = {{ "%.1f"|format(latest.reference_comparison.token_reduction_percent) }}% reference reduction.
+      Method {{ latest.reference_comparison.method }}. This is one simple function-location task, not model-native/session usage.</p>
+    {% endif %}
+  </div>
+  {% else %}
+  <p><strong>Latest comparable benchmark:</strong> Not measured. No fixed-reference-token-comparable record is available.</p>
+  {% endif %}
+  <h4>Matched fixed-reference comparisons</h4>
+  <div class="table-scroll"><table class="benchmark-table">
+    <thead><tr><th>Task</th><th>Source-first</th><th>Intelligence-first</th><th>Reference reduction</th><th>Detail</th></tr></thead>
+    <tbody>{% for row in measurements.reference_benchmarks %}
+    <tr><td>{{ row.task }}</td>
+      <td>{{ row.control.reference_tokenizer_evidence_tokens }} tokens</td>
+      <td>{{ row.graphify.reference_tokenizer_evidence_tokens }} tokens</td>
+      <td>{% if row.reference_comparison.token_reduction_percent is none %}Not available (zero control){% else %}
+        {{ "%.1f"|format(row.reference_comparison.token_reduction_percent) }}%{% endif %}</td>
+      <td>{{ benchmark_details(row) }}</td></tr>
+    {% else %}<tr><td colspan="5">No fixed-reference comparable benchmark recorded.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <details class="historical-benchmarks">
+    <summary>Historical / not fixed-reference-token-comparable records ({{ measurements.historical_benchmarks|length }})</summary>
+    <p>These records remain accessible and unchanged. Missing reference-token counts or unmatched provenance/stopping rules prevent fixed-reference comparison claims.</p>
+    <div class="table-scroll"><table class="benchmark-table">
+      <thead><tr><th>Task</th><th>Fixed-reference status</th><th>Source-first</th><th>Intelligence-first</th><th>Detail</th></tr></thead>
+      <tbody>{% for row in measurements.historical_benchmarks %}
+      <tr><td>{{ row.task }}</td><td>{{ row.reference_comparison.note }}</td>
+        <td>{{ row.control.get("reference_tokenizer_evidence_tokens", "Not measured") }}</td>
+        <td>{{ row.graphify.get("reference_tokenizer_evidence_tokens", "Not measured") }}</td>
+        <td>{{ benchmark_details(row) }}</td></tr>
+      {% else %}<tr><td colspan="5">No historical incomparable records.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
 </section>
 <section class="card">
   <h3>Recent uses and optional feedback (latest 30)</h3>
   <p>Analytics retain no query text, source bodies or raw evidence. Follow-up source inspection is unknown unless reported.</p>
   {% for row in measurements.recent %}
-  <details>
-    <summary>{{ row.timestamp }} &middot; {{ row.consumer }} &middot; {{ row.operation }} &middot; {{ row.outcome }} &middot;
-      {{ row.response_bytes }} B &middot; {{ row.rating or "UNRATED" }}{% if row.misleading_ever %} &middot; MISLEADING EVER{% endif %}</summary>
-    <p>Use {{ row.id }} &middot; Generation {{ row.generation or "none" }} &middot;
-       Source inspected: {{ "unknown" if row.inspected is none else ("yes" if row.inspected else "no") }}</p>
+  <details class="recent-use">
+    <summary>{{ row.consumer }} &middot; {{ row.operation }} &middot; {{ row.outcome }} &middot; {{ row.response_bytes|round|int }} bytes
+      &middot; {% if row.estimated_evidence_tokens is none %}Not measured{% else %}{{ row.estimated_evidence_tokens }} estimated evidence tokens{% endif %}
+      &middot; {{ row.rating or "UNRATED" }}{% if row.misleading_ever %} &middot; MISLEADING EVER{% endif %} &middot; Feedback / details</summary>
+    <p>{{ row.timestamp }} &middot; Use {{ row.id }} &middot; Generation {{ row.generation or "none" }} &middot;
+       {{ row.evidence_characters if row.evidence_characters is not none else "Not measured" }} code points
+       {% if row.evidence_metric_method %}&middot; {{ row.evidence_metric_method }} v{{ row.evidence_metric_version }}{% endif %}
+       &middot; Source inspected: {{ "unknown" if row.inspected is none else ("yes" if row.inspected else "no") }}</p>
     <form method="post" action="{{ url_for('intelligence_rating') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
