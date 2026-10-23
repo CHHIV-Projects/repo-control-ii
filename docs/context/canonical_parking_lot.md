@@ -7,7 +7,7 @@
 **Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-006, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
+**Current status:** WORKFLOW-006 is partially addressed (managed-repository read-only status/preview is available; safe Apply/recovery remains deferred). WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
 
 ---
 
@@ -636,34 +636,28 @@ Keep closeout evidence auditable and distinguish repository status at preparatio
 
 ### Status
 
-Deferred — deterministic status, preview, and guarded materialization exist; Product Owner-facing update orchestration is not implemented.
+Partially addressed — the browser provides allowlisted cross-repository status and deterministic read-only preview. Browser Apply and multi-file recovery remain deferred.
 
 ### Summary
 
-Provide a clear Product Owner workflow for identifying and reviewing canonical shared-procedure release drift in managed repositories, then safely applying an explicitly approved per-repository update.
+Complete a safe Product Owner workflow for identifying and reviewing canonical shared-procedure release drift in managed repositories, then safely applying and verifying an explicitly approved per-repository update.
 
 ### Why It Is Parked
 
-The deterministic foundations already exist: `coder-procedure-status`, `coder-procedure-preview`, the per-repository release/hash lock, and a guarded internal materializer. A first-class Product Owner-facing maintenance experience has not been designed or implemented. Small, separately authorized reconciliation milestones remain the safe fallback.
+M008.003 adds a read-only Procedure Updates page with allowlisted per-repository status, canonical/source and lock hash provenance, bounded deterministic diffs, and no global repository switch. The existing materializer writes files one at a time and does not provide whole-update rollback/recovery. The PO therefore approved omitting browser Apply; a clean preview remains non-authorizing, and no safe end-to-end update workflow is currently provided.
 
 ### Trigger for Reconsideration
 
-Revisit when another canonical release creates multi-repository drift, more managed repositories are onboarded, repeated reconciliation milestones become clerical overhead, or the Product Owner wants browser-visible status and routine one-repository update orchestration.
+Revisit when a separately approved milestone designs and validates robust multi-file transaction/recovery behavior suitable for an explicitly PO-gated action.
 
 ### Likely Scope
 
 ```text
-automatically evaluate shared-procedure status for a selected/managed repository
-show CURRENT, STALE_VERSION, HASH_MISMATCH, OVERLAY_INVALID, or INCOMPATIBLE
-explain installed release versus canonical target and warn that version drift is not inherently a broken repository
-provide a Review Update action backed by deterministic preview before writes
-list files to update, leave unchanged, adopt, block, or otherwise conflict
-show that the project overlay is valid and excluded from generic materialization
 allow Apply Update only after explicit PO approval and successful safety checks
 revalidate repository identity, target release, file snapshots/hashes, and preview before materialization
 verify post-write CURRENT state and leave resulting changes for ordinary Git Review
+provide transaction recovery and truthful reporting if a multi-file write fails
 stop for investigation when reconciliation is exceptional or conflicting
-optionally show CURRENT versus stale status across managed repositories
 ```
 
 ### Canonical / Materialized File Families
@@ -707,14 +701,19 @@ These repository-owned documents may need independent factual maintenance.
 ### Dependencies
 
 Preserve the central canonical bundle, per-repository physical copies and
-lock, preview-first safety checks, guarded internal write path, local overlay
-protection, Product Owner authority, and ordinary Git review.
+lock, preview-first safety checks, local overlay protection, Product Owner
+authority, and ordinary Git review. Before adding Apply, establish bounded
+atomicity/recovery for the complete fixed generated-file set; otherwise keep
+the experience read-only.
 
 ### Notes
 
-No automatic warning, browser Review Update control, Apply Update control, or
-public materialization command exists today. Do not implement this item
-without a separately approved milestone.
+M008.003 implements read-only status and Review Update preview; neither view
+writes files, switches the active repository, nor changes workflow state.
+There is no browser Apply action. The PO-approved scope explicitly deferred
+Apply because whole-update rollback/recovery is not established. A future
+milestone may address transaction/recovery; this partial implementation does
+not authorize internal or manual production writes.
 
 ---
 

@@ -499,11 +499,16 @@ def _status_for(root: Path, entry: RepositoryEntry, bundle: ProcedureBundle) -> 
 
     status_order = ("INCOMPATIBLE", "OVERLAY_INVALID", "HASH_MISMATCH", "STALE_VERSION", "MISSING")
     status = next((value for value in status_order if any(issue["status"] == value for issue in issues)), "CURRENT")
+    lock_path, lock_path_error = _target_path(root, bundle.lock_path)
+    lock_sha256 = None
+    if not lock_path_error and lock_path.is_file():
+        lock_sha256 = _sha256(lock_path.read_bytes())
     return {
         "repository": {"key": entry.key, "name": entry.name, "path": str(root), "repository_id": entry.repository_id},
         "status": status,
         "current_release": current_release,
         "target_release": bundle.release,
+        "lock_sha256": lock_sha256,
         "overlay": overlay,
         "issues": issues,
     }

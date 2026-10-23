@@ -1116,6 +1116,104 @@ def create_web_app(
         guide_path = Path(__file__).resolve().parents[3] / "docs/guides/intelligence_value_tutorial.md"
         return send_file(guide_path, mimetype="text/markdown")
 
+    @app.get("/guides/repo-control-user-guide")
+    def repo_control_user_guide():
+        guide_path = Path(__file__).resolve().parents[3] / "docs/guides/repo_control_user_guide.md"
+        return send_file(guide_path, mimetype="text/markdown")
+
+    @app.get("/procedure-updates")
+    def procedure_updates_page():
+        from ..procedure_governance import (
+            ProcedureGovernanceError,
+            inspect_procedure,
+            load_bundle,
+            preview_reconciliation,
+        )
+
+        def bounded_error(exc: Exception) -> str:
+            detail = str(exc)
+            return detail if len(detail) <= 1200 else detail[:1200] + "... [truncated]"
+
+        unknown_parameters = set(request.args) - {"repository"}
+        if unknown_parameters:
+            raise WebUIError(
+                "unsupported_procedure_parameter",
+                f"Unsupported procedure update parameter: {sorted(unknown_parameters)[0]!r}.",
+            )
+        requested_repositories = request.args.getlist("repository")
+        if len(requested_repositories) > 1 or (
+            requested_repositories
+            and (not requested_repositories[0] or len(requested_repositories[0]) > 64)
+        ):
+            raise WebUIError(
+                "invalid_procedure_repository",
+                "Select exactly one repository from the configured list.",
+            )
+        selected_key = requested_repositories[0] if requested_repositories else None
+        selected_entry = next(
+            (entry for entry in registry.entries if entry.key == selected_key),
+            None,
+        ) if selected_key else None
+        if selected_key and selected_entry is None:
+            raise WebUIError(
+                "invalid_procedure_repository",
+                "Select a repository from the server-configured repository list.",
+            )
+
+        bundle = None
+        bundle_error = None
+        try:
+            bundle = load_bundle()
+        except (ProcedureGovernanceError, OSError) as exc:
+            bundle_error = bounded_error(exc)
+
+        repository_statuses = []
+        if bundle is not None:
+            for entry in registry.entries:
+                try:
+                    status = inspect_procedure(entry, bundle)
+                    repository_statuses.append({"entry": entry, "status": status, "error": None})
+                except (ProcedureGovernanceError, OSError) as exc:
+                    repository_statuses.append({"entry": entry, "status": None, "error": bounded_error(exc)})
+
+        preview = None
+        preview_error = None
+        if selected_entry is not None and bundle is not None:
+            try:
+                plan = preview_reconciliation(selected_entry, bundle)
+                preview = plan.as_dict(include_diffs=True)
+                remaining_diff_chars = 20_000
+                for change in preview["changes"]:
+                    action = change["action"]
+                    change["display_action"] = "BLOCK / CONFLICT" if action == "blocked" else action.upper()
+                    diff = change.get("diff")
+                    if diff is not None:
+                        limit = min(4_000, remaining_diff_chars)
+                        change["diff_truncated"] = len(diff) > limit
+                        change["diff"] = diff[:limit]
+                        remaining_diff_chars -= min(len(diff), limit)
+            except (ProcedureGovernanceError, OSError) as exc:
+                preview_error = bounded_error(exc)
+
+        active_repository, active_generation = registry.snapshot()
+        response = Response(
+            render_template(
+                "procedure_updates.html",
+                repositories=repository_statuses,
+                selected_key=selected_key,
+                selected_entry=selected_entry,
+                preview=preview,
+                preview_error=preview_error,
+                bundle=bundle,
+                bundle_error=bundle_error,
+                active_repository_key=active_repository.key,
+                active_repository_generation=active_generation,
+            ),
+            mimetype="text/html",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     def intelligence_form_preconditions(allowed_fields: frozenset[str] = frozenset()) -> None:
         _require_csrf()
         require_current_repository_selection()

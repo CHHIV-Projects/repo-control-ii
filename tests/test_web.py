@@ -12,9 +12,11 @@ from unittest import mock
 from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
+from repoctl.procedure_governance import load_bundle, materialize_preview, preview_reconciliation
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
+from repoctl.web.repository_registry import RepositoryRegistry
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
 from repoctl.workflow.diff import GitReviewError
@@ -188,6 +190,137 @@ class WebTests(unittest.TestCase):
             self.assertEqual(rejected.status_code, 400)
             self.assertEqual(first_head, _git_text(first, "rev-parse", "HEAD"))
             self.assertEqual(first_status, _git_status_porcelain(first))
+
+    def test_procedure_updates_are_allowlisted_read_only_and_do_not_switch_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repos = {
+                "first": _init_repo(root, "first-repo"),
+                "second": _init_repo(root, "second-repo"),
+                "hash_mismatch": _init_repo(root, "hash-mismatch-repo"),
+                "overlay_invalid": _init_repo(root, "overlay-invalid-repo"),
+                "incompatible": _init_repo(root, "incompatible-repo"),
+                "missing": _init_repo(root, "missing-repo"),
+            }
+            for repo in repos.values():
+                overlay = repo / "docs/context/coding_agent_rules.md"
+                overlay.parent.mkdir(parents=True)
+                overlay.write_text(
+                    "# Project overlay\n\n"
+                    "<!-- repo-control-project-overlay:v1 -->\n\n"
+                    "## Repository-specific rules\n\n- Keep fixture data local.\n",
+                    encoding="utf-8",
+                )
+                (repo / "docs/milestones").mkdir(parents=True)
+
+            registry_path = root / "repositories.toml"
+            registry_lines = ['default = "first"']
+            for key, repo in repos.items():
+                registry_lines.extend(
+                    [
+                        "",
+                        f"[repositories.{key}]",
+                        f"name = {json.dumps(key.replace('_', ' ').title() + ' Repository')}",
+                        f"path = {json.dumps(str(repo))}",
+                        'milestone_root = "docs/milestones"',
+                        "",
+                        f"[repositories.{key}.documents]",
+                        'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                    ]
+                )
+            registry_path.write_text("\n".join(registry_lines) + "\n", encoding="utf-8")
+            registry = RepositoryRegistry.from_toml(registry_path)
+            bundle = load_bundle()
+            entries = {entry.key: entry for entry in registry.entries}
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                for key in ("first", "second", "hash_mismatch", "overlay_invalid", "incompatible"):
+                    plan = preview_reconciliation(entries[key], bundle)
+                    materialize_preview(entries[key], plan, bundle)
+            second = repos["second"]
+            lock_path = second / bundle.lock_path
+            lock_path.write_text(
+                lock_path.read_text(encoding="utf-8").replace(
+                    f'release = "{bundle.release}"',
+                    'release = "1.0.2"',
+                ),
+                encoding="utf-8",
+            )
+            (repos["hash_mismatch"] / ".github/copilot-instructions.md").write_text(
+                "unmanaged fixture edit\n",
+                encoding="utf-8",
+            )
+            (repos["overlay_invalid"] / "docs/context/coding_agent_rules.md").write_text(
+                "# Invalid overlay\n",
+                encoding="utf-8",
+            )
+            (repos["incompatible"] / bundle.lock_path).write_text("invalid TOML =", encoding="utf-8")
+
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                app = create_web_app(
+                    repository_registry_path=registry_path,
+                    state_root=root / "state",
+                )
+                client = app.test_client()
+                second_plan = preview_reconciliation(entries["second"], bundle)
+                second_generated = {
+                    change["path"]: (second / change["path"]).read_bytes()
+                    for change in second_plan.as_dict()["changes"]
+                }
+                second_files_before = {
+                    path: (second / path).read_bytes()
+                    for path in (
+                        bundle.lock_path,
+                        "docs/context/coding_agent_rules.md",
+                    )
+                }
+                second_git_before = _git_status_porcelain(second)
+
+                response = client.get("/procedure-updates?repository=second")
+                html = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                guide_response = client.get("/guides/repo-control-user-guide")
+                self.assertEqual(guide_response.status_code, 200)
+                guide_response.close()
+                self.assertIn("Second Repository", html)
+                self.assertIn("CURRENT", html)
+                self.assertIn("STALE_VERSION", html)
+                self.assertIn("MISSING", html)
+                self.assertIn("HASH_MISMATCH", html)
+                self.assertIn("OVERLAY_INVALID", html)
+                self.assertIn("INCOMPATIBLE", html)
+                self.assertIn("UPDATE", html)
+                self.assertIn(bundle.manifest_sha256, html)
+                self.assertIn("1.0.2", html)
+                self.assertIn("1.1.0", html)
+                self.assertIn("coding_agent_rules.md", html)
+                self.assertIn("No Apply Update action is available", html)
+                self.assertEqual(
+                    client.get("/healthz").get_json()["active_repository"],
+                    "first",
+                )
+                self.assertEqual(second_git_before, _git_status_porcelain(second))
+                self.assertEqual(
+                    second_files_before,
+                    {path: (second / path).read_bytes() for path in second_files_before},
+                )
+                self.assertEqual(
+                    second_generated,
+                    {path: (second / path).read_bytes() for path in second_generated},
+                )
+
+                invalid = client.get("/procedure-updates?repository=/tmp/arbitrary")
+                self.assertEqual(invalid.status_code, 400)
+                self.assertEqual(
+                    client.post("/procedure-updates?repository=second").status_code,
+                    405,
+                )
 
     def test_dashboard_renders_clean_state_and_upstream_caveat(self) -> None:
         with tempfile.TemporaryDirectory() as td:

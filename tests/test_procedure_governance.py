@@ -168,6 +168,10 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
         result = materialize_preview(self.entry, plan)
         self.assertEqual(result["status"], "CURRENT")
+        self.assertEqual(
+            result["lock_sha256"],
+            hashlib.sha256((self.repo / self.bundle.lock_path).read_bytes()).hexdigest(),
+        )
         self.assertEqual(overlay_path.read_bytes(), before_overlay)
         self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "CURRENT")
 

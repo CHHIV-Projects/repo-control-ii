@@ -428,6 +428,29 @@ ul {
   margin-bottom: 0.5rem;
 }
 
+.procedure-provenance {
+  grid-template-columns: minmax(10rem, auto) minmax(0, 1fr);
+}
+
+.procedure-provenance dd,
+.procedure-status-table code,
+.procedure-preview-table code {
+  overflow-wrap: anywhere;
+}
+
+.procedure-status-table,
+.procedure-preview-table {
+  min-width: 900px;
+}
+
+.procedure-diff {
+  max-width: 70ch;
+  max-height: 28rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .file-diff-details,
 .diagnosis-card,
 .action-preview-list {

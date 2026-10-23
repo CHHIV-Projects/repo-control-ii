@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Shared Procedure Updates</h2>
+  <p>Review the canonical shared Coder procedure release and per-repository drift. This page is read-only:
+     viewing status or preview never writes files, changes Git, selects a repository globally, or changes milestone state.</p>
+  <p>Product Owner role attribution is reported, not authenticated. No Apply Update action is available here.
+     Multi-file rollback/recovery is not established; applying updates requires a separately approved safe workflow.</p>
+  {% if bundle_error %}
+  <div class="card error"><strong>Canonical bundle unavailable.</strong> {{ bundle_error }}</div>
+  {% elif bundle %}
+  <dl class="procedure-provenance">
+    <dt>Canonical release</dt><dd>{{ bundle.release }}</dd>
+    <dt>Manifest SHA-256</dt><dd><code>{{ bundle.manifest_sha256 }}</code></dd>
+    <dt>Generated lock path</dt><dd><code>{{ bundle.lock_path }}</code></dd>
+  </dl>
+  <details>
+    <summary>Canonical source paths and SHA-256 checksums</summary>
+    <ul>{% for path, digest in bundle.source_hashes|dictsort %}
+      <li><code>{{ path }}</code> — <code>{{ digest }}</code></li>
+    {% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+<section class="card">
+  <h3>Managed repository status</h3>
+  <p>The active browser repository is <strong>{{ active_repository_key }}</strong>. Preview selection below is independent and does not change it.</p>
+  <div class="table-scroll">
+    <table class="procedure-status-table">
+      <thead><tr><th>Repository</th><th>Path</th><th>Installed / target</th><th>Status</th><th>Overlay</th><th>Preview</th></tr></thead>
+      <tbody>{% for row in repositories %}
+      <tr>
+        <td>{{ row.entry.name }}<br><code>{{ row.entry.key }}</code></td>
+        <td><code>{{ row.entry.path }}</code></td>
+        {% if row.status %}
+        <td>{{ row.status.current_release or "none" }} / {{ row.status.target_release }}</td>
+        <td><strong>{{ row.status.status }}</strong><br>Lock SHA-256:
+          <code>{{ row.status.lock_sha256 or "unavailable" }}</code>
+          {% for issue in row.status.issues %}<div>{{ issue.status }}: {{ issue.detail }}</div>{% endfor %}</td>
+        <td><code>{{ row.status.overlay.path }}</code><br>{{ "valid" if row.status.overlay.valid else "invalid" }}
+          {% if row.status.overlay.reason %}<div>{{ row.status.overlay.reason }}</div>{% endif %}</td>
+        {% else %}
+        <td>Unavailable</td><td><strong>Status unavailable</strong><div>{{ row.error }}</div></td><td>Not checked</td>
+        {% endif %}
+        <td><a href="{{ url_for('procedure_updates_page', repository=row.entry.key) }}">Review Update</a></td>
+      </tr>
+      {% else %}<tr><td colspan="6">No managed repositories are configured.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <p>`STALE_VERSION` means the installed procedure release is older than the canonical release; by itself it is expected drift, not a defect.</p>
+</section>
+{% if selected_entry %}
+<section class="card">
+  <h3>Read-only update preview: {{ selected_entry.name }} (<code>{{ selected_entry.key }}</code>)</h3>
+  <p>Target path: <code>{{ selected_entry.path }}</code>. Active browser selection remains <code>{{ active_repository_key }}</code>
+     (registry generation {{ active_repository_generation }}).</p>
+  <p><strong>Preview only — no files are written or removed.</strong></p>
+  {% if preview_error %}
+  <div class="card error"><strong>Preview failed safely.</strong> {{ preview_error }}</div>
+  {% elif preview %}
+  <p>Installed release: {{ preview.current_release or "none" }} &middot; Target release: {{ preview.target_release }}
+     &middot; Status: <strong>{{ preview.status }}</strong></p>
+  <p>Project overlay <code>{{ preview.overlay.path }}</code> is
+     <strong>{{ "valid" if preview.overlay.valid else "invalid" }}</strong> and explicitly untouched.
+     Internal preview safety result: <strong>{{ "unblocked" if preview.materialization_available else "blocked" }}</strong>.
+     This page does not expose or invoke materialization.</p>
+  {% if preview.blockers %}
+  <div class="card error"><h4>Blockers</h4><ul>{% for blocker in preview.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  <div class="table-scroll"><table class="procedure-preview-table">
+    <thead><tr><th>Proposed action</th><th>Generated path</th><th>Current SHA-256</th><th>Expected SHA-256</th><th>Reviewable diff</th></tr></thead>
+    <tbody>{% for change in preview.changes %}
+    <tr>
+      <td><strong>{{ change.display_action }}</strong>{% if change.reason %}<div>{{ change.reason }}</div>{% endif %}</td>
+      <td><code>{{ change.path }}</code></td>
+      <td><code>{{ change.get("current_sha256", "Not available") or "Missing" }}</code></td>
+      <td><code>{{ change.get("expected_sha256", "Not available") }}</code></td>
+      <td>{% if change.diff or change.diff_truncated %}
+        <details><summary>Show diff{% if change.diff_truncated %} (bounded preview; truncated){% endif %}</summary>
+          <pre class="procedure-diff">{{ change.diff }}</pre>
+        </details>
+        {% else %}No text diff{% endif %}</td>
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <p>Removals: {{ preview.removals|length }}. No generated file is deleted by this preview.</p>
+  {% endif %}
+</section>
+{% endif %}
+<section class="card">
+  <h3>What is and is not synchronized</h3>
+  <p>Only the versioned generic procedure bundle may be materialized through an explicitly authorized future workflow.
+     These five repository-owned governing documents and overlays are never generic synchronization targets:</p>
+  <ul>
+    <li>Project context — <code>docs/context/project_context.md</code></li>
+    <li>Project architecture — <code>docs/context/project_architecture.md</code></li>
+    <li>Project workflow — <code>docs/context/project_workflow.md</code></li>
+    <li>Repository-specific Coder rules overlay — <code>docs/context/coding_agent_rules.md</code></li>
+    <li>Canonical parking lot — <code>docs/context/canonical_parking_lot.md</code></li>
+  </ul>
+  <p>Milestone prompts, decisions, workflow sidecars, and closeouts follow their own repository and lifecycle authority.
+     Host-level project instructions and tool settings are controlled by the user/PO in that host; Repo Control cannot install them.</p>
+</section>
+<section class="card">
+  <h3>Fresh-session startup check</h3>
+  <ol>
+    <li>Did the host load Repo Control instructions and expose the required tool?</li>
+    <li>Is the intended managed repository explicit and the service-selected key correct?</li>
+    <li>Is a milestone selected, and what lifecycle phase does current Repo Control state report?</li>
+    <li>Does that current state authorize this role and action? A handoff phrase is not approval.</li>
+  </ol>
+  <p>If any answer is unknown, stop and use the operator fallback and copy-ready host guidance in the
+     <a href="{{ url_for('repo_control_user_guide') }}">Repo Control User Guide</a>.
+     The repository cannot guarantee that a new ChatGPT or other-vendor chat consumed project instructions.</p>
+</section>
+{% endblock %}

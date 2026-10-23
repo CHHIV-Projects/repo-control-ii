@@ -20,6 +20,65 @@ the authoritative repository, Git, or milestone records.
    From a managed worktree, the canonical command is
    `/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context`.
 
+### Fresh sessions and host boundaries
+
+Handoff phrases have stable meanings, but none authorizes work:
+
+| Phrase | Meaning |
+|---|---|
+| `Prompt ready.` | A prompt is available for current Repo Control review. It is not approval or a start instruction. |
+| `Instruction ready.` | An instruction is available for review; check whether it is approved and applies to this repository and milestone. |
+| `Correction ready.` | A proposed bounded correction is available; confirm the current lifecycle and explicit authorization before acting. |
+
+At the start of a fresh session, identify the role (Architect or Coder), the
+host's actual Repo Control tool/CLI capability, the intended repository key
+and path, the selected milestone, and its current lifecycle/authorization.
+Fail closed if a tool or identity is missing, the intended repository differs
+from the service-selected repository, or the phase is ambiguous. Do not change
+the service selection just to satisfy a request. A useful operator handoff is:
+
+> Use Repo Control to read current context for **[named managed repository]**; **[handoff phrase]**.
+
+For VS Code/GitHub Copilot Coder in a managed worktree, run the canonical
+local command from that worktree:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context
+```
+
+Confirm the returned repository key/path, selected milestone, current phase,
+prompt, applicable approved dispatches, and authorization. Repo-resident
+Copilot instructions only help when the host actually loads them.
+
+#### ChatGPT Architect project instruction (copy-ready proposal)
+
+The Product Owner must install project/chat instructions and connect the
+Repo Control Architect tools in the host. This repository cannot edit host
+account settings or guarantee that a new conversation consumed them.
+
+```text
+You are the Repo Control Architect, not the Coder. At the start of every
+conversation, use the connected read-only Repo Control tools repo_status,
+repo_workflow, and repo_prompt to identify the currently selected managed
+repository, path, selected milestone, and lifecycle. State those identities
+before advising. If tools are unavailable, identity is ambiguous, or the
+selected repository differs from the user's named target, stop and ask the
+Product Owner/operator to resolve it in Repo Control; never switch global
+repository selection or infer state from chat history. "Prompt ready.",
+"Instruction ready.", and "Correction ready." are handoff notices, not
+approval or authorization. Do not impersonate the Coder, run a local
+coder-context command from ChatGPT, or begin implementation based on a
+handoff phrase. Only current Repo Control lifecycle and approved decisions
+establish authority.
+```
+
+For other hosts, use only instructions and tools actually supported and
+connected there. Do not assume automatic discovery, local shell access, or
+that a repository file changed settings in another product. The quick
+diagnostic is: **instructions loaded? Repo Control tool available? intended
+repository selected? milestone selected? phase and role authorized?** Stop and
+contact the operator when any answer is unknown.
+
 ## Core concepts
 
 | Term | Meaning |
@@ -498,10 +557,43 @@ Use these read-only commands to inspect a registered repository:
 ```
 
 Status reports release/hash/overlay drift. Preview shows proposed diffs and
-blocked conflicts; it does not write or delete files. There is no
-operator-facing materialization command. A guarded internal materializer may
-be used only for an explicitly Product-Owner-authorized reconciliation after
-status and deterministic preview review; ordinary Git review remains required.
+blocked conflicts; it does not write or delete files. The browser's
+**Procedure Updates** page shows status for configured repositories and a
+deterministic **Review Update** preview without changing the global active
+repository selection.
+
+### Procedure release update: start to finish
+
+1. The PO reviews and approves a semantic release to the generic sources in
+   Repo Control II `shared/procedure/`; publishing a release does not update
+   any managed worktree.
+2. In **Procedure Updates**, compare each registered repository's installed
+   release, status, lock hash, canonical manifest/source hashes, and overlay.
+   `STALE_VERSION` is expected release drift, not by itself a defect.
+3. Select one configured repository's **Review Update** action. Review the
+   deterministic read-only diff, generated target paths, hashes, blockers,
+   and overlay state. Page views and preview do not write files or change the
+   active browser repository.
+4. This milestone deliberately provides no browser Apply action: safe
+   multi-file rollback/recovery is not yet established. Do not treat an
+   unblocked preview as permission to write; applying a real update requires
+   a separately approved safe workflow. In particular, do not materialize
+   Vocab as part of this procedure.
+5. After a separately authorized update path is available, verify status is
+   `CURRENT`, then use ordinary PO Git Review for the generated working-tree
+   changes. Procedure materialization does not stage, commit, or push.
+
+The five repository-owned `docs/context` documents—including the local Coder
+rules overlay—are never generic procedure targets. Their independent
+maintenance path is a PO-approved, narrowly scoped project documentation
+milestone or reviewed factual correction in the owning repository. Review the
+proposed content and authority impact, validate relevant claims, and use
+ordinary Git Review. Do not use shared-procedure materialization to update
+them. A future lightweight proposal UX remains deferred as DOC-001.
+
+There is no operator-facing materialization command. The guarded internal
+materializer remains subject to separately approved safe reconciliation and
+ordinary Git review.
 M007.006 accepted fresh/resumed Coder-context resolution and approved
 instruction visibility across Repo Control II and Vocab. A `CURRENT` file
 status remains distinct from that host-consumption acceptance.
@@ -509,10 +601,12 @@ status remains distinct from that host-consumption acceptance.
 Each managed repository is pinned to the shared-procedure release in its local
 lock. `CURRENT` means its installed release and hashes match the canonical
 target; `STALE_VERSION` means the installed release is older and needs
-deliberate per-repository reconciliation. Publishing a canonical release does
+deliberate per-repository reconciliation. This is expected drift, not by
+itself a defect. Publishing a canonical release does
 not change managed repositories. The operator flow is status → preview →
 separately authorized guarded reconciliation → verify `CURRENT` → ordinary
-Git Review. No public or browser update button exists today.
+Git Review. Browser **Review Update** is read-only; no browser Apply action
+exists today.
 
 Status values are `CURRENT`, `MISSING`, `STALE_VERSION`, `HASH_MISMATCH`,
 `OVERLAY_INVALID`, and `INCOMPATIBLE`. Overlay checks validate its marker and
