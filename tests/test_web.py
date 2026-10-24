@@ -14,9 +14,11 @@ from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
 from repoctl.procedure_governance import load_bundle, materialize_preview, preview_reconciliation
 from repoctl.scanner.core import run_scan_with_artifacts
+from repoctl.scanner.util import make_repository_id
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
 from repoctl.web.repository_registry import RepositoryRegistry
+from repoctl.workflow.architect_dispatches import submit_dispatch
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
 from repoctl.workflow.diff import GitReviewError
@@ -417,6 +419,39 @@ class WebTests(unittest.TestCase):
             self.assertEqual(stale.status_code, 200)
             self.assertIn("STALE", stale_text)
             self.assertIn("Working-tree state differs", stale_text)
+
+    def test_context_and_snapshot_routes_preserve_architect_dispatch_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            repository_id = make_repository_id(repo)
+            dispatch = submit_dispatch(
+                repo,
+                state_root,
+                repository_id,
+                dispatch_type="INSTRUCTION",
+                milestone_id="M008.003.001",
+                body="Survive browser-triggered scans.",
+            )
+            ledger = state_root / repository_id / "architect_dispatches.json"
+            original_bytes = ledger.read_bytes()
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+            client.get("/context")
+            csrf = _extract_csrf_token(client)
+
+            generated = client.post(
+                "/context/generate",
+                data={"csrf_token": csrf, "query": "scanner dispatch persistence"},
+            )
+            self.assertEqual(generated.status_code, 302)
+            self.assertEqual(ledger.read_bytes(), original_bytes)
+            self.assertIn(dispatch["dispatch_id"], original_bytes.decode("utf-8"))
+
+            snapshot = client.post("/snapshots/create", data={"csrf_token": csrf})
+            self.assertEqual(snapshot.status_code, 302)
+            self.assertEqual(ledger.read_bytes(), original_bytes)
 
     def test_context_groups_related_test_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as td:

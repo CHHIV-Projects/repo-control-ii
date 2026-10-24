@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..scanner.core import STATE_ARTIFACT_LOCK
+from ..scanner.core import state_artifact_lock
 from ..scanner.util import make_repository_id
 from .milestones import MilestoneArtifactError, _root_paths, discover_milestones
 
@@ -95,21 +96,32 @@ def _empty_ledger(repository_id: str) -> dict[str, Any]:
 
 def _read_ledger(path: Path, repository_id: str) -> dict[str, Any]:
     try:
-        path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return _empty_ledger(repository_id)
     except OSError as exc:
         raise ArchitectDispatchError(f"Could not inspect Architect dispatch state: {exc}") from exc
-    if path.is_symlink() or not path.is_file():
-        raise ArchitectDispatchError("Architect dispatch state must be a regular file.")
     try:
-        if path.stat().st_size > MAX_LEDGER_BYTES:
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ArchitectDispatchError("Architect dispatch state must be a regular file.")
+            if metadata.st_size > MAX_LEDGER_BYTES:
+                raise ArchitectDispatchError("Architect dispatch state exceeds its safety limit.")
+            raw = stream.read(MAX_LEDGER_BYTES + 1)
+        if len(raw) > MAX_LEDGER_BYTES:
             raise ArchitectDispatchError("Architect dispatch state exceeds its safety limit.")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        if len(raw) != metadata.st_size:
+            raise ArchitectDispatchError("Architect dispatch state changed while it was being read.")
+        payload = json.loads(raw.decode("utf-8"))
     except ArchitectDispatchError:
         raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ArchitectDispatchError(f"Could not read Architect dispatch state: {exc}") from exc
+    return _validate_ledger(payload, repository_id)
+
+
+def _validate_ledger(payload: Any, repository_id: str) -> dict[str, Any]:
     if (
         not isinstance(payload, dict)
         or payload.get("schema_version") != _SCHEMA_VERSION
@@ -154,6 +166,61 @@ def _read_ledger(path: Path, repository_id: str) -> dict[str, Any]:
             raise ArchitectDispatchError("Architect dispatch state contains an invalid prompt record.")
         seen_ids.add(item["dispatch_id"])
     return payload
+
+
+def _preserve_dispatch_ledger(source_directory: Path, destination_directory: Path, repository_id: str) -> None:
+    source = source_directory / "architect_dispatches.json"
+    destination = destination_directory / "architect_dispatches.json"
+    try:
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ArchitectDispatchError(f"Could not inspect Architect dispatch state for scan preservation: {exc}") from exc
+
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ArchitectDispatchError("Architect dispatch state must be a regular file.")
+            if metadata.st_size > MAX_LEDGER_BYTES:
+                raise ArchitectDispatchError("Architect dispatch state exceeds its safety limit.")
+            ledger_bytes = stream.read(MAX_LEDGER_BYTES + 1)
+        if len(ledger_bytes) > MAX_LEDGER_BYTES or len(ledger_bytes) != metadata.st_size:
+            raise ArchitectDispatchError("Architect dispatch state changed or exceeded its safety limit during scan.")
+        try:
+            payload = json.loads(ledger_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArchitectDispatchError(f"Could not read Architect dispatch state for scan preservation: {exc}") from exc
+        _validate_ledger(payload, repository_id)
+
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            stat.S_IMODE(metadata.st_mode),
+        )
+        try:
+            with os.fdopen(destination_fd, "wb") as stream:
+                stream.write(ledger_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.fchmod(stream.fileno(), stat.S_IMODE(metadata.st_mode))
+            os.utime(
+                destination,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                follow_symlinks=False,
+            )
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
+        if destination.read_bytes() != ledger_bytes:
+            destination.unlink(missing_ok=True)
+            raise ArchitectDispatchError("Preserved Architect dispatch state did not match the original bytes.")
+        _read_ledger(destination, repository_id)
+    except ArchitectDispatchError:
+        raise
+    except OSError as exc:
+        raise ArchitectDispatchError(f"Could not preserve Architect dispatch state during scan: {exc}") from exc
 
 
 def _write_ledger(path: Path, payload: dict[str, Any]) -> None:
@@ -260,7 +327,7 @@ def submit_dispatch(
         milestone_root=milestone_root,
     )
     path = _state_file(repository_root, state_root, repository_id)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         ledger = _read_ledger(path, repository_id)
         if len(ledger["dispatches"]) >= MAX_DISPATCHES_PER_REPOSITORY:
             raise ArchitectDispatchError(
@@ -287,7 +354,7 @@ def list_dispatches(
     if milestone_id is not None:
         _validate_milestone_id(milestone_id)
     path = _state_file(repository_root, state_root, repository_id)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         ledger = _read_ledger(path, repository_id)
     records = [
         item
@@ -349,7 +416,7 @@ def list_owner_dispatches(
     repository_id: str,
 ) -> list[dict[str, Any]]:
     path = _state_file(repository_root, state_root, repository_id)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         ledger = _read_ledger(path, repository_id)
     return [dict(item) for item in reversed(ledger["dispatches"])]
 
@@ -363,7 +430,7 @@ def get_dispatch(
     if not isinstance(dispatch_id, str) or not _RELATED_ID_RE.fullmatch(dispatch_id):
         raise ArchitectDispatchError("Dispatch ID must be a 32-character hexadecimal ID.")
     path = _state_file(repository_root, state_root, repository_id)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         ledger = _read_ledger(path, repository_id)
     dispatch = next((item for item in ledger["dispatches"] if item["dispatch_id"] == dispatch_id), None)
     if dispatch is None:
@@ -384,7 +451,7 @@ def update_dispatch_status(
     if status not in {"APPROVED", "REJECTED"}:
         raise ArchitectDispatchError("Dispatch can only be approved or rejected.")
     path = _state_file(repository_root, state_root, repository_id)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         ledger = _read_ledger(path, repository_id)
         record = next((item for item in ledger["dispatches"] if item["dispatch_id"] == dispatch_id), None)
         if record is None:

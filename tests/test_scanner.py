@@ -82,6 +82,40 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("--", repository["repository_id"])
             self.assertEqual(repository["tracked_file_count"], 5)
 
+    def test_scans_without_a_dispatch_ledger_do_not_create_one(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+
+            result = run_scan(str(repo), state_root=state_root)
+            repository_id = result["repository_id"]
+            ledger = state_root / repository_id / "architect_dispatches.json"
+            self.assertFalse(ledger.exists())
+
+            run_scan(str(repo), state_root=state_root)
+            self.assertFalse(ledger.exists())
+
+    def test_existing_scanner_backup_is_preserved_and_blocks_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            result = run_scan(str(repo), state_root=state_root)
+            repository_id = result["repository_id"]
+            output = state_root / repository_id
+            output_before = (output / "repository.json").read_bytes()
+            backup = state_root / f"{repository_id}.bak"
+            backup.mkdir()
+            marker = backup / "operator-evidence.txt"
+            marker.write_text("preserve this potential recovery evidence\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ScanError, "operator review"):
+                run_scan(str(repo), state_root=state_root)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "preserve this potential recovery evidence\n")
+            self.assertEqual((output / "repository.json").read_bytes(), output_before)
+
     def test_files_hash_size_line_count(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

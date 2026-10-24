@@ -205,6 +205,11 @@ target milestone, and status.
   milestone. M007.006 accepted fresh/resumed Coder-context convergence across
   Repo Control II and Vocab, including approved applicable instruction
   visibility; pending or rejected proposals remain excluded.
+- Architect dispatch records live in the external per-repository state ledger
+  and are preserved during repository scans. If a ledger is missing,
+  malformed, or a scanner backup is present, stop and preserve the state for
+  Product Owner/operator review. Never reconstruct records or approvals from
+  prompts, workflow sidecars, chat history, or a stale backup.
 
 ## Review Git state and actions
 

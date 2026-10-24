@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import hashlib
+import os
 import shutil
 import threading
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Any
+from typing import Any, Iterator
 
 from .git_ops import ScanError, get_branch, get_head_commit, get_working_tree, list_tracked_files, validate_git_worktree
 from .python_scan import discover_test_structure, is_test_like_python_path, parse_python_file
@@ -17,6 +20,25 @@ from .util import classify_file_type, count_lines_if_text, encode_path_order, ma
 SCHEMA_VERSION = 1
 DEFAULT_STATE_ROOT = Path("~/.local/share/repoctl").expanduser()
 STATE_ARTIFACT_LOCK = threading.RLock()
+
+
+@contextmanager
+def state_artifact_lock(state_root: str | Path) -> Iterator[None]:
+    lock_directory = Path(state_root).expanduser().resolve().parent
+    lock_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with STATE_ARTIFACT_LOCK:
+        descriptor = os.open(lock_directory, os.O_RDONLY | os.O_DIRECTORY)
+        acquired = False
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            acquired = True
+            yield
+        finally:
+            try:
+                if acquired:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 def _extract_requirements(repo_root: Path, tracked_files: list[str]) -> list[dict[str, Any]]:
@@ -215,10 +237,17 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         dependencies_payload=dependencies_payload,
     )
 
-    root = (state_root or DEFAULT_STATE_ROOT).expanduser()
+    root = (state_root or DEFAULT_STATE_ROOT).expanduser().resolve()
     final_dir = root / repository_id
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(root):
         root.mkdir(parents=True, exist_ok=True)
+        backup_dir = root / f"{repository_id}.bak"
+        if backup_dir.exists() or backup_dir.is_symlink():
+            raise ScanError(
+                f"An existing scanner backup requires operator review; refusing to replace it: {backup_dir.name}"
+            )
+        if final_dir.is_symlink() or (final_dir.exists() and not final_dir.is_dir()):
+            raise ScanError("Existing repository state is not a regular directory.")
 
         temp_dir = Path(mkdtemp(prefix="scan-tmp-", dir=str(root)))
         try:
@@ -235,16 +264,33 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
                 if existing_dir.exists() and existing_dir.is_dir():
                     shutil.copytree(existing_dir, temp_dir / namespace)
 
-            backup_dir = None
+            from ..workflow.architect_dispatches import (
+                ArchitectDispatchError,
+                _preserve_dispatch_ledger,
+            )
+
+            try:
+                _preserve_dispatch_ledger(final_dir, temp_dir, repository_id)
+            except ArchitectDispatchError as exc:
+                raise ScanError(f"Cannot safely preserve Architect dispatch state: {exc}") from exc
+
             if final_dir.exists():
-                backup_dir = root / f"{repository_id}.bak"
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir)
                 final_dir.rename(backup_dir)
 
-            temp_dir.rename(final_dir)
+            try:
+                temp_dir.rename(final_dir)
+            except Exception:
+                if backup_dir.exists() and not final_dir.exists():
+                    try:
+                        backup_dir.rename(final_dir)
+                    except OSError as restore_error:
+                        raise ScanError(
+                            f"Scanner publication failed and the prior state could not be restored; "
+                            f"recoverable state remains at {backup_dir.name}: {restore_error}"
+                        ) from restore_error
+                raise
 
-            if backup_dir and backup_dir.exists():
+            if backup_dir.exists():
                 shutil.rmtree(backup_dir)
         except Exception:
             if temp_dir.exists():

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+import multiprocessing
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from repoctl.scanner import core as scanner_core
+from repoctl.scanner.core import run_scan
+from repoctl.scanner.git_ops import ScanError
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.app import create_web_app
 from repoctl.workflow.architect_dispatches import (
@@ -35,6 +41,52 @@ def _git(repository: Path, *args: str) -> None:
     )
     if result.returncode:
         raise RuntimeError(result.stderr)
+
+
+def _blocked_scan_worker(repository: str, state_root: str, entered, proceed, result_queue) -> None:
+    original_write = scanner_core.write_json_deterministic
+
+    def wait_during_scan(path, payload):
+        if not entered.is_set():
+            entered.set()
+            if not proceed.wait(10):
+                raise TimeoutError("test scan barrier timed out")
+        original_write(path, payload)
+
+    try:
+        with mock.patch("repoctl.scanner.core.write_json_deterministic", side_effect=wait_during_scan):
+            run_scan(repository, state_root=Path(state_root))
+        result_queue.put("scan-complete")
+    except Exception as exc:
+        result_queue.put(f"scan-error:{type(exc).__name__}:{exc}")
+
+
+def _dispatch_worker(
+    repository: str,
+    state_root: str,
+    repository_id: str,
+    started,
+    lock_attempted,
+    finished,
+) -> None:
+    started.set()
+    original_flock = scanner_core.fcntl.flock
+
+    def report_lock_attempt(descriptor, operation):
+        if operation == scanner_core.fcntl.LOCK_EX:
+            lock_attempted.set()
+        return original_flock(descriptor, operation)
+
+    with mock.patch("repoctl.scanner.core.fcntl.flock", side_effect=report_lock_attempt):
+        submit_dispatch(
+            repository,
+            state_root,
+            repository_id,
+            dispatch_type="INSTRUCTION",
+            milestone_id="M003.001",
+            body="Concurrent dispatch remains durable.",
+        )
+    finished.set()
 
 
 class TestArchitectDispatches(unittest.TestCase):
@@ -337,6 +389,189 @@ class TestArchitectDispatches(unittest.TestCase):
             [approved["dispatch_id"]],
         )
         self.assertEqual(selected["milestone_id"], self.active_milestone_id)
+
+    def test_dispatch_ledger_survives_scanner_publication_byte_for_byte(self):
+        self._start_milestone()
+        pending_prompt = self._submit(
+            "PROMPT",
+            milestone_id="M003.002",
+            title="Next milestone",
+            body="Pending prompt must remain pending.",
+        )
+        approved_instruction = self._submit("INSTRUCTION", body="Approved guidance survives scanning.")
+        update_dispatch_status(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+            approved_instruction["dispatch_id"],
+            "APPROVED",
+            milestone_root="docs/milestones",
+            active_milestone_id=self.active_milestone_id,
+        )
+        rejected_response = self._submit("RESPONSE", body="Rejected response remains rejected.")
+        update_dispatch_status(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+            rejected_response["dispatch_id"],
+            "REJECTED",
+            milestone_root="docs/milestones",
+            active_milestone_id=self.active_milestone_id,
+        )
+
+        ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+        original_bytes = ledger_path.read_bytes()
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+        original_ledger = json.loads(original_bytes)
+
+        run_scan(str(self.repository), state_root=self.state_root)
+        run_scan(str(self.repository), state_root=self.state_root)
+
+        self.assertTrue(ledger_path.is_file(), "scanner publication must preserve the ledger")
+        persisted_bytes = ledger_path.read_bytes()
+        self.assertEqual(hashlib.sha256(persisted_bytes).hexdigest(), original_hash)
+        self.assertEqual(persisted_bytes, original_bytes)
+        self.assertEqual(json.loads(persisted_bytes), original_ledger)
+        self.assertEqual(
+            {item["dispatch_id"]: item["status"] for item in original_ledger["dispatches"]},
+            {
+                pending_prompt["dispatch_id"]: "PENDING",
+                approved_instruction["dispatch_id"]: "APPROVED",
+                rejected_response["dispatch_id"]: "REJECTED",
+            },
+        )
+
+        context = get_coder_context(self.repository, state_root=self.state_root)
+        self.assertEqual(
+            [item["dispatch_id"] for item in context["approved_architect_dispatches"]],
+            [approved_instruction["dispatch_id"]],
+        )
+
+    def test_scanner_fails_closed_on_invalid_dispatch_ledger(self):
+        self._submit("INSTRUCTION", body="Valid starting record.")
+        ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+        valid_bytes = ledger_path.read_bytes()
+
+        invalid_ledgers = (
+            b"not-json",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "repository_id": "different-repository",
+                    "dispatches": [],
+                }
+            ).encode("utf-8"),
+            b"x" * (8 * 1024 * 1024 + 1),
+        )
+        for invalid in invalid_ledgers:
+            with self.subTest(size=len(invalid)):
+                ledger_path.write_bytes(invalid)
+                with self.assertRaises(ScanError):
+                    run_scan(str(self.repository), state_root=self.state_root)
+                self.assertEqual(ledger_path.read_bytes(), invalid)
+                self.assertFalse((self.state_root / f"{self.repository_id}.bak").exists())
+
+        ledger_path.write_bytes(valid_bytes)
+        outside = self.root / "ledger-outside.json"
+        outside.write_bytes(valid_bytes)
+        ledger_path.unlink()
+        ledger_path.symlink_to(outside)
+        with self.assertRaises(ScanError):
+            run_scan(str(self.repository), state_root=self.state_root)
+        self.assertTrue(ledger_path.is_symlink())
+        self.assertEqual(outside.read_bytes(), valid_bytes)
+
+        ledger_path.unlink()
+        ledger_path.mkdir()
+        with self.assertRaises(ScanError):
+            run_scan(str(self.repository), state_root=self.state_root)
+        self.assertTrue(ledger_path.is_dir())
+        ledger_path.rmdir()
+        ledger_path.write_bytes(valid_bytes)
+        ledger_path.chmod(0o640)
+        run_scan(str(self.repository), state_root=self.state_root)
+        self.assertEqual(ledger_path.read_bytes(), valid_bytes)
+        self.assertEqual(stat.S_IMODE(ledger_path.stat().st_mode), 0o640)
+
+    def test_scan_failure_preserves_dispatch_ledger_and_existing_state(self):
+        run_scan(str(self.repository), state_root=self.state_root)
+        self._submit("INSTRUCTION", body="Keep this record on scan failure.")
+        ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+        original_bytes = ledger_path.read_bytes()
+        repository_path = self.state_root / self.repository_id / "repository.json"
+        original_repository_bytes = repository_path.read_bytes()
+        with mock.patch(
+            "repoctl.scanner.core.write_json_deterministic",
+            side_effect=OSError("fixture write failure"),
+        ):
+            with self.assertRaises(OSError):
+                run_scan(str(self.repository), state_root=self.state_root)
+        self.assertEqual(ledger_path.read_bytes(), original_bytes)
+        self.assertEqual(repository_path.read_bytes(), original_repository_bytes)
+        self.assertFalse((self.state_root / f"{self.repository_id}.bak").exists())
+        self.assertFalse(any(path.name.startswith("scan-tmp-") for path in self.state_root.iterdir()))
+
+        original_rename = Path.rename
+
+        def fail_scan_publication(path, target):
+            if path.name.startswith("scan-tmp-") and Path(target) == self.state_root / self.repository_id:
+                raise OSError("fixture publication failure")
+            return original_rename(path, target)
+
+        with mock.patch.object(Path, "rename", fail_scan_publication):
+            with self.assertRaisesRegex(OSError, "fixture publication failure"):
+                run_scan(str(self.repository), state_root=self.state_root)
+        self.assertEqual(ledger_path.read_bytes(), original_bytes)
+        self.assertEqual(repository_path.read_bytes(), original_repository_bytes)
+        self.assertFalse((self.state_root / f"{self.repository_id}.bak").exists())
+        self.assertFalse(any(path.name.startswith("scan-tmp-") for path in self.state_root.iterdir()))
+
+    def test_scanner_and_dispatch_submission_share_a_cross_process_lock(self):
+        self._submit("INSTRUCTION", body="Original dispatch remains.")
+        context = multiprocessing.get_context("fork")
+        entered = context.Event()
+        proceed = context.Event()
+        started = context.Event()
+        lock_attempted = context.Event()
+        finished = context.Event()
+        result_queue = context.Queue()
+        scanner = context.Process(
+            target=_blocked_scan_worker,
+            args=(str(self.repository), str(self.state_root), entered, proceed, result_queue),
+        )
+        scanner.start()
+        self.assertTrue(entered.wait(10), "scanner did not reach the protected publication window")
+
+        submitter = context.Process(
+            target=_dispatch_worker,
+            args=(
+                str(self.repository),
+                str(self.state_root),
+                self.repository_id,
+                started,
+                lock_attempted,
+                finished,
+            ),
+        )
+        submitter.start()
+        self.assertTrue(started.wait(10), "dispatch submitter did not start")
+        self.assertTrue(lock_attempted.wait(10), "dispatch submitter did not request the shared process lock")
+        self.assertFalse(finished.wait(0.2), "dispatch submission was not serialized behind the scan")
+
+        proceed.set()
+        scanner.join(15)
+        submitter.join(15)
+        self.assertFalse(scanner.is_alive(), "scanner process did not finish")
+        self.assertFalse(submitter.is_alive(), "dispatch process did not finish")
+        self.assertEqual(scanner.exitcode, 0)
+        self.assertEqual(submitter.exitcode, 0)
+        self.assertEqual(result_queue.get(timeout=2), "scan-complete")
+        records = list_owner_dispatches(self.repository, self.state_root, self.repository_id)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {record["body"] for record in records},
+            {"Original dispatch remains.", "Concurrent dispatch remains durable."},
+        )
 
     def test_web_submission_stays_pending_until_product_owner_approval(self):
         app = create_web_app(repository_path=str(self.repository), state_root=self.state_root)
