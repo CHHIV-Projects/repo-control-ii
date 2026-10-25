@@ -279,11 +279,12 @@ release drift when the installed files remain compatible, not by itself a
 broken repository or onboarding failure.
 
 For each repository, inspect status and the deterministic preview before any
-write. Do not interpret a clean preview as write authorization. A safe,
-separately approved reconciliation path must exist before materialization.
-When an authorized path has been used, verify `CURRENT` and review the
-generated changes through the ordinary Git workflow. Invalid overlays, edited generated files, collisions,
-incompatible state, unexpected changes/removals, or any other blocker are not
-routine version maintenance: stop and investigate under appropriately scoped
-work. Local project overlays are never overwritten by shared-procedure
-materialization.
+write. Do not interpret a clean preview as write authorization. For an
+existing registered repository, the guarded Procedure Updates browser flow
+provides the separately confirmed single-repository Apply and recovery path;
+only the PO may choose to use it. After a successful Apply, verify `CURRENT`
+and review the generated changes through the ordinary Git workflow. Invalid
+overlays, edited generated files, collisions, incompatible state, unexpected
+changes/removals, or any other blocker are not routine version maintenance:
+stop and investigate under appropriately scoped work. Local project overlays
+are never overwritten by shared-procedure materialization.

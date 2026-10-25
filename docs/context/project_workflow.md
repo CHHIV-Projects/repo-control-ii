@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.006, and M007.007 accepted and CLOSED
+**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); see milestone artifacts and Repo Control for individual lifecycle authority
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -28,14 +28,32 @@ Each repository must be reconciled separately under Product Owner
 authorization.
 
 Inspect with `coder-procedure-status`, then review the deterministic
-`coder-procedure-preview`. The accepted guarded internal materializer is used
-only for separately authorized reconciliation; there is no ordinary
-operator-facing/public update action. Revalidate the repository as `CURRENT`
-after materialization and use ordinary Git review for resulting changes.
-Project-specific local overlays are outside generic materialization and must
-remain protected. This comprehensive workflow remains Repo Control II's
-project-specific operating and implementation document, not the canonical
-generic workflow source for other managed repositories.
+`coder-procedure-preview`. The internal materializer remains a separate
+implementation primitive, not an operator-facing Coder command. The accepted
+browser workflow is a deliberate PO path for **one selected registered
+repository**: status → Review Update → separate CSRF-protected Confirm Apply →
+independent full-set `CURRENT` verification → ordinary PO Git Review. Apply
+and Recover do not switch global selection, update other repositories, change
+local overlays or `docs/context`, or stage/commit/push. Preview and GET remain
+read-only. Project-specific local overlays stay protected. This comprehensive
+workflow remains Repo Control II's project-specific operating and
+implementation document, not the canonical generic workflow source for other
+managed repositories.
+
+M008.004 stores exact before/after images and the transaction journal in a
+private sibling of scanner state, not inside the scanner-replaced per-repo
+directory or a managed worktree. Its states are `PREPARING`, `PREPARED`,
+`APPLYING`, `VERIFIED`, `RECOVERY_REQUIRED`, and `RECOVERED`; the fixed five
+generated files precede the release lock, and success requires independent
+verification of all six paths. A separately reviewed and confirmed recovery
+restores only known original images; unknown edits, corrupt/missing images, or
+unsafe paths remain blocked for operator investigation. The existing
+cross-process state-artifact lock serializes Repo Control scans and
+transactions, not arbitrary external writers. Individual replacements are
+atomic, but the six-file set is not simultaneously visible. The tested
+parent-directory rename race is a deferred path-confinement risk under
+WORKFLOW-007; no complete external-writer protection is claimed. PO browser/UI
+acceptance is not live-repository Apply/Recover acceptance.
 
 ---
 
@@ -1518,7 +1536,7 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M006.000 and M007.000–M007.006 are also accepted and closed; M007.006 validated fresh/resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
+The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M006.000 and M007.000–M007.007 are also accepted and closed; M007.006 validated fresh/resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff. M008.000–M008.004 are accepted and closed, adding closed-milestone reopening and dispatch-aware closure, Intelligence measurement, fresh-session bootstrap/status-preview, persistent dispatch-ledger protection across scans, and guarded PO-controlled transactional Apply/Recover. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1605,9 +1623,10 @@ Product Owner-gated dispatch approval and local Coder consumption
 manual review packets retained as operational fallback
 M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue
 M005.002–M005.004 Agent Procedure / three explicit Skill helpers and governing-context reconciliation accepted and CLOSED
+M008.000–M008.004 closed-milestone safeguards, Intelligence measurement, fresh-session bootstrap, dispatch-ledger persistence, and single-repository transactional procedure Apply/Recover accepted and CLOSED
 Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, or permission framework is integrated
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)
 ```
 
-M003 capabilities through M003.012 are accepted and CLOSED. M003.012 acceptance is explicitly PASS WITH LIMITED LIVE COVERAGE; remaining extended polling, stale-form, and Approve & Start live scenarios were not closure gates. Preserve that evidence limit rather than claiming every production scenario was exercised. Future work requires separately approved scope.
+M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.007, and M008.000–M008.004 are accepted and CLOSED. M003.012 acceptance is explicitly PASS WITH LIMITED LIVE COVERAGE; remaining extended polling, stale-form, and Approve & Start live scenarios were not closure gates. Preserve that evidence limit rather than claiming every production scenario was exercised. M008's accepted baseline includes durable per-repository dispatch-ledger protection, the guarded single-repository PO Apply/Recover path, exact-image recovery, and independently verified all-six-path `CURRENT`; it does not include bulk rollout, Coder Apply authority, simultaneous six-file visibility, or immunity to arbitrary external path mutation. Future work requires separately approved scope.

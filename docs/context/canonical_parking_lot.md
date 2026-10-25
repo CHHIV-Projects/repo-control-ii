@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
+**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); this document contains unresolved work only
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** WORKFLOW-006 is partially addressed (managed-repository read-only status/preview is available; safe Apply/recovery remains deferred). WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain deferred below; managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved.
+**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-007, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain unresolved below. Managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved; accepted current behavior and completed milestone history are documented in their owning project and milestone artifacts.
 
 ---
 
@@ -608,7 +608,7 @@ If ever implemented, Coder MCP must strictly adhere to the same Model B bounded 
 
 ### Status
 
-Deferred
+Deferred — not resolved by M008.000–M008.004
 
 ### Summary
 
@@ -632,93 +632,35 @@ Keep closeout evidence auditable and distinguish repository status at preparatio
 
 ---
 
-## WORKFLOW-006 — Managed Shared-Procedure Update Workflow
+## WORKFLOW-007 — Procedure Apply Parent-Directory Rename / Path-Confinement Hardening
 
 ### Status
 
-Implemented in M008.004 and awaiting Product Owner review — the browser provides allowlisted status/preview plus a separate PO-confirmed, single-repository Apply and guarded recovery workflow. No live managed repository was materialized during Coder implementation.
+Deferred — the accepted transaction documents this limitation; no mitigation is claimed.
 
 ### Summary
 
-Complete a safe Product Owner workflow for identifying and reviewing canonical shared-procedure release drift in managed repositories, then safely applying and verifying an explicitly approved per-repository update.
+Study and validate safe path confinement for transactional shared-procedure Apply/Recover when a non-cooperating process renames or otherwise mutates target parent directories during file replacement.
 
 ### Why It Is Parked
 
-M008.003 added allowlisted per-repository status, canonical/source and lock hash provenance, bounded deterministic diffs, and no global repository switch. M008.004 adds an explicit two-step PO Apply flow for the fixed five generated procedure files plus release lock, a durable journal outside scanner-replaced state, independent full-set `CURRENT` verification, and a separate explicit recovery confirmation that restores only exact recorded originals. Fixture tests exercise Apply, caught rollback, interruption recovery, conflict refusal, concurrent Apply serialization, and browser confirmation; milestone acceptance and any real managed-repository update remain PO decisions.
+The M008.004 fixture renamed a target parent after final path/identity validation but before replacement. The transaction wrote through an already-open parent directory descriptor into the moved directory, then detected the changed identity and blocked recovery because the transaction-created parent had disappeared. The tested rename stayed inside the fixture repository; no outside-root write was observed. A privileged or otherwise authorized external writer moving that open parent outside the managed worktree during the same narrow window presents a possible path escape that the current design does not exclude. The shared lock covers cooperating Repo Control operations and scans, not arbitrary external writers.
 
 ### Trigger for Reconsideration
 
-The implementation is pending PO review. Continue to defer any broader rollout, service deployment, or real managed-repository Apply until the PO accepts the closeout and independently authorizes the intended repository update.
+Before extending Apply to environments with uncontrolled concurrent parent-directory mutation, multiuser writers, elevated privileges, or stronger path-containment guarantees; otherwise when the Product Owner separately prioritizes this security hardening.
 
 ### Likely Scope
 
-```text
-allow Apply Update only after explicit PO approval and successful safety checks
-revalidate repository identity, target release, file snapshots/hashes, and preview before materialization
-verify post-write CURRENT state and leave resulting changes for ordinary Git Review
-provide transaction recovery and truthful reporting if a multi-file write fails
-stop for investigation when reconciliation is exceptional or conflicting
-```
-
-### Canonical / Materialized File Families
-
-Canonical shared-procedure sources in Repo Control II:
-
-```text
-shared/procedure/bootstrap.md
-shared/procedure/workflow_core.md
-shared/procedure/skills/repo-control-implementation/SKILL.md
-shared/procedure/skills/repo-control-blocker-bug-escalation/SKILL.md
-shared/procedure/skills/repo-control-validation-closeout/SKILL.md
-shared/procedure/manifest.toml (release and source-hash metadata)
-```
-
-Managed-repository materialized/generated files:
-
-```text
-.github/copilot-instructions.md
-.repo-control/workflow_core.md
-.repo-control/shared-procedure.lock.toml
-.agents/skills/repo-control-implementation/SKILL.md
-.agents/skills/repo-control-blocker-bug-escalation/SKILL.md
-.agents/skills/repo-control-validation-closeout/SKILL.md
-```
-
-Repository-owned governing documents and local overlays are excluded from
-generic automatic materialization and must never be overwritten by
-shared-procedure synchronization:
-
-```text
-docs/context/coding_agent_rules.md
-docs/context/project_context.md
-docs/context/project_architecture.md
-docs/context/project_workflow.md
-docs/context/canonical_parking_lot.md
-```
-
-These repository-owned documents may need independent factual maintenance.
+Evaluate parent-path confinement across rename, mount, and path-swap races; descriptor and ancestor-identity validation; write ordering; safe recovery when transaction-created parents are missing or renamed; and feasibility on supported Linux filesystems. Require repeatable adversarial fixture tests and safe fail-closed behavior.
 
 ### Dependencies
 
-Preserve the central canonical bundle, per-repository physical copies and
-lock, preview-first safety checks, local overlay protection, Product Owner
-authority, and ordinary Git review. The implemented browser workflow uses
-durable crash detection and exact-image recovery; it does not promise
-simultaneous multi-file visibility or protection against every non-cooperating
-external writer. Keep those limits explicit and investigate any recovery
-conflict manually.
+Use the accepted M008.004 transaction/recovery behavior and its fixture finding as evidence. Any fix must retain the one-repository PO confirmation boundary, exact-image recovery, and no-silent-overwrite invariant; material architectural or privilege changes require separate approval.
 
 ### Notes
 
-Status, preview, and page load remain read-only. Apply and Recover require
-separate CSRF-protected PO confirmation POSTs, are limited to one selected
-registered repository, and do not stage/commit files or switch Repo Control
-selection. Interrupted transactions block further Apply; GET/status does not
-repair them. Journals live outside scanner-replaced state and serialize Repo
-Control scans/transactions, not arbitrary filesystem writers. Per-file
-replacement is atomic but the six-file set is not simultaneously visible.
-M008.004 Coder validation is fixture-only; PO acceptance, deployment and any
-live materialization remain separate decisions.
+No code changes or mitigation claim are in M008.005. The outside-root escape is a possible, unobserved scenario—not an observed fixture result. Do not prescribe an unreviewed fix, exploit method, broader privilege, or silent auto-repair.
 
 ---
 
@@ -832,7 +774,7 @@ Make Repository Intelligence usage feedback reflect the experience of the Archit
 
 ### Why It Is Parked
 
-Recorded intelligence uses included material Coder uses that remained `UNRATED`. A PO cannot meaningfully judge technical usefulness for evidence they did not consume.
+The system already supports optional per-use feedback, consumer identity, and the Coder `coder-intelligence-rate` command; M008.002 documented measurement and comparison but explicitly left a consumer-rating workflow redesign out of scope. The remaining question is whether further Coder/Architect-side feedback or consumer-centered usefulness reporting is justified by actual use. Historical unrated records remain unknown and must not be retroactively assigned.
 
 ### Trigger for Reconsideration
 

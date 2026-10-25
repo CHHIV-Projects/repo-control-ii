@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Current project/product context and working baseline  
-**Project phase:** Git Control complete; M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, and M007.000–M007.006 accepted and CLOSED
+**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); see the milestone artifacts and Repo Control for individual lifecycle authority
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Branch at M005.004 reconciliation:** `arc/m005-agent-procedure` (historical; verify live Git state before work)
@@ -1010,7 +1010,7 @@ M004.002 — Graphify Integration and Value Measurement        ACCEPTED / CLOSED
 M005.000–M005.003 — Agent Procedure reconnaissance/POCs/SOPs  ACCEPTED / CLOSED
 M005.004 — Governing Context Reconciliation / Arc Closeout    ACCEPTED / CLOSED
 M006.000 — Operational Documentation / Onboarding             ACCEPTED / CLOSED
-M007.000–M007.006 — Managed Context / History / Coder Acceptance ACCEPTED / CLOSED
+M007.000–M007.007 — Managed Context / History / Coder Acceptance ACCEPTED / CLOSED
 ```
 
 Remaining capability areas are not a prescribed implementation sequence:
@@ -1018,7 +1018,7 @@ Remaining capability areas are not a prescribed implementation sequence:
 ```text
 Agent Procedure / Skills            ACCEPTED through M005.004 / CLOSED
 Repository Intelligence             ACCEPTED bounded integration; usefulness monitoring may continue
-Managed context / history / cross-repository Coder acceptance  ACCEPTED through M007.006 / CLOSED
+Managed context / history / cross-repository Coder acceptance  ACCEPTED through M007.007 / CLOSED
 Deeper Architect / Coder Integration DEFERRED
 Model Gateway                       DEFERRED
 ```
@@ -1049,7 +1049,7 @@ Model Gateway
 
 # 19. Near-Term Work
 
-The active milestone and authorization are selected and reported explicitly through Repo Control, not inferred from this document or milestone numbering. M005.004 is accepted and CLOSED, completing the M005 Agent Procedure arc; M006.000 and M007.000–M007.006 are also accepted and CLOSED. No further feature work or implementation roadmap is implied by those historical closures.
+The active milestone and authorization are selected and reported explicitly through Repo Control, not inferred from this document or milestone numbering. M005.004 completes the M005 Agent Procedure arc; M006.000 and M007.000–M007.007 are accepted and CLOSED. M008.000–M008.004 are also accepted and CLOSED; this records a durable baseline, not a current-milestone selection or authorization. No further feature work or implementation roadmap is implied by those historical closures.
 
 ---
 
@@ -1095,6 +1095,8 @@ Coding agents resolve the centrally registered managed repository, active milest
 ## 20.5 Repository Intelligence Engine (Accepted Bounded Integration)
 
 M004.002 was accepted and CLOSED with a bounded Graphify-backed integration exposing structural evidence through Architect `repo_intelligence` and local `repoctl coder-intelligence`, using the server-selected allowlisted repository. Product Owner Approve & Start establishes a CURRENT graph baseline for supported repositories; a required refresh failure blocks lifecycle advancement, while unsupported source scope is explicitly NOT AVAILABLE. The deliberate Product Owner browser Build / Refresh action remains available without a redundant checkbox. An authorized Coder may run the no-argument `repoctl coder-intelligence-refresh` during IN_PROGRESS only when stale/missing structural evidence would materially help; it is restricted to the centrally registered workspace and the existing provider/configuration, and changes only external derived graph state. Ordinary queries and other lifecycle actions never rebuild. CURRENT evidence includes generation/source identity and normalized outcomes. The `/intelligence` page shows freshness, separate refresh receipts, use ratings, sticky misleading flags and comparative task metrics. Communities/viewer and semantic/network operations remain excluded; template/browser gaps remain unsupported. Acceptance does not establish unconditional correctness, complete runtime coverage, or a blanket engine-adoption claim; usefulness monitoring may continue.
+
+M008.001–M008.002 extend the accepted Intelligence measurement contract. New uses measure the compact normalized service-JSON response as UTF-8 bytes, Unicode code points, and a versioned estimate `ceil(characters / 4)` (`char4-ceil-v1`, version 1); this is an estimate, not exact model tokens or billing. Deliberate controlled comparisons may separately use the fixed `o200k_base` reference (`tiktoken==0.11.0`, `o200k-base-reference-v1`), with provenance and equivalent stopping/completion criteria. The accepted recorded comparison was negative for evidence reduction on its one task; it is not general or causal evidence of savings. Legacy measurements are not relabeled or backfilled.
 
 ## 20.6 Agent Skills (Accepted Explicit SOP Catalog)
 
@@ -1199,6 +1201,7 @@ Product Owner acceptance of M003 capabilities through M003.012;
 local bounded Coder context/status and workflow submissions without Coder MCP;
 phase-aware polling UX and compressed Product Owner actions with distinct ordered events;
 M004.001 and M004.002 accepted and CLOSED; M004.002 provides bounded Graphify-backed structural evidence with value/usefulness monitoring and documented coverage limitations.
+M008.000–M008.004 accepted and CLOSED: append-only reopening of closed milestones with a guard against closing over later-approved applicable guidance; validated per-repository Architect dispatch ledgers survive scanner-state replacement; fresh-session Coder identity/bootstrap and read-only procedure status/preview; and PO-only, separately confirmed transactional Apply/Recover for one registered repository using a durable exact-image journal. Its five generated files and lock are replaced individually, not simultaneously; shared locking does not serialize arbitrary external writers, and parent-directory rename hardening remains deferred. PO UI acceptance does not establish live Apply/Recover. M008.001–M008.002 add versioned Intelligence estimate/reference methods; the only recorded comparison was negative for evidence reduction, not general evidence of savings.
 ```
 
 Subsequent enhancements must preserve the accepted Product Owner, Architect, Coder, lifecycle, and Git authority boundaries. Neither dispatch approval nor lifecycle/Coder event recording silently mutates Git.
