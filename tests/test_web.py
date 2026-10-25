@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import multiprocessing
 import tempfile
 import unittest
 import re
@@ -13,11 +14,18 @@ from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
 from repoctl.procedure_governance import load_bundle, materialize_preview, preview_reconciliation
+from repoctl import procedure_transactions
+from repoctl.procedure_transactions import (
+    apply_confirmed,
+    inspect_transaction,
+    procedure_plan_digest,
+    review_apply,
+)
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.scanner.util import make_repository_id
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
-from repoctl.web.repository_registry import RepositoryRegistry
+from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
 from repoctl.workflow.architect_dispatches import submit_dispatch
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
@@ -65,6 +73,27 @@ def _init_repo(root: Path, name: str = "web-repo") -> Path:
 def _extract_csrf_token(client) -> str:
     with client.session_transaction() as sess:
         return sess["csrf_token"]
+
+
+def _crash_fixture_apply(entry: RepositoryEntry, state_root: str, token: str) -> None:
+    original = procedure_transactions._write_target
+    calls = 0
+
+    def write_then_exit(*args, **kwargs):
+        nonlocal calls
+        original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            os._exit(77)
+
+    with mock.patch("repoctl.procedure_transactions._write_target", side_effect=write_then_exit):
+        apply_confirmed(
+            entry,
+            token,
+            state_root,
+            active_key=entry.key,
+            registry_generation=0,
+        )
 
 
 class _FakeProvider:
@@ -302,7 +331,8 @@ class WebTests(unittest.TestCase):
                 self.assertIn("1.0.2", html)
                 self.assertIn("1.1.0", html)
                 self.assertIn("coding_agent_rules.md", html)
-                self.assertIn("No Apply Update action is available", html)
+                self.assertIn("Review Apply", html)
+                self.assertNotIn("Confirm Apply", html)
                 self.assertEqual(
                     client.get("/healthz").get_json()["active_repository"],
                     "first",
@@ -323,6 +353,226 @@ class WebTests(unittest.TestCase):
                     client.post("/procedure-updates?repository=second").status_code,
                     405,
                 )
+
+    def test_procedure_apply_requires_two_post_confirmations_and_keeps_git_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root, "apply-repo")
+            state_root = root / "state"
+            (repo / "docs/milestones").mkdir(parents=True)
+            overlay = repo / "docs/context/coding_agent_rules.md"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(
+                "# Project overlay\n\n"
+                "<!-- repo-control-project-overlay:v1 -->\n\n"
+                "## Repository-specific rules\n\n- Keep fixture data local.\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "docs/context/coding_agent_rules.md")
+            _git(repo, "commit", "-m", "add project overlay")
+            original_overlay = overlay.read_bytes()
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "fixture"',
+                        "",
+                        "[repositories.fixture]",
+                        'name = "Fixture Repository"',
+                        f'path = "{repo}"',
+                        'milestone_root = "docs/milestones"',
+                        "",
+                        "[repositories.fixture.documents]",
+                        'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                app = create_web_app(repository_registry_path=registry_path, state_root=state_root)
+                app.testing = True
+                client = app.test_client()
+                initial = client.get("/procedure-updates?repository=fixture")
+                self.assertEqual(initial.status_code, 200)
+                self.assertIn(b"Review Apply", initial.data)
+                self.assertNotIn(b"Confirm Apply", initial.data)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+
+                csrf = _extract_csrf_token(client)
+                plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', initial.data)
+                self.assertIsNotNone(plan_digest)
+                review = client.post(
+                    "/procedure-updates/apply-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "plan_sha256": plan_digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(review.status_code, 302)
+                confirmation_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Confirm Apply", confirmation_page.data)
+                self.assertIn(str(repo).encode(), confirmation_page.data)
+                token = re.search(
+                    rb'name="confirmation_token" value="([^"]+)"',
+                    confirmation_page.data,
+                )
+                self.assertIsNotNone(token)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+                malformed = client.post(
+                    "/procedure-updates/apply",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": "non-ascii-☃",
+                    },
+                )
+                self.assertEqual(malformed.status_code, 400)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+
+                applied = client.post(
+                    "/procedure-updates/apply",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": token.group(1).decode(),
+                    },
+                )
+                self.assertEqual(applied.status_code, 302)
+                self.assertTrue((repo / ".github/copilot-instructions.md").is_file())
+                self.assertEqual(overlay.read_bytes(), original_overlay)
+                self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
+                final_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"CURRENT", final_page.data)
+                self.assertIn(b"VERIFIED", final_page.data)
+
+                replay = client.post(
+                    "/procedure-updates/apply",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": token.group(1).decode(),
+                    },
+                )
+                self.assertEqual(replay.status_code, 400)
+                self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
+
+    def test_procedure_recovery_requires_its_own_review_and_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root, "recover-repo")
+            state_root = root / "state"
+            (repo / "docs/milestones").mkdir(parents=True)
+            overlay = repo / "docs/context/coding_agent_rules.md"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(
+                "# Project overlay\n\n"
+                "<!-- repo-control-project-overlay:v1 -->\n\n"
+                "## Repository-specific rules\n\n- Keep fixture data local.\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "docs/context/coding_agent_rules.md")
+            _git(repo, "commit", "-m", "add project overlay")
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "fixture"',
+                        "",
+                        "[repositories.fixture]",
+                        'name = "Fixture Repository"',
+                        f'path = "{repo}"',
+                        'milestone_root = "docs/milestones"',
+                        "",
+                        "[repositories.fixture.documents]",
+                        'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            entry = RepositoryRegistry.from_toml(registry_path).entries[0]
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                bundle = load_bundle()
+                plan = preview_reconciliation(entry, bundle)
+                confirmation = review_apply(
+                    entry,
+                    state_root,
+                    active_key=entry.key,
+                    registry_generation=0,
+                    reviewed_plan_sha256=procedure_plan_digest(entry, bundle, plan),
+                    bundle=bundle,
+                )
+                process = multiprocessing.get_context("fork").Process(
+                    target=_crash_fixture_apply,
+                    args=(entry, str(state_root), confirmation["confirmation"]["token"]),
+                )
+                process.start()
+                process.join(15)
+            self.assertEqual(process.exitcode, 77)
+
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                app = create_web_app(repository_registry_path=registry_path, state_root=state_root)
+                app.testing = True
+                client = app.test_client()
+                pending = inspect_transaction(entry, state_root)
+                self.assertEqual(pending["state"], "APPLYING")
+                page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Review Recovery", page.data)
+                self.assertNotIn(b"Confirm Recover", page.data)
+                csrf = _extract_csrf_token(client)
+                review = client.post(
+                    "/procedure-updates/recovery-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "operation_id": pending["operation_id"],
+                    },
+                )
+                self.assertEqual(review.status_code, 302)
+                confirmation_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Confirm Recover", confirmation_page.data)
+                token = re.search(
+                    rb'name="confirmation_token" value="([^"]+)"',
+                    confirmation_page.data,
+                )
+                self.assertIsNotNone(token)
+                recovered = client.post(
+                    "/procedure-updates/recover",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "operation_id": pending["operation_id"],
+                        "confirmation_token": token.group(1).decode(),
+                    },
+                )
+                self.assertEqual(recovered.status_code, 302)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+                self.assertEqual(inspect_transaction(entry, state_root)["state"], "RECOVERED")
+                final_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"RECOVERED", final_page.data)
 
     def test_dashboard_renders_clean_state_and_upstream_caveat(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -636,7 +636,7 @@ Keep closeout evidence auditable and distinguish repository status at preparatio
 
 ### Status
 
-Partially addressed — the browser provides allowlisted cross-repository status and deterministic read-only preview. Browser Apply and multi-file recovery remain deferred.
+Implemented in M008.004 and awaiting Product Owner review — the browser provides allowlisted status/preview plus a separate PO-confirmed, single-repository Apply and guarded recovery workflow. No live managed repository was materialized during Coder implementation.
 
 ### Summary
 
@@ -644,11 +644,11 @@ Complete a safe Product Owner workflow for identifying and reviewing canonical s
 
 ### Why It Is Parked
 
-M008.003 adds a read-only Procedure Updates page with allowlisted per-repository status, canonical/source and lock hash provenance, bounded deterministic diffs, and no global repository switch. The existing materializer writes files one at a time and does not provide whole-update rollback/recovery. The PO therefore approved omitting browser Apply; a clean preview remains non-authorizing, and no safe end-to-end update workflow is currently provided.
+M008.003 added allowlisted per-repository status, canonical/source and lock hash provenance, bounded deterministic diffs, and no global repository switch. M008.004 adds an explicit two-step PO Apply flow for the fixed five generated procedure files plus release lock, a durable journal outside scanner-replaced state, independent full-set `CURRENT` verification, and a separate explicit recovery confirmation that restores only exact recorded originals. Fixture tests exercise Apply, caught rollback, interruption recovery, conflict refusal, concurrent Apply serialization, and browser confirmation; milestone acceptance and any real managed-repository update remain PO decisions.
 
 ### Trigger for Reconsideration
 
-Revisit when a separately approved milestone designs and validates robust multi-file transaction/recovery behavior suitable for an explicitly PO-gated action.
+The implementation is pending PO review. Continue to defer any broader rollout, service deployment, or real managed-repository Apply until the PO accepts the closeout and independently authorizes the intended repository update.
 
 ### Likely Scope
 
@@ -702,18 +702,23 @@ These repository-owned documents may need independent factual maintenance.
 
 Preserve the central canonical bundle, per-repository physical copies and
 lock, preview-first safety checks, local overlay protection, Product Owner
-authority, and ordinary Git review. Before adding Apply, establish bounded
-atomicity/recovery for the complete fixed generated-file set; otherwise keep
-the experience read-only.
+authority, and ordinary Git review. The implemented browser workflow uses
+durable crash detection and exact-image recovery; it does not promise
+simultaneous multi-file visibility or protection against every non-cooperating
+external writer. Keep those limits explicit and investigate any recovery
+conflict manually.
 
 ### Notes
 
-M008.003 implements read-only status and Review Update preview; neither view
-writes files, switches the active repository, nor changes workflow state.
-There is no browser Apply action. The PO-approved scope explicitly deferred
-Apply because whole-update rollback/recovery is not established. A future
-milestone may address transaction/recovery; this partial implementation does
-not authorize internal or manual production writes.
+Status, preview, and page load remain read-only. Apply and Recover require
+separate CSRF-protected PO confirmation POSTs, are limited to one selected
+registered repository, and do not stage/commit files or switch Repo Control
+selection. Interrupted transactions block further Apply; GET/status does not
+repair them. Journals live outside scanner-replaced state and serialize Repo
+Control scans/transactions, not arbitrary filesystem writers. Per-file
+replacement is atomic but the six-file set is not simultaneously visible.
+M008.004 Coder validation is fixture-only; PO acceptance, deployment and any
+live materialization remain separate decisions.
 
 ---
 

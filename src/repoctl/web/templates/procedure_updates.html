@@ -2,10 +2,11 @@
 {% block content %}
 <section class="card">
   <h2>Shared Procedure Updates</h2>
-  <p>Review the canonical shared Coder procedure release and per-repository drift. This page is read-only:
-     viewing status or preview never writes files, changes Git, selects a repository globally, or changes milestone state.</p>
-  <p>Product Owner role attribution is reported, not authenticated. No Apply Update action is available here.
-     Multi-file rollback/recovery is not established; applying updates requires a separately approved safe workflow.</p>
+  <p>Review the canonical shared Coder procedure release and per-repository drift. Status and preview are read-only;
+     a separately confirmed POST is required before any generated file is changed.</p>
+  <p>Product Owner role attribution is not identity authentication. Apply and Recover remain loopback service operations,
+     apply to one selected registered repository, do not change Git or milestone state, and never write the five local
+     <code>docs/context</code> authorities.</p>
   {% if bundle_error %}
   <div class="card error"><strong>Canonical bundle unavailable.</strong> {{ bundle_error }}</div>
   {% elif bundle %}
@@ -27,7 +28,7 @@
   <p>The active browser repository is <strong>{{ active_repository_key }}</strong>. Preview selection below is independent and does not change it.</p>
   <div class="table-scroll">
     <table class="procedure-status-table">
-      <thead><tr><th>Repository</th><th>Path</th><th>Installed / target</th><th>Status</th><th>Overlay</th><th>Preview</th></tr></thead>
+      <thead><tr><th>Repository</th><th>Path</th><th>Installed / target</th><th>Status</th><th>Overlay</th><th>Transaction</th><th>Preview</th></tr></thead>
       <tbody>{% for row in repositories %}
       <tr>
         <td>{{ row.entry.name }}<br><code>{{ row.entry.key }}</code></td>
@@ -39,12 +40,18 @@
           {% for issue in row.status.issues %}<div>{{ issue.status }}: {{ issue.detail }}</div>{% endfor %}</td>
         <td><code>{{ row.status.overlay.path }}</code><br>{{ "valid" if row.status.overlay.valid else "invalid" }}
           {% if row.status.overlay.reason %}<div>{{ row.status.overlay.reason }}</div>{% endif %}</td>
+        <td>{% if row.transaction %}
+          <strong>{{ row.transaction.state }}</strong>
+          {% if row.transaction.operation_id %}<div>Operation <code>{{ row.transaction.operation_id }}</code></div>{% endif %}
+          {% if row.transaction.blocked %}<div class="error">{{ row.transaction.error or row.transaction.conflicts|join(", ") }}</div>{% endif %}
+          {% if row.transaction.cleanup_pending %}<div>Terminal recovery-image cleanup pending</div>{% endif %}
+        {% else %}None unresolved{% endif %}</td>
         {% else %}
-        <td>Unavailable</td><td><strong>Status unavailable</strong><div>{{ row.error }}</div></td><td>Not checked</td>
+        <td>Unavailable</td><td><strong>Status unavailable</strong><div>{{ row.error }}</div></td><td>Not checked</td><td>Unavailable</td>
         {% endif %}
         <td><a href="{{ url_for('procedure_updates_page', repository=row.entry.key) }}">Review Update</a></td>
       </tr>
-      {% else %}<tr><td colspan="6">No managed repositories are configured.</td></tr>{% endfor %}</tbody>
+      {% else %}<tr><td colspan="7">No managed repositories are configured.</td></tr>{% endfor %}</tbody>
     </table>
   </div>
   <p>`STALE_VERSION` means the installed procedure release is older than the canonical release; by itself it is expected drift, not a defect.</p>
@@ -63,7 +70,7 @@
   <p>Project overlay <code>{{ preview.overlay.path }}</code> is
      <strong>{{ "valid" if preview.overlay.valid else "invalid" }}</strong> and explicitly untouched.
      Internal preview safety result: <strong>{{ "unblocked" if preview.materialization_available else "blocked" }}</strong>.
-     This page does not expose or invoke materialization.</p>
+     An unblocked preview is not authorization; Apply requires a second, explicit confirmation.</p>
   {% if preview.blockers %}
   <div class="card error"><h4>Blockers</h4><ul>{% for blocker in preview.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul></div>
   {% endif %}
@@ -84,6 +91,83 @@
     {% endfor %}</tbody>
   </table></div>
   <p>Removals: {{ preview.removals|length }}. No generated file is deleted by this preview.</p>
+  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  <div class="card error">
+    <h4>Unresolved procedure transaction: {{ selected_transaction.state }}</h4>
+    {% if selected_transaction.operation_id %}<p>Operation: <code>{{ selected_transaction.operation_id }}</code></p>{% endif %}
+    {% if selected_transaction.error %}<p>{{ selected_transaction.error }}</p>{% endif %}
+    {% if selected_transaction.conflicts %}<p>Conflicting targets: {{ selected_transaction.conflicts|join(", ") }}</p>{% endif %}
+    <p>Apply is blocked. Status, preview, and page load do not repair or recover files.</p>
+    {% if selected_transaction.recoverable and selected_transaction.operation_id %}
+    <form method="post" action="{{ url_for('procedure_recovery_review') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="operation_id" value="{{ selected_transaction.operation_id }}">
+      <button type="submit">Review Recovery</button>
+    </form>
+    {% else %}
+    <p>Recovery is blocked. Preserve the journal and images and escalate for operator investigation; no target was reconciled.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  {% elif preview.materialization_available %}
+  <section class="card">
+    <h4>Apply requires a separate, explicit confirmation</h4>
+    <p>Review is bound to this registered repository, current selection generation, release, manifest, plan and file snapshots.
+       The server rechecks them under its cross-process transaction lock. The release lock is written last.
+       Individual file replacements are atomic, but external readers may observe a mixed set while Apply is in progress.</p>
+    <form method="post" action="{{ url_for('procedure_apply_review') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="plan_sha256" value="{{ preview.plan_sha256 }}">
+      <button type="submit">Review Apply</button>
+    </form>
+  </section>
+  {% endif %}
+  {% if apply_review %}
+  <section class="card">
+    <h4>Confirm Apply — {{ selected_entry.name }} ({{ selected_entry.key }})</h4>
+    <p>Repository: <code>{{ selected_entry.path }}</code><br>
+       Stable ID: <code>{{ selected_entry.repository_id }}</code><br>
+       Target release: <strong>{{ apply_review.plan.target_release }}</strong><br>
+       Confirmation expires: {{ apply_review.expires_at }}</p>
+    <p>Confirming permits only the listed generated procedure targets. It does not stage or commit changes.</p>
+    <ul>{% for change in apply_review.plan.changes %}
+      <li><strong>{{ change.action|upper }}</strong> <code>{{ change.path }}</code>
+        — {{ change.get("current_sha256") or "missing" }} → {{ change.get("expected_sha256") }}</li>
+    {% endfor %}</ul>
+    <form method="post" action="{{ url_for('procedure_apply_confirm') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="confirmation_token" value="{{ apply_review.token }}">
+      <button type="submit">Confirm Apply</button>
+    </form>
+  </section>
+  {% endif %}
+  {% if recovery_review %}
+  <section class="card error">
+    <h4>Confirm Recovery — restore the original state</h4>
+    <p>Operation <code>{{ recovery_review.operation_id }}</code> will restore only these recorded paths:</p>
+    <ul>{% for target in recovery_review.targets %}<li><code>{{ target }}</code></li>{% endfor %}</ul>
+    <p>No new release will be resumed. Recovery revalidates every target and refuses unknown edits.</p>
+    <form method="post" action="{{ url_for('procedure_recover_confirm') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="operation_id" value="{{ recovery_review.operation_id }}">
+      <input type="hidden" name="confirmation_token" value="{{ recovery_review.token }}">
+      <button type="submit">Confirm Recover</button>
+    </form>
+  </section>
+  {% endif %}
   {% endif %}
 </section>
 {% endif %}
@@ -100,6 +184,11 @@
   </ul>
   <p>Milestone prompts, decisions, workflow sidecars, and closeouts follow their own repository and lifecycle authority.
      Host-level project instructions and tool settings are controlled by the user/PO in that host; Repo Control cannot install them.</p>
+  <p>Apply journals and recovery images are stored in the service user's private transaction sibling directory, outside
+     managed worktrees and scanner-replaced state. Interrupted transactions block new Apply. Recover is an explicit,
+     separate PO confirmation and restores only the verified original state; changed files that match neither known image
+     require manual escalation. The journal provides crash detection and recovery, not simultaneous six-file visibility
+     or a guarantee against non-cooperating external writers.</p>
 </section>
 <section class="card">
   <h3>Fresh-session startup check</h3>

@@ -32,7 +32,7 @@ Use this path when there is no existing project corpus that must be migrated.
 | 4. Create canonical structure | PO + Architect | Agree on the active milestone root `docs/milestones/` and governing-document content before product milestones begin. |
 | 5. Create governing documents | Architect + Coder; PO approves | Create `docs/context/project_context.md`, `docs/context/project_architecture.md`, `docs/context/project_workflow.md`, `docs/context/coding_agent_rules.md`, and `docs/context/canonical_parking_lot.md`. Keep each role distinct; do not fill them with unverified template claims. |
 | 6. Configure central registry | PO / service operator | Add a stable repository key to the service's central registry. Set its absolute worktree path, `milestone_root = "docs/milestones"`, and repository-relative mappings for the five governing-document roles. Follow the deployed service's configuration and restart/reload procedure. |
-| 7. Review shared procedure | PO/Architect review; Coder supplies preview | Use the central versioned `shared/procedure/` bundle as the source of `.github/copilot-instructions.md`, `.repo-control/workflow_core.md`, the three local `.agents/skills/*/SKILL.md` copies, and `.repo-control/shared-procedure.lock.toml`. Review `coder-procedure-status` and the exact `coder-procedure-preview` before any write. Preserve local overlays; do not use symlinks or silently overwrite conflicts. The current browser exposes status and read-only preview only; do not proceed with writes without a separately approved safe workflow. |
+| 7. Review shared procedure | PO/Architect review; Coder supplies preview | Use the central versioned `shared/procedure/` bundle as the source of `.github/copilot-instructions.md`, `.repo-control/workflow_core.md`, the three local `.agents/skills/*/SKILL.md` copies, and `.repo-control/shared-procedure.lock.toml`. Review `coder-procedure-status` and the exact `coder-procedure-preview` before any update. Preserve local overlays; do not use symlinks or silently overwrite conflicts. For later release drift only, the PO may use the Procedure Updates browser's separate Review Apply / Confirm Apply flow for one registered repository, then verify `CURRENT` and use ordinary Git Review. |
 | 8. Verify repository identity end to end | PO + Architect + Coder | In a fresh or resumed Coder session, retrieve current context/status and verify repository path, selected prompt, lifecycle, applicable approved dispatches, and authorization without relying on prior chat history. Also verify that browser and Architect resolve the intended repository key/path and milestone root. |
 | 9. Build Repository Intelligence when useful | PO; Coder consumes | When code exists and structural evidence would help, deliberately approve a build/refresh. Confirm `CURRENT` before relying on it. The Coder uses targeted queries and rates material uses; graph evidence is not runtime proof. |
 | 10. Verify operations | PO + Architect + Coder | Review a real or isolated onboarding milestone through selection, authorized start, question/waiting behavior if exercised, closeout review, and Git Review. Keep test events in an appropriate test repository/milestone; do not fabricate product history. |
@@ -92,7 +92,7 @@ milestone corpus. Reconnaissance comes before normalization or file movement.
 | 6. Preserve milestone history | Coder under authorized scope; Architect reviews | Keep original prompts, closeouts, and workflow sidecars intact where practical. Separate legacy/historical corpus outside recursive active discovery (for example, `docs/history/milestones/`) so it cannot be mistaken for current prompts. Do not rewrite historical evidence just to normalize names. |
 | 7. Prepare a milestone-root cutover | Architect plans; PO operates | Prepare and inspect the new-root prompt/closeout/sidecar copies first. Keep old-root recovery copies while the new root is selected and verified. Avoid simultaneously exposing legacy artifacts to active discovery. |
 | 8. Preview shared-procedure migration | Coder; Architect reviews; PO approves any writes | Inspect the current release/hash/overlay status and proposed generated-file diffs. Identify stale duplicated generic rules and local constraints to preserve. Keep invalid overlays and conflicting host files blocked; preview does not write. |
-| 9. Verify local artifacts | PO/operator after an independently approved safe workflow; Coder verifies | If a separately approved safe onboarding mechanism is available, verify the host bootstrap, exact Skill copies, lock hashes, and overlay preservation. The M008.003 browser has no Apply action; if no approved safe mechanism is available, stop onboarding before product work. Keep legacy instructions until their authority and use have been reconciled. |
+| 9. Verify local artifacts | PO/operator; Coder verifies | During onboarding, verify the host bootstrap, exact Skill copies, lock hashes, and overlay preservation through the approved repository setup process. Do not treat later-release Apply as onboarding automation; it is a deliberate, one-repository PO action and ordinary Git Review remains required. Keep legacy instructions until their authority and use have been reconciled. |
 | 10. Configure the central registry | PO / service operator | Set the repository key, absolute worktree path, `docs/milestones/` (or an explicitly approved canonical root), and repository-relative mappings for the five documents. The Coder does not edit central Repo Control configuration. |
 | 11. Perform the controlled cutover | PO / service operator | Change the registry's active milestone root, reload/restart through the normal operator procedure, then reselect the repository. Verify the browser discovers the intended new-root prompts and no legacy candidates pollute discovery. |
 | 12. Verify identity in all clients | PO + Architect + Coder | Confirm browser, Architect, and Coder agree on key, path, prompt/root, governing documents, and lifecycle. In a fresh or resumed Coder session, verify current `coder-context` and `coder-status`, including applicable approved `INSTRUCTION`/`RESPONSE` dispatches and authorization. Packets and prior chat history are fallback transport, not current authority. |
@@ -239,12 +239,25 @@ paths, missing locks, and invalid overlays are visible; conflicting files are
 not silently replaced. Local overlays remain outside the generated hash and
 are never written by the shared materializer.
 
-There is no operator-facing materialization command. The current
+There is no operator-facing Coder materialization command. The
 **Procedure Updates** browser area provides allowlisted status and deterministic
-read-only preview, without changing the global selection. It has no Apply
-action because safe multi-file rollback/recovery is not established; a
-separately approved safe workflow is required before any write. Ordinary PO
-Git Review remains required for generated changes.
+preview without changing the global selection. For later release drift, a PO
+may choose one configured repository, review the exact generated-file plan,
+then use the separate CSRF-protected **Confirm Apply** action. A full-set
+independent `CURRENT` verification is required before success is reported;
+ordinary PO Git Review remains required for generated changes. This is not an
+onboarding automation step and never updates several repositories at once.
+
+Interrupted transactions remain durably recorded outside scanner-replaced
+state and block another Apply. Recovery is a separate **Review Recovery** /
+**Confirm Recover** flow that restores only known original images; unknown
+external edits block recovery for manual investigation. Page loads, status,
+preview, and startup never perform recovery. The service lock serializes Repo
+Control scans and transactions, but not arbitrary external writers, and
+individual atomic replacements do not provide simultaneous all-file
+visibility. Do not use this flow to update the five local `docs/context`
+authorities or overlays, and do not infer that any live repository was updated
+by fixture-only milestone tests.
 For mature repositories, first review legacy duplicated procedure and local
 rules; only a separately approved migration may edit their files. M007.006
 accepted fresh/resumed Coder-context convergence across Repo Control II and

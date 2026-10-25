@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
 import json
 import secrets
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -1129,6 +1131,7 @@ def create_web_app(
             load_bundle,
             preview_reconciliation,
         )
+        from ..procedure_transactions import ProcedureTransactionError, inspect_transaction, procedure_plan_digest
 
         def bounded_error(exc: Exception) -> str:
             detail = str(exc)
@@ -1164,7 +1167,7 @@ def create_web_app(
         bundle_error = None
         try:
             bundle = load_bundle()
-        except (ProcedureGovernanceError, OSError) as exc:
+        except (ProcedureGovernanceError, ProcedureTransactionError, OSError) as exc:
             bundle_error = bounded_error(exc)
 
         repository_statuses = []
@@ -1172,9 +1175,14 @@ def create_web_app(
             for entry in registry.entries:
                 try:
                     status = inspect_procedure(entry, bundle)
-                    repository_statuses.append({"entry": entry, "status": status, "error": None})
+                    transaction = inspect_transaction(entry, effective_state_root)
+                    repository_statuses.append(
+                        {"entry": entry, "status": status, "transaction": transaction, "error": None}
+                    )
                 except (ProcedureGovernanceError, OSError) as exc:
-                    repository_statuses.append({"entry": entry, "status": None, "error": bounded_error(exc)})
+                    repository_statuses.append(
+                        {"entry": entry, "status": None, "transaction": None, "error": bounded_error(exc)}
+                    )
 
         preview = None
         preview_error = None
@@ -1182,6 +1190,7 @@ def create_web_app(
             try:
                 plan = preview_reconciliation(selected_entry, bundle)
                 preview = plan.as_dict(include_diffs=True)
+                preview["plan_sha256"] = procedure_plan_digest(selected_entry, bundle, plan)
                 remaining_diff_chars = 20_000
                 for change in preview["changes"]:
                     action = change["action"]
@@ -1195,6 +1204,28 @@ def create_web_app(
             except (ProcedureGovernanceError, OSError) as exc:
                 preview_error = bounded_error(exc)
 
+        apply_review = session.get("procedure_apply_review")
+        if (
+            not isinstance(apply_review, dict)
+            or apply_review.get("repository_key") != selected_key
+            or apply_review.get("expires_at", 0) < int(time.time())
+            or not preview
+            or apply_review.get("plan_sha256") != preview.get("plan_sha256")
+        ):
+            apply_review = None
+        recovery_review = session.get("procedure_recovery_review")
+        selected_transaction = next(
+            (row["transaction"] for row in repository_statuses if row["entry"].key == selected_key),
+            None,
+        )
+        if (
+            not isinstance(recovery_review, dict)
+            or recovery_review.get("repository_key") != selected_key
+            or not selected_transaction
+            or recovery_review.get("operation_id") != selected_transaction.get("operation_id")
+        ):
+            recovery_review = None
+
         active_repository, active_generation = registry.snapshot()
         response = Response(
             render_template(
@@ -1204,6 +1235,9 @@ def create_web_app(
                 selected_entry=selected_entry,
                 preview=preview,
                 preview_error=preview_error,
+                apply_review=apply_review,
+                recovery_review=recovery_review,
+                selected_transaction=selected_transaction,
                 bundle=bundle,
                 bundle_error=bundle_error,
                 active_repository_key=active_repository.key,
@@ -1213,6 +1247,189 @@ def create_web_app(
         )
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    def procedure_action_preconditions(allowed_fields: frozenset[str]) -> RepositoryEntry:
+        _require_csrf()
+        required = {"csrf_token", "repository_key", "active_repository_key", "repository_generation"}
+        if not required.issubset(request.form.keys()) or not request.form.keys() <= required | allowed_fields:
+            raise WebUIError("invalid_procedure_action", "Procedure actions accept only their bounded confirmation fields.")
+        active_repository, generation = registry.snapshot()
+        if (
+            request.form.get("active_repository_key") != active_repository.key
+            or request.form.get("repository_generation") != str(generation)
+        ):
+            raise WebUIError(
+                "stale_repository_selection",
+                "The active repository changed after review. Reload Procedure Updates and review again.",
+                status_code=409,
+            )
+        selected_key = request.form.get("repository_key", "")
+        selected = next((entry for entry in registry.entries if entry.key == selected_key), None)
+        if selected is None:
+            raise WebUIError("invalid_procedure_repository", "Select a repository from the configured list.")
+        return selected
+
+    @app.post("/procedure-updates/apply-review")
+    def procedure_apply_review():
+        from ..procedure_governance import ProcedureGovernanceError, load_bundle, preview_reconciliation
+        from ..procedure_transactions import (
+            ProcedureTransactionError,
+            procedure_plan_digest,
+            review_apply,
+        )
+
+        entry = procedure_action_preconditions(frozenset({"plan_sha256"}))
+        posted_digest = request.form.get("plan_sha256", "")
+        if len(posted_digest) != 64 or any(character not in "0123456789abcdef" for character in posted_digest):
+            raise WebUIError("invalid_procedure_plan", "Procedure plan digest is required.")
+        active_repository, generation = registry.snapshot()
+        try:
+            bundle = load_bundle()
+            plan = preview_reconciliation(entry, bundle)
+            digest = procedure_plan_digest(entry, bundle, plan)
+            if not secrets.compare_digest(digest, posted_digest):
+                raise ProcedureTransactionError("Procedure preview changed; reload and review it again.")
+            result = review_apply(
+                entry,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+                reviewed_plan_sha256=digest,
+                bundle=bundle,
+            )
+            session["procedure_apply_review"] = {
+                "repository_key": entry.key,
+                "active_repository_key": active_repository.key,
+                "registry_generation": generation,
+                "plan_sha256": digest,
+                "token": result["confirmation"]["token"],
+                "expires_at": int(datetime.fromisoformat(result["confirmation"]["expires_at"]).timestamp()),
+                "plan": result["plan"],
+            }
+            flash("Review the exact target set and confirm Apply before any files are changed.", "info")
+        except (ProcedureGovernanceError, ProcedureTransactionError, OSError) as exc:
+            session.pop("procedure_apply_review", None)
+            flash(f"Apply review refused: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
+
+    @app.post("/procedure-updates/apply")
+    def procedure_apply_confirm():
+        from ..procedure_transactions import ProcedureTransactionError, apply_confirmed
+
+        entry = procedure_action_preconditions(frozenset({"confirmation_token"}))
+        confirmation = session.get("procedure_apply_review")
+        token = request.form.get("confirmation_token", "")
+        if (
+            not isinstance(confirmation, dict)
+            or confirmation.get("repository_key") != entry.key
+            or confirmation.get("active_repository_key") != request.form.get("active_repository_key")
+            or confirmation.get("registry_generation") != g.repository_registry_generation
+            or not isinstance(confirmation.get("token"), str)
+            or not token.isascii()
+            or len(token) > 162
+            or not secrets.compare_digest(confirmation["token"], token)
+        ):
+            raise WebUIError("stale_procedure_confirmation", "Apply confirmation is missing, stale, or belongs to another review.")
+        session.pop("procedure_apply_review", None)
+        active_repository, generation = registry.snapshot()
+        try:
+            result = apply_confirmed(
+                entry,
+                token,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+            )
+            if result["no_op"]:
+                flash(
+                    f"Operation {result['operation_id']} was already CURRENT; no files changed. "
+                    f"Verified release {result['release']}.",
+                    "success",
+                )
+            else:
+                flash(
+                    f"Operation {result['operation_id']} applied and independently verified CURRENT at "
+                    f"release {result['release']}; {len(result['affected_files'])} paths changed. "
+                    "Use ordinary Git Review separately.",
+                    "success",
+                )
+            if result["cleanup_pending"]:
+                flash(f"Verified state is intact, but recovery-image cleanup needs operator review: {result['cleanup_error']}", "warning")
+        except (ProcedureTransactionError, OSError) as exc:
+            flash(f"Apply did not report success: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
+
+    @app.post("/procedure-updates/recovery-review")
+    def procedure_recovery_review():
+        from ..procedure_transactions import ProcedureTransactionError, review_recovery
+
+        entry = procedure_action_preconditions(frozenset({"operation_id"}))
+        active_repository, generation = registry.snapshot()
+        operation_id = request.form.get("operation_id", "")
+        try:
+            result = review_recovery(
+                entry,
+                operation_id,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+            )
+            session["procedure_recovery_review"] = {
+                "repository_key": entry.key,
+                "active_repository_key": active_repository.key,
+                "registry_generation": generation,
+                "operation_id": result["operation_id"],
+                "token": result["confirmation"]["token"],
+                "expires_at": int(datetime.fromisoformat(result["confirmation"]["expires_at"]).timestamp()),
+                "targets": result["targets"],
+            }
+            flash("Review the original-state restoration list and confirm Recover to proceed.", "warning")
+        except (ProcedureTransactionError, OSError) as exc:
+            session.pop("procedure_recovery_review", None)
+            flash(f"Recovery review refused: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
+
+    @app.post("/procedure-updates/recover")
+    def procedure_recover_confirm():
+        from ..procedure_transactions import ProcedureTransactionError, recover_confirmed
+
+        entry = procedure_action_preconditions(frozenset({"operation_id", "confirmation_token"}))
+        confirmation = session.get("procedure_recovery_review")
+        operation_id = request.form.get("operation_id", "")
+        token = request.form.get("confirmation_token", "")
+        if (
+            not isinstance(confirmation, dict)
+            or confirmation.get("repository_key") != entry.key
+            or confirmation.get("operation_id") != operation_id
+            or confirmation.get("active_repository_key") != request.form.get("active_repository_key")
+            or confirmation.get("registry_generation") != g.repository_registry_generation
+            or not isinstance(confirmation.get("token"), str)
+            or not token.isascii()
+            or len(token) > 162
+            or not secrets.compare_digest(confirmation["token"], token)
+        ):
+            raise WebUIError("stale_procedure_confirmation", "Recovery confirmation is missing, stale, or belongs to another operation.")
+        session.pop("procedure_recovery_review", None)
+        active_repository, generation = registry.snapshot()
+        try:
+            result = recover_confirmed(
+                entry,
+                operation_id,
+                token,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+            )
+            flash(
+                f"Operation {result['operation_id']} was recovered to its exact original files. "
+                "Review procedure status; Apply requires a new review.",
+                "success",
+            )
+            if result["cleanup_pending"]:
+                flash(f"Recovery-image cleanup needs operator review: {result['cleanup_error']}", "warning")
+        except (ProcedureTransactionError, OSError) as exc:
+            flash(f"Recovery did not complete: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
 
     def intelligence_form_preconditions(allowed_fields: frozenset[str] = frozenset()) -> None:
         _require_csrf()

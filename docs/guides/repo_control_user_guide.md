@@ -579,14 +579,38 @@ repository selection.
    deterministic read-only diff, generated target paths, hashes, blockers,
    and overlay state. Page views and preview do not write files or change the
    active browser repository.
-4. This milestone deliberately provides no browser Apply action: safe
-   multi-file rollback/recovery is not yet established. Do not treat an
-   unblocked preview as permission to write; applying a real update requires
-   a separately approved safe workflow. In particular, do not materialize
-   Vocab as part of this procedure.
-5. After a separately authorized update path is available, verify status is
-   `CURRENT`, then use ordinary PO Git Review for the generated working-tree
-   changes. Procedure materialization does not stage, commit, or push.
+4. If the PO chooses to update this repository, use **Review Apply** and
+   inspect the separate confirmation page: it names the repository, stable
+   ID, full path, release, exact generated targets, and before/after hashes.
+   Only the explicit, CSRF-protected **Confirm Apply** POST materializes the
+   fixed five generated procedure files and release lock. Review and
+   confirmation are separate actions; an unblocked preview alone is never
+   authorization. The workflow covers one selected registered repository at
+   a time and does not change the active Repo Control selection.
+5. Apply reports success only after an independent full-set check returns
+   `CURRENT`. A no-op is reported without rewriting files. Then use ordinary
+   PO Git Review for the generated working-tree changes; procedure
+   materialization does not stage, commit, or push. This milestone's tests use
+   disposable fixtures only; do not infer that Vocab or another live
+   repository was materialized.
+6. If Apply is interrupted or cannot verify the full set, the durable
+   transaction record blocks another Apply. Status, preview, page load, and
+   startup do not repair files. When the record is safely recoverable, use
+   **Review Recovery** and the distinct **Confirm Recover** POST to restore
+   only the exact recorded original images. If any target differs from both
+   known images, recovery is blocked: preserve the evidence and escalate for
+   manual investigation rather than overwriting the external edit.
+
+Transaction journals and recovery images are stored under
+`<state-root parent>/.<state-root-name>-procedure-transactions/<repository_id>/`,
+in private service-user directories beside, not inside, scanner-replaced
+repository state or a managed worktree. The journal serializes Repo Control scans and transactions, not
+arbitrary external filesystem writers. Individual replacements are atomic,
+but readers can observe a mixed set during Apply; the workflow does not claim
+simultaneous six-file visibility or immunity to a non-cooperating writer in
+the final check-to-replace interval. A loopback browser role label and CSRF
+token are not human identity authentication. Apply/Recover are not Coder
+commands and grant no Coder Git authority.
 
 The five repository-owned `docs/context` documents—including the local Coder
 rules overlay—are never generic procedure targets. Their independent
@@ -596,9 +620,9 @@ proposed content and authority impact, validate relevant claims, and use
 ordinary Git Review. Do not use shared-procedure materialization to update
 them. A future lightweight proposal UX remains deferred as DOC-001.
 
-There is no operator-facing materialization command. The guarded internal
-materializer remains subject to separately approved safe reconciliation and
-ordinary Git review.
+There is no operator-facing Coder materialization command. The guarded
+internal materializer remains separate from the browser transaction workflow
+and must not be treated as PO authorization for a real managed repository.
 M007.006 accepted fresh/resumed Coder-context resolution and approved
 instruction visibility across Repo Control II and Vocab. A `CURRENT` file
 status remains distinct from that host-consumption acceptance.
@@ -608,15 +632,29 @@ lock. `CURRENT` means its installed release and hashes match the canonical
 target; `STALE_VERSION` means the installed release is older and needs
 deliberate per-repository reconciliation. This is expected drift, not by
 itself a defect. Publishing a canonical release does
-not change managed repositories. The operator flow is status → preview →
-separately authorized guarded reconciliation → verify `CURRENT` → ordinary
-Git Review. Browser **Review Update** is read-only; no browser Apply action
-exists today.
+not change managed repositories. The operator flow is status → Review Update
+→ explicit PO confirmation → independently verified `CURRENT` → ordinary
+Git Review. Page views and preview remain read-only; the separate Apply and
+Recover POST confirmations are the only browser transaction actions.
 
 Status values are `CURRENT`, `MISSING`, `STALE_VERSION`, `HASH_MISMATCH`,
 `OVERLAY_INVALID`, and `INCOMPATIBLE`. Overlay checks validate its marker and
 required section, not the meaning of its rules; reviewers must ensure that
 local content does not conflict with generic authority.
+
+### Procedure update questions
+
+- **Does `STALE_VERSION` mean the repository is broken?** No. It is expected
+  drift when the canonical release advances; inspect the lock, target hashes,
+  preview, and overlay for separate conflicts.
+- **Does preview or page load write files?** No. Apply and Recover each require
+  their own CSRF-protected review and explicit confirmation POST.
+- **Does Apply update local `docs/context` files, stage changes, or update all
+  repositories?** No. Only the fixed generated procedure files and lock in one
+  selected registered repository are in scope. Git review remains separate.
+- **What if recovery reports a conflict?** Do not edit, delete, or replace the
+  journal or recovery images. Preserve them and escalate for operator
+  investigation; an unknown target image is never overwritten automatically.
 
 ## Common recovery
 
