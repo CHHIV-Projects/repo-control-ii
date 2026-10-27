@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.copilot_bootstrap",
+        "cwd": ".",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}
