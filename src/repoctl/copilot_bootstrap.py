@@ -329,6 +329,8 @@ def _validate_context(
         raise _BootstrapError("invalid_authorization")
     if authorized != (auth_status in {"AUTHORIZED", "AUTHORIZED_CORRECTION"}):
         raise _BootstrapError("invalid_authorization")
+    if authorized and phase != "IN_PROGRESS":
+        raise _BootstrapError("invalid_authorization")
 
     workflow = _mapping(context.get("workflow"))
     if workflow.get("phase") != phase:

@@ -209,6 +209,73 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertIn("STOP:", context["instruction"])
         self.assertEqual(context["workflow"]["waitingReason"], "Waiting for the Product Owner.")
 
+    def test_authorized_stale_context_is_rejected_when_lifecycle_is_not_in_progress(self):
+        self.context["milestone"]["phase"] = "WAITING"
+        self.context["workflow"]["phase"] = "WAITING"
+        hook_output, diagnostic = self._run()
+        context = json.loads(hook_output["additionalContext"])
+
+        self.assertEqual(context["status"], "INVALID_NO_AUTHORITY")
+        self.assertEqual(context["reason"], "invalid_authorization")
+        self.assertFalse(context["authorization"]["authorized"])
+        self.assertEqual(diagnostic["outcome"], "invalid_no_authority")
+
+    def test_each_resume_invocation_uses_new_live_lifecycle_without_cached_authority(self):
+        snapshots = []
+        for phase in ("IN_PROGRESS", "WAITING", "REVIEW", "CLOSED"):
+            snapshot = json.loads(json.dumps(self.context))
+            snapshot["milestone"]["phase"] = phase
+            snapshot["workflow"]["phase"] = phase
+            snapshot["authorization"] = {
+                "authorized": phase == "IN_PROGRESS",
+                "can_preflight": phase == "IN_PROGRESS",
+                "status": "AUTHORIZED" if phase == "IN_PROGRESS" else "NOT_AUTHORIZED",
+                "message": "Live fixture lifecycle.",
+            }
+            if phase == "WAITING":
+                snapshot["workflow"]["waiting_category"] = "blocker"
+                snapshot["workflow"]["waiting_reason"] = "Resolve the current blocker."
+                snapshot["workflow"]["open_questions"] = [
+                    {"event_id": "question-1", "summary": "Resolve the current blocker."}
+                ]
+            snapshots.append(snapshot)
+
+        invocation_count = 0
+
+        def live_runner(command, **kwargs):
+            nonlocal invocation_count
+            snapshot = snapshots[invocation_count]
+            invocation_count += 1
+            return subprocess.CompletedProcess(command, 0, json.dumps(snapshot), "")
+
+        responses = []
+        for _ in snapshots:
+            hook_output, _ = self._run(
+                event=_event(self.root, source="resume"),
+                runner=live_runner,
+            )
+            responses.append(json.loads(hook_output["additionalContext"]))
+
+        self.assertEqual(invocation_count, 4)
+        self.assertEqual(
+            [response["selection"]["phase"] for response in responses],
+            ["IN_PROGRESS", "WAITING", "REVIEW", "CLOSED"],
+        )
+        self.assertEqual(
+            [response["status"] for response in responses],
+            ["CURRENT_CONTEXT", "NO_AUTHORITY", "NO_AUTHORITY", "NO_AUTHORITY"],
+        )
+        self.assertTrue(responses[0]["authorization"]["authorized"])
+        self.assertTrue(all(not response["authorization"]["authorized"] for response in responses[1:]))
+        self.assertEqual(
+            [response["observation"]["source"] for response in responses],
+            ["resume"] * 4,
+        )
+        self.assertEqual(
+            responses[1]["workflow"]["openQuestions"]["items"][0]["event_id"],
+            "question-1",
+        )
+
     def test_invalid_worktree_is_rejected_before_running_cli(self):
         with tempfile.TemporaryDirectory(prefix="repo-control-bootstrap-outside-", dir=self.root.parent) as outside:
             runner = _runner_for(self.context)
