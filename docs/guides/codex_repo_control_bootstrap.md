@@ -1,74 +1,47 @@
 # Codex Repo Control Session Bootstrap
 
 **Scope:** Repo Control II only
+
 **Contract:** `repo-control.continuity.v1`
-**Status:** experimental adapter and deterministic checks are present; no
-Codex host hook is installed. Discovery, trust approval, invocation and
-first-response delivery in the selected VS Code Codex host remain
-**NOT VERIFIED**. Automatic startup for that host is **NOT PASS**.
 
-## Gate A evidence and selected host
+**Status:** LIVE PASS for the specifically tested VS Code Codex Remote SSH host
 
-The Product Owner confirmed through the UI that the intended target is the
-Codex coding experience in the VS Code Windows client connected to this Linux
-Remote SSH worktree. This is operator-reported evidence; no screenshot or
-Windows-client build was available to the Coder.
+## Verified host and result
 
-Read-only inspection of the remote extension installation found:
+M009.004 verified repository-local automatic startup in the Product Owner's
+Codex experience in the VS Code Windows client connected by Remote SSH to
+`repo-control-ii [SSH: henderson-server1]` at
+`/home/chuck/projects/repo-control-ii`.
 
-- `openai.chatgpt` version `26.1021.22027`, installed under
-  `/home/chuck/.vscode-server/extensions/`.
-- The extension bundles a Linux runtime at
-  `bin/linux-x86_64/codex`, reporting
-  `codex-cli 0.164.0-alpha.11.1`. No standalone `codex` executable is on
-  `PATH`; the bundled runtime is not being substituted as a separate host.
-- The project venv imports `repoctl` outside the worktree and is the fixed
-  interpreter configured below.
-- Before this change, the repository had no `.codex/` directory. The private
-  user `~/.codex/config.toml` existed; a metadata-only parse found no user
-  `[hooks]` table and no `features.hooks` override. No user `hooks.json` was
-  present. Its other contents were not disclosed or copied.
+The tested remote installation was:
 
-Official Codex hook documentation describes project-local
-`<repo>/.codex/hooks.json` / `.codex/config.toml`, `SessionStart`, project
-trust, per-hook hash review, event input on stdin and context injection via
-`hookSpecificOutput.additionalContext`. The official VS Code hooks guide
-distinguishes Codex from the Copilot and Local hook implementations. Those
-documents establish a documented candidate, not runtime support in this
-installed VS Code Codex session.
+- extension `openai.chatgpt` version `26.1021.22027`;
+- bundled Linux runtime `codex-cli 0.164.0-alpha.11.1`;
+- project trust for the exact canonical worktree;
+- normal Codex UI per-definition review/trust, with no manual trust-hash edit
+  or bypass.
 
-The Product Owner reports that the selected VS Code Codex Hooks settings page
-for this SSH worktree still displayed “No hooks found” after refresh. A bounded
-read-only check of the remote extension and available logs found no hook
-discovery/trust/invocation evidence. Effective Windows-client policy and trust
-state remain unknown. The VS Code issue linked below discusses project-hook
-discovery/trust problems in the Codex Agents window; its discussion is not
-proof that a fix is present in this installed host.
+The host discovered the repository definition under **From Projects**, showed
+the exact `SessionStart` command, required a new review after each command
+change, executed the trusted hook synchronously, and inserted its output into
+the thread as a developer-context item before model response generation.
 
-References:
+An instrumented cold start correlated a private invocation receipt, a unique
+marker in the model-facing context, and the same marker in the first assistant
+response. After removing instrumentation and re-trusting the static
+definition, a separate production cold start persisted a model-facing
+`repo-control.continuity.v1` item at `2026-10-29T03:52:00.381Z`. It contained
+the exact repository identity, M009.004, `IN_PROGRESS`, current authorization,
+`source=startup`, and approved prompt hash before the exact `Prompt ready.`
+user item and before the first assistant response.
 
-- [OpenAI Codex hooks](https://developers.openai.com/codex/hooks/)
-- [VS Code agent hooks](https://code.visualstudio.com/docs/agent-customization/hooks)
-- [OpenAI Codex IDE extension](https://developers.openai.com/codex/ide/)
-- [VS Code issue #331733](https://github.com/microsoft/vscode/issues/331733)
+This is not a claim about another Codex version, host, workspace, repository,
+VS Code tab, local session, or managed policy. The exact Windows VS Code build
+and effective Windows-side policy were not independently available.
 
-## Candidate mechanism decision
+## Active repository registration
 
-| Candidate | Decision | Evidence boundary |
-|---|---|---|
-| Codex native `SessionStart` command hook in `.codex/hooks.json` | Documented candidate; not installed | The selected VS Code Codex UI reported no hooks. No supported repo-only trust/review path or host invocation was established. |
-| `AGENTS.md` or discovered Skills | Not an automatic bootstrap | Instructions can guide the model but do not independently prove a live command ran or context was consumed before the first response. No conflicting `AGENTS.md` was added. |
-| Existing Copilot `.github/hooks` registration | Rejected for Codex | It is a Copilot shared-harness hook and is unchanged. |
-| Standalone Codex CLI | Not the selected host | No standalone CLI is installed/on `PATH`; invoking the extension-bundled executable for `--version` is inventory only, not host acceptance. |
-| User/global or enterprise hooks | Not selected | Would broaden scope and could affect other repositories. No such configuration was created or changed. |
-
-## Repo-local implementation
-
-No `.codex/hooks.json` or other project Codex hook registration is shipped.
-The experimental adapter is not host-integrated. The following is illustrative
-only; do not install or activate it in this repository or another project
-without a future separately approved milestone that verifies the selected
-host's discovery and normal per-hook trust flow:
+The shipped production definition is `.codex/hooks.json`:
 
 ```json
 {
@@ -89,15 +62,21 @@ host's discovery and normal per-hook trust flow:
 }
 ```
 
-This example is not an active runtime configuration. Do not copy it to
-`.codex/hooks.json` as a workaround for the selected UI's empty hook list.
-No global hooks, trust policy, sandbox, permission, account or model settings
-were changed.
+The definition deliberately has no matcher, so the adapter can validate all
+documented Codex `SessionStart` sources: `startup`, `resume`, `clear`,
+`compact`, and `fork`. Only real `startup` delivery was required and verified
+by M009.004. Fixture coverage of other sources is not live host acceptance.
 
-`src/repoctl/codex_bootstrap.py` parses the Codex event, validates the exact
-managed repository key, ID and canonical path, then reuses the established
-Copilot adapter's fresh canonical `coder-context` lookup and validation. It
-maps validated fields into a distinct Codex output:
+The command uses the repository's fixed absolute venv interpreter and queries
+fresh canonical Repo Control state on every invocation. No milestone, prompt,
+authorization, marker, receipt path, or current decision is embedded in the
+production hook.
+
+## Adapter contract and authority boundary
+
+`src/repoctl/codex_bootstrap.py` validates the Codex event, exact canonical
+worktree, repository key and repository ID. It then invokes fresh
+`repoctl coder-context` and emits:
 
 ```json
 {
@@ -108,62 +87,64 @@ maps validated fields into a distinct Codex output:
 }
 ```
 
-The inner envelope includes repository/worktree identity, selected
-milestone/prompt path and hash, live lifecycle/authorization, open-condition
-references, approved-scope references, and event provenance. It does not
-include raw prompts, transcript paths/bodies, dispatch bodies, credentials or
-shell-provided identity. It handles documented Codex SessionStart sources
-`startup`, `resume`, `clear`, `compact`, and `fork`; this source mapping is
-fixture-tested, not evidence that the selected VS Code target delivers each
-event.
+The bounded inner envelope includes repository/worktree identity, selected
+milestone and prompt identity, lifecycle and authorization, open-condition
+references, approved-scope references, and event provenance. It excludes raw
+prompt bodies, transcript paths/bodies, dispatch bodies, credentials, and
+trust tokens.
 
-The context has an 8,192-byte bound and fails to a compact
-`INVALID_NO_AUTHORITY` instruction rather than truncating required data. The
-current live CLI/adapter smoke output measured 2,338 UTF-8 bytes and 585
-estimated tokens using `ceil(UTF-8 bytes / 4)`. This is a byte heuristic, not
-model-token telemetry. Codex's documented default per-handler context
-threshold is approximately 2,500 tokens; the hook leaves
-`additionalContextLimit` unset and produces a compact payload.
+Canonical CLI failure, malformed output, identity or prompt mismatch, an
+unsupported event, wrong worktree, or incoherent lifecycle/authorization
+returns `INVALID_NO_AUTHORITY` or `NO_AUTHORITY` with a stop instruction. It
+does not fall back to successful authorization. Context is bounded to 8,192
+UTF-8 bytes and host output to 20,000 bytes.
 
-On canonical CLI error, malformed output, identity/prompt mismatch or
-incoherent lifecycle/authorization, the adapter emits `INVALID_NO_AUTHORITY`
-or `NO_AUTHORITY` with a stop instruction and no successful authorization.
-If the host does not execute the hook, refuses its trust, or fails before
-context reaches the model, this adapter cannot enforce a stop. Codex's
-permission/sandbox policy is separate; no tool/file enforcement is claimed.
+The hook supplies point-in-time context; it grants no filesystem, shell, Git,
+model, or lifecycle authority. Codex permission and sandbox enforcement remain
+separate. If a host does not discover, trust, invoke, or deliver a hook, this
+adapter cannot create a fail-closed tool boundary.
 
-## Host acceptance status
+## Trust and safe changes
 
-Codex documents project hooks as active only for a trusted project and requires
-review/trust of each non-managed hook definition hash; a changed definition
-must be reviewed again. Do not bypass hook trust or modify trust policy. The
-The selected VS Code host did not show a project hook after refresh, and no
-normal repository-scoped review/trust path was verified. Therefore no real
-host acceptance was attempted. The adapter's fixture and CLI results do not
-prove discovery, execution or model delivery. Do not enable a receipt/marker
-probe unless a future approved milestone first establishes visible
-repo-scoped discovery and normal trust in the exact selected host.
+Project trust and hook-definition trust are distinct. Codex stores a
+host-managed trusted hash for the exact project definition. Any change to the
+command or hook shape must be reviewed again through **Codex Settings >
+Hooks** in the correct SSH workspace. Never write `hooks.state` or
+`trusted_hash` manually, copy a hash, bypass trust, or broaden this to a user
+or global hook.
 
-Automatic startup for the selected VS Code Codex host is **NOT PASS**. Whether
-this host/runtime supports the documented project hook path is **UNKNOWN**;
-do not report it as universally unsupported. If some other supported host
-later runs a hook, that is a separate host acceptance and cannot be
-substituted for this target. Hook context is not fail-closed tool
-authorization.
+M009.004 temporarily appended `--acceptance-receipt` for one approved test.
+That changed the definition hash and required separate UI trust. The adapter
+generated a random marker and wrote bounded metadata to an owner-only Linux
+state path. The test argument, receipt, and receipt directory were removed
+before production verification. They are not active in the shipped command.
 
-## Rollback and boundaries
+## Operation and verification
 
-The unverified `.codex/hooks.json` created during this milestone was removed
-before closeout. The production Copilot hook and adapter are preserved. No
-other repository, shared-procedure release, Repo Control selection/lifecycle,
-Windows setting, host trust, permission, sandbox, or account configuration
-was changed. No acceptance receipt or marker is active or was created. To
-disable the experimental adapter entirely, its module/tests and this guide
-may be removed only through normal Product Owner review and Git ownership.
-No Git operation is authorized for the Coder.
+For the tested host, a normal fresh-session verification is:
 
-Copilot genuine-resume behavior remains a separate **NOT VERIFIED**
-dependency. A later cross-agent switch test should keep the same managed repo
-and selected milestone while switching Copilot ↔ Codex; that is separate from
-this fresh Codex startup acceptance. Any multi-repository deployment requires
-new Product Owner approval.
+1. Confirm Repo Control has the intended selected repository and milestone.
+2. Confirm `.codex/hooks.json` shows the exact static command under **From
+   Projects** and is trusted/enabled in the same Remote SSH workspace.
+3. Open a genuinely new Codex session in that workspace.
+4. Send exactly `Prompt ready.` with no attachment.
+5. Confirm the response is based on the current repository, milestone,
+   lifecycle, and authorization without manually copying context.
+
+A model statement by itself is weaker evidence than a host thread record. For
+diagnosis, inspect only minimal hook-event/context metadata and ordering; do
+not export complete transcripts or private configuration. A successful direct
+CLI smoke is adapter validation, not host acceptance.
+
+## Disable and rollback
+
+To disable automatic Codex startup for this repository, the Product Owner may
+remove or disable `.codex/hooks.json` through normal repository review and use
+the supported Codex UI if revoking the stored definition trust is desired. Do
+not edit Linux user trust configuration directly. Removing the registration
+does not require removing the adapter or its deterministic tests.
+
+The existing Copilot hook remains separate and unchanged. Genuine Codex
+resume/compact delivery, genuine Copilot resume, cross-agent switching, and
+multi-repository portability remain separately unverified unless tested in
+their own approved scopes.

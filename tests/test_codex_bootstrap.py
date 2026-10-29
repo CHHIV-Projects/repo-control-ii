@@ -381,9 +381,33 @@ class TestCodexBootstrap(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(receipt.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
 
-    def test_codex_adapter_is_not_registered_as_a_host_hook(self):
+    def test_codex_adapter_is_registered_as_static_project_hook(self):
         config_path = Path(__file__).parents[1] / ".codex" / "hooks.json"
-        self.assertFalse(config_path.exists())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            config,
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": (
+                                        "/home/chuck/projects/repo-control-ii/.venv/bin/python "
+                                        "-m repoctl.codex_bootstrap"
+                                    ),
+                                    "timeout": 20,
+                                    "async": False,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+        )
+        command = config["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertNotIn("--acceptance-receipt", command)
 
 
 if __name__ == "__main__":
