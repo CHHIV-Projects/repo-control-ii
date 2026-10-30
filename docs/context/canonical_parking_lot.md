@@ -700,7 +700,7 @@ Preserve explicit review before mutation and the existing Coder no-Git-mutation 
 
 ### Status
 
-Deferred
+Resolved by M009.006
 
 ### Summary
 
@@ -725,6 +725,11 @@ A reproducible case and explicit implementation scope before changing validation
 ### Notes
 
 Do not weaken lifecycle event validation or accept arbitrary control characters without review. No fix is authorized by this note.
+
+M009.006 reproduced the defect at the browser WAITING-resolution boundary and
+normalizes pasted CR and CRLF line endings to LF only for that summary field.
+Regression coverage confirms LF, TAB, and ordinary text remain unchanged while
+the lifecycle validator continues to reject other control characters.
 
 ## UI-001 — Dashboard Refresh Status HTTP 500
 

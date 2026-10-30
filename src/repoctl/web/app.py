@@ -2389,6 +2389,9 @@ def create_web_app(
                     status_code=409,
                 )
             action = request.form.get("event_type", "")
+            summary = request.form.get("summary", "")
+            if action == "resolve_and_resume":
+                summary = summary.replace("\r\n", "\n").replace("\r", "\n")
             if action in {"approve_and_start", "implementation_started"}:
                 if request.form.get("expected_prompt_identity") != workflow["prompt_identity"]:
                     raise WebUIError(
@@ -2484,7 +2487,7 @@ def create_web_app(
                         repository.path, effective_state_root, repository.milestone_root,
                         selection["selection"],
                         action=action,
-                        summary=request.form.get("summary", ""),
+                        summary=summary,
                         expected_phase=workflow["phase"],
                         expected_event_count=workflow["event_count"],
                         related_event_id=request.form.get("related_event_id") or None,
@@ -2501,7 +2504,7 @@ def create_web_app(
                         repository.milestone_root,
                         selection["selection"],
                         event_type=action,
-                        summary=request.form.get("summary", ""),
+                        summary=summary,
                         actor_role="product_owner",
                         po_approved=True,
                         waiting_category=request.form.get("waiting_category") or None,

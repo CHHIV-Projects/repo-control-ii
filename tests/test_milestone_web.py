@@ -569,6 +569,93 @@ class MilestoneWebTests(unittest.TestCase):
             ).stdout
             self.assertEqual(index_changes, "")
 
+    def test_waiting_resolution_pasted_whitespace_and_forbidden_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = _repo(root, "repo", "R003.01")
+            state_root = root / "state"
+            client = create_web_app(
+                repository_path=str(repository),
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            client.post(
+                "/milestones/select",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "default",
+                    "repository_generation": "0",
+                    "milestone_id": "R003.01",
+                },
+            )
+            candidate = load_milestone_selection(repository, state_root)["selection"]
+
+            def workflow():
+                return load_milestone_workflow(
+                    repository, state_root, "docs/milestones", candidate,
+                )
+
+            def submit(action: str, summary: str, **fields: str):
+                current = workflow()
+                return client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "default",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": candidate["prompt_path"],
+                        "expected_prompt_identity": current["prompt_identity"],
+                        "expected_phase": current["phase"],
+                        "expected_event_count": str(current["event_count"]),
+                        "event_type": action,
+                        "summary": summary,
+                        **fields,
+                    },
+                )
+
+            self.assertEqual(submit("approve_and_start", "Start work").status_code, 302)
+            cases = (
+                ("CR", "first\rsecond", "first\nsecond", True),
+                ("CRLF", "first\r\nsecond", "first\nsecond", True),
+                ("LF", "first\nsecond", "first\nsecond", True),
+                ("TAB", "first\tsecond", "first\tsecond", True),
+                ("ordinary text", "Ordinary summary", "Ordinary summary", True),
+                ("forbidden control", "first\x01second", None, False),
+            )
+            for label, submitted, expected, accepted in cases:
+                with self.subTest(input=label):
+                    if workflow()["phase"] != "WAITING":
+                        self.assertEqual(
+                            submit(
+                                "question_submitted",
+                                "Need a resolution",
+                                waiting_category="blocker",
+                                waiting_reason="Confirm the copied summary behavior.",
+                            ).status_code,
+                            302,
+                        )
+                    current = workflow()
+                    question_id = current["open_questions"][-1]["event_id"]
+                    response = submit(
+                        "resolve_and_resume",
+                        submitted,
+                        related_event_id=question_id,
+                    )
+                    if accepted:
+                        self.assertEqual(response.status_code, 302)
+                        resolved = workflow()
+                        self.assertEqual(resolved["event_history"][-2]["summary"], expected)
+                        self.assertEqual(resolved["phase"], "IN_PROGRESS")
+                    else:
+                        self.assertEqual(response.status_code, 400)
+                        self.assertIn(
+                            "Event summary contains unsupported control characters.",
+                            response.get_data(as_text=True),
+                        )
+                        self.assertEqual(workflow()["event_count"], current["event_count"])
+
     def test_deliberate_browser_action_authorizes_approve_and_start(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
