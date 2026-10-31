@@ -643,6 +643,11 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(review["milestone"]["id"], MILESTONE_ID)
         self.assertEqual(review["git"]["upstream"]["remote_refresh_performed"], False)
         self.assertEqual(review["test_evidence"]["reported_vs_machine_observed"], "reported")
+        self.assertEqual(review["context_verification_coverage"]["status"], "MISSING")
+        self.assertIn(
+            "session starts",
+            review["context_verification_coverage"]["coverage_limitation"],
+        )
         self.assertNotIn("FIRST_ONLY prompt content.", json.dumps(review))
         self.assertNotIn("FIRST_ONLY context content.", json.dumps(review))
         self.assertEqual(review["governing_documents"][0]["source_type"], "governing_document")

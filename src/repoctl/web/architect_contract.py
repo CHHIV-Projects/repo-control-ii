@@ -21,6 +21,12 @@ from ..workflow.handoff_packets import (
 )
 from ..workflow.lifecycle import WorkflowRecordError, load_milestone_workflow
 from ..workflow.milestones import MilestoneArtifactError, load_milestone_selection
+from ..workflow.authority import get_authorization_status, is_correction_mode
+from ..workflow.context_verification import (
+    build_authority_snapshot,
+    build_verification_coverage,
+    collect_verification_sources,
+)
 from .repository_registry import DOCUMENT_ROLES, RepositoryEntry
 
 CONTRACT_VERSION = "1"
@@ -1257,6 +1263,41 @@ def _selected_response(
                 **evidence,
             }
         git_state = _git_view(repository)
+        verification_snapshot = None
+        verification_sources = collect_verification_sources(
+            repository,
+            candidate,
+            state_root,
+        )
+        procedure = verification_sources["procedure"]
+        raw_git_state = verification_sources["git_state"]
+        approved_dispatches = verification_sources["approved_dispatches"]
+        authorization = get_authorization_status(
+            workflow["phase"],
+            is_correction_mode(workflow),
+        )
+        if (
+            raw_git_state is not None
+            and verification_sources["dispatch_failure_type"] is None
+            and procedure["inspection_status"] == "available"
+        ):
+            verification_snapshot = build_authority_snapshot(
+                repository={
+                    "key": repository.key,
+                    "repository_id": repository.repository_id,
+                    "path": str(repository.path),
+                },
+                candidate=candidate,
+                workflow=workflow,
+                authorization=authorization,
+                procedure=procedure,
+                git_state=raw_git_state,
+                approved_dispatches=approved_dispatches,
+            )
+        verification_coverage = build_verification_coverage(
+            workflow["event_history"],
+            verification_snapshot,
+        )
         return {
             "repository": {
                 "key": repository.key,
@@ -1278,6 +1319,7 @@ def _selected_response(
                 ]),
             },
             "git": git_state,
+            "context_verification_coverage": verification_coverage,
             "governing_documents": _document_inventory(repository),
             "source_references": [
                 {"source_type": "milestone_prompt", "path": candidate["prompt_path"]},

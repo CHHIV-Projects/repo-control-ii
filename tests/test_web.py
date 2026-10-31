@@ -329,7 +329,7 @@ class WebTests(unittest.TestCase):
                 self.assertIn("UPDATE", html)
                 self.assertIn(bundle.manifest_sha256, html)
                 self.assertIn("1.0.2", html)
-                self.assertIn("1.1.0", html)
+                self.assertIn("1.2.0", html)
                 self.assertIn("coding_agent_rules.md", html)
                 self.assertIn("Review Apply", html)
                 self.assertNotIn("Confirm Apply", html)

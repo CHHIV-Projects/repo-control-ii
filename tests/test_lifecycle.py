@@ -13,6 +13,7 @@ from repoctl.workflow.lifecycle import (
     record_milestone_action,
     record_milestone_reopen,
 )
+from repoctl.workflow.context_verification import make_verification_record
 from repoctl.workflow.milestones import (
     discover_milestones,
     load_milestone_selection,
@@ -584,6 +585,92 @@ class MilestoneLifecycleTests(unittest.TestCase):
         self.assertEqual(workflow["phase"], "CLOSED")
         with self.assertRaisesRegex(WorkflowRecordError, "closed milestone"):
             _record(self.repo, self.state_root, candidate, "git_disposition_recorded", "Pushed")
+
+    def test_context_verification_is_audit_only_even_after_closure(self) -> None:
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved prompt",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        (self.repo / "docs/milestones/M003.001_example_closeout.md").write_text(
+            "# Closeout\n", encoding="utf-8"
+        )
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "closeout_submitted",
+            "Submit closeout",
+        )
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "acceptance_recorded",
+            "Accept",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        closed = _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "milestone_closed",
+            "Close",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        snapshot = {
+            "repository": {"key": "repo", "id": "repo--123", "root": str(self.repo)},
+            "milestone": {
+                "id": self.candidate["milestone_id"],
+                "prompt_path": self.candidate["prompt_path"],
+                "prompt_sha256": "c" * 64,
+                "lifecycle": "CLOSED",
+                "authorization": {"authorized": False, "status": "NOT_AUTHORIZED"},
+                "closeout": {
+                    "exists": True,
+                    "path": "docs/milestones/M003.001_example_closeout.md",
+                },
+            },
+            "workflow_evidence": {"test_result_count": 0},
+            "approved_architect_dispatches": {"inspection_status": "available"},
+            "procedure": {
+                "inspection_status": "available",
+                "status": "CURRENT",
+                "overlay_valid": True,
+            },
+            "git": {"inspection_status": "available"},
+        }
+        record = make_verification_record(
+            trigger="NEW",
+            snapshot=snapshot,
+            result="BLOCKED",
+            git_boundary_acknowledged=True,
+        )
+
+        updated = record_milestone_event(
+            self.repo,
+            self.state_root,
+            "docs/milestones",
+            self.candidate,
+            event_type="context_verification_recorded",
+            summary="Context verification: BLOCKED (NEW)",
+            actor_role="coder",
+            context_verification=record,
+            expected_phase="CLOSED",
+            expected_event_count=closed["event_count"],
+        )
+        self.assertEqual(updated["phase"], "CLOSED")
+        self.assertEqual(updated["event_count"], closed["event_count"] + 1)
+        self.assertEqual(updated["event_history"][-1]["phase_before"], "CLOSED")
+        self.assertEqual(updated["event_history"][-1]["phase_after"], "CLOSED")
+        self.assertEqual(updated["event_history"][-1]["actor_role"], "coder")
 
     def test_sidecar_is_human_readable_durable_and_does_not_change_git(self) -> None:
         before_head = _git(self.repo, "rev-parse", "HEAD")

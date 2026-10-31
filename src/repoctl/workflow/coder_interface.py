@@ -9,10 +9,20 @@ from ..scanner.core import DEFAULT_STATE_ROOT
 from ..scanner.git_ops import ScanError, validate_git_worktree
 from .architect_dispatches import ArchitectDispatchError, list_owner_dispatches
 from ..web.repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
+from .authority import get_authorization_status, is_correction_mode as _is_correction_mode
 from .lifecycle import (
     WorkflowRecordError,
     load_milestone_workflow,
     record_milestone_event,
+)
+from .context_verification import (
+    VERIFICATION_EVENT_TYPE,
+    VERIFICATION_TRIGGERS,
+    build_authority_snapshot,
+    collect_verification_sources,
+    make_verification_record,
+    snapshot_digest,
+    validate_verification_record,
 )
 from .milestones import (
     MilestoneArtifactError,
@@ -78,75 +88,6 @@ def resolve_repository_entry(
             f"{entry.key!r}: expected {entry.milestone_root!r}"
         )
     return entry
-
-
-def _is_correction_mode(workflow: dict[str, Any]) -> bool:
-    if workflow.get("phase") != "IN_PROGRESS":
-        return False
-    for event in reversed(workflow.get("event_history", [])):
-        if event.get("event_type") == "correction_requested":
-            return True
-        if event.get("event_type") in {"implementation_started", "implementation_resumed"}:
-            return False
-    return False
-
-
-def get_authorization_status(phase: str, is_correction: bool = False) -> dict[str, Any]:
-    if phase == "PLANNING":
-        return {
-            "authorized": False,
-            "can_preflight": False,
-            "status": "NOT_AUTHORIZED",
-            "message": "NO — milestone is in PLANNING; Product Owner prompt review and approval required before implementation.",
-        }
-    if phase == "READY":
-        return {
-            "authorized": False,
-            "can_preflight": True,
-            "status": "PREFLIGHT_ONLY",
-            "message": "NO (preflight only) — prompt is READY; implementation begins only after explicit lifecycle start.",
-        }
-    if phase == "IN_PROGRESS":
-        if is_correction:
-            return {
-                "authorized": True,
-                "can_preflight": True,
-                "status": "AUTHORIZED_CORRECTION",
-                "message": "YES (correction mode) — work is limited to the requested bounded correction.",
-            }
-        return {
-            "authorized": True,
-            "can_preflight": True,
-            "status": "AUTHORIZED",
-            "message": "YES — implementation and validation are authorized.",
-        }
-    if phase == "WAITING":
-        return {
-            "authorized": False,
-            "can_preflight": False,
-            "status": "NOT_AUTHORIZED",
-            "message": "NO — implementation is paused in WAITING; resolve recorded condition and Product Owner resume required.",
-        }
-    if phase == "REVIEW":
-        return {
-            "authorized": False,
-            "can_preflight": False,
-            "status": "NOT_AUTHORIZED",
-            "message": "NO — implementation is under REVIEW; no new changes authorized unless Product Owner requests bounded correction.",
-        }
-    if phase == "CLOSED":
-        return {
-            "authorized": False,
-            "can_preflight": False,
-            "status": "NOT_AUTHORIZED",
-            "message": "NO — milestone is CLOSED; no further implementation authorized under this milestone.",
-        }
-    return {
-        "authorized": False,
-        "can_preflight": False,
-        "status": "UNKNOWN",
-        "message": f"NO — unknown phase: {phase}",
-    }
 
 
 def _resolve_context_and_workflow(
@@ -555,6 +496,170 @@ def submit_coder_test_result(
         "result": clean_result,
         "summary": clean_summary,
         "next_action": updated_workflow["next_action"],
+    }
+
+
+def submit_coder_context_verification(
+    trigger: str,
+    *,
+    git_boundary_acknowledged: bool = False,
+    expected_repository_key: str,
+    expected_repository_id: str,
+    expected_repository_root: str | Path,
+    expected_milestone_id: str,
+    repository_path: str | Path | None = None,
+    state_root: str | Path | None = None,
+    milestone_root: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(trigger, str) or trigger not in VERIFICATION_TRIGGERS:
+        raise CoderInterfaceError("Choose NEW, HANDOFF, AUTHORITY_TRANSITION, or RECOVERY as the trigger.")
+    if (
+        not isinstance(expected_repository_key, str)
+        or not expected_repository_key.strip()
+        or not isinstance(expected_repository_id, str)
+        or not expected_repository_id.strip()
+        or not isinstance(expected_repository_root, (str, Path))
+        or not str(expected_repository_root).strip()
+        or not isinstance(expected_milestone_id, str)
+        or not expected_milestone_id.strip()
+    ):
+        raise CoderInterfaceError("Expected repository key and milestone ID are required.")
+
+    entry, effective_state_root, candidate, workflow = _resolve_context_and_workflow(
+        repository_path=repository_path,
+        state_root=state_root,
+        milestone_root=milestone_root,
+    )
+    if entry.key != expected_repository_key:
+        raise CoderInterfaceError(
+            f"Selected repository key {entry.key!r} does not match expected key {expected_repository_key!r}."
+        )
+    if entry.repository_id != expected_repository_id:
+        raise CoderInterfaceError(
+            f"Selected repository ID {entry.repository_id!r} does not match expected ID "
+            f"{expected_repository_id!r}."
+        )
+    expected_root = Path(expected_repository_root).expanduser().resolve()
+    if entry.path != expected_root:
+        raise CoderInterfaceError(
+            f"Selected repository root {str(entry.path)!r} does not match expected root "
+            f"{str(expected_root)!r}."
+        )
+    if candidate["milestone_id"] != expected_milestone_id:
+        raise CoderInterfaceError(
+            f"Selected milestone {candidate['milestone_id']!r} does not match expected milestone "
+            f"{expected_milestone_id!r}."
+        )
+
+    sources = collect_verification_sources(entry, candidate, effective_state_root)
+    procedure = sources["procedure"]
+    git_state = sources["git_state"]
+    approved_dispatches = sources["approved_dispatches"]
+
+    authorization = get_authorization_status(
+        workflow["phase"],
+        _is_correction_mode(workflow),
+    )
+    snapshot = build_authority_snapshot(
+        repository={
+            "key": entry.key,
+            "repository_id": entry.repository_id,
+            "path": str(entry.path),
+        },
+        candidate=candidate,
+        workflow=workflow,
+        authorization=authorization,
+        procedure=procedure,
+        git_state=git_state,
+        approved_dispatches=approved_dispatches,
+    )
+    if sources["git_failure_type"] is not None:
+        snapshot["git"]["failure_type"] = sources["git_failure_type"]
+    if sources["dispatch_failure_type"] is not None:
+        snapshot["approved_architect_dispatches"]["failure_type"] = sources["dispatch_failure_type"]
+    if not authorization["authorized"]:
+        result = "BLOCKED"
+    elif (
+        procedure.get("inspection_status") != "available"
+        or procedure.get("status") != "CURRENT"
+        or not procedure.get("overlay_valid")
+        or git_state is None
+        or approved_dispatches is None
+        or not git_boundary_acknowledged
+    ):
+        result = "PARTIAL_UNVERIFIED"
+    else:
+        result = "VERIFIED"
+    verification = make_verification_record(
+        trigger=trigger,
+        snapshot=snapshot,
+        result=result,
+        git_boundary_acknowledged=git_boundary_acknowledged,
+    )
+    current_digest = snapshot_digest(snapshot)
+    latest_verification = next(
+        (
+            event for event in reversed(workflow["event_history"])
+            if event["event_type"] == VERIFICATION_EVENT_TYPE
+        ),
+        None,
+    )
+    if latest_verification is not None:
+        prior = latest_verification.get("context_verification", {})
+        if (
+            latest_verification is workflow["event_history"][-1]
+            and validate_verification_record(prior)
+            and prior.get("trigger") == trigger
+            and prior.get("authority_snapshot_sha256") == current_digest
+            and prior.get("git_boundary_acknowledged") is git_boundary_acknowledged
+        ):
+            return {
+                "event_id": latest_verification["event_id"],
+                "milestone_id": candidate["milestone_id"],
+                "repository_key": entry.key,
+                "result": prior.get("result"),
+                "trigger": trigger,
+                "authority_snapshot_sha256": current_digest,
+                "authority_snapshot": prior["authority_snapshot"],
+                "idempotent": True,
+                "phase": workflow["phase"],
+                "session_identity": prior["session_identity"],
+                "provider_delivery": prior["provider_delivery"],
+            }
+
+    try:
+        updated_workflow = record_milestone_event(
+            repository_root=entry.path,
+            state_root=effective_state_root,
+            milestone_root=entry.milestone_root,
+            candidate=candidate,
+            event_type=VERIFICATION_EVENT_TYPE,
+            actor_role="coder",
+            summary=f"Context verification: {result} ({trigger})",
+            context_verification=verification,
+            expected_phase=workflow["phase"],
+            expected_event_count=workflow["event_count"],
+            expected_prompt_identity=workflow["prompt_identity"],
+        )
+    except WorkflowRecordError as exc:
+        raise CoderInterfaceError(str(exc)) from exc
+
+    recorded_event = updated_workflow["event_history"][-1]
+    return {
+        "event_id": recorded_event["event_id"],
+        "milestone_id": candidate["milestone_id"],
+        "repository_key": entry.key,
+        "result": result,
+        "trigger": trigger,
+        "authority_snapshot_sha256": current_digest,
+        "authority_snapshot": snapshot,
+        "idempotent": False,
+        "phase": updated_workflow["phase"],
+        "authorization": authorization,
+        "procedure_status": procedure.get("status", "UNAVAILABLE"),
+        "git_state": snapshot["git"],
+        "session_identity": verification["session_identity"],
+        "provider_delivery": verification["provider_delivery"],
     }
 
 

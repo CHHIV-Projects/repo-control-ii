@@ -13,6 +13,10 @@ from typing import Any
 from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..scanner.util import make_repository_id
 from .architect_dispatches import list_outstanding_guidance
+from .context_verification import (
+    VERIFICATION_EVENT_TYPE,
+    validate_verification_record,
+)
 from .milestones import (
     MilestoneArtifactError,
     _contained_file,
@@ -47,6 +51,7 @@ _EVENT_TYPES = {
     "milestone_closed",
     "milestone_reopened",
     "git_disposition_recorded",
+    VERIFICATION_EVENT_TYPE,
 }
 _ACTOR_ROLES = {"product_owner", "architect", "coder", "repo_control"}
 _DISPATCH_ID_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -159,6 +164,8 @@ def _apply_event(
     if event_type not in _EVENT_TYPES:
         raise WorkflowRecordError(f"Unsupported workflow event type: {event_type}")
 
+    if event_type == VERIFICATION_EVENT_TYPE:
+        return phase, waiting_category, waiting_reason
     if phase == "CLOSED" and event_type != "milestone_reopened":
         raise WorkflowRecordError("A closed milestone cannot accept additional workflow events.")
     if event_type in {
@@ -533,6 +540,19 @@ def _render_sidecar(ledger: dict[str, Any]) -> str:
             lines.append(f"- Supporting artifact: `{_markdown_safe(event['evidence_path'])}`")
         if event.get("reopen_target_phase"):
             lines.append(f"- Reopened to: **{event['reopen_target_phase']}**")
+        verification = event.get("context_verification")
+        if isinstance(verification, dict):
+            verification_result = verification.get("result")
+            verification_trigger = verification.get("trigger")
+            verification_digest = verification.get("authority_snapshot_sha256")
+            lines.append(
+                "- Context verification: "
+                f"{_markdown_safe(verification_result if isinstance(verification_result, str) else 'INVALID')} "
+                f"({_markdown_safe(verification_trigger if isinstance(verification_trigger, str) else 'unknown')}); "
+                f"snapshot `{_markdown_safe(verification_digest if isinstance(verification_digest, str) else 'invalid')}`."
+            )
+            lines.append("- Trigger and Git-boundary acknowledgement are agent-reported; session identity is unverified.")
+            lines.append("- Provider-native hook delivery is unverified.")
         if event.get("event_type") == "milestone_reopened":
             lines.append("- Prior acceptance and closure events remain unchanged in this history.")
         if event.get("closure_override_reason"):
@@ -692,6 +712,10 @@ def _record_milestone_event_locked(
     closure_override_reason: str | None = None,
     outstanding_dispatch_ids: tuple[str, ...] | None = None,
     following_events: tuple[tuple[str, str], ...] = (),
+    context_verification: dict[str, Any] | None = None,
+    expected_phase: str | None = None,
+    expected_event_count: int | None = None,
+    expected_prompt_identity: str | None = None,
 ) -> dict[str, Any]:
     summary = summary.strip()
     if not summary or len(summary) > 2000:
@@ -740,6 +764,20 @@ def _record_milestone_event_locked(
                 raise WorkflowRecordError("Closure override requires valid outstanding dispatch identifiers.")
     elif closure_override_reason is not None or outstanding_dispatch_ids is not None:
         raise WorkflowRecordError("Closure override evidence is valid only when closing a milestone.")
+    if event_type == VERIFICATION_EVENT_TYPE:
+        if actor_role != "coder" or po_approved:
+            raise WorkflowRecordError("Context verification must be recorded as an unauthenticated Coder claim.")
+        if not validate_verification_record(context_verification):
+            raise WorkflowRecordError("Context verification record is malformed or exceeds its safety limit.")
+        if following_events:
+            raise WorkflowRecordError("Context verification cannot be combined with lifecycle events.")
+    elif (
+        context_verification is not None
+        or expected_phase is not None
+        or expected_event_count is not None
+        or expected_prompt_identity is not None
+    ):
+        raise WorkflowRecordError("Verification metadata is valid only for a context verification event.")
     if waiting_reason is not None:
         waiting_reason = waiting_reason.strip() or None
         if waiting_reason and len(waiting_reason) > 1000:
@@ -790,6 +828,21 @@ def _record_milestone_event_locked(
             ledger = _empty_ledger(repository_id, current_candidate)
         events = list(ledger["events"])
         state = _reduce_events(events)
+        if expected_phase is not None and (
+            state["phase"] != expected_phase or len(events) != expected_event_count
+        ):
+            raise WorkflowRecordError("Workflow state changed; refresh before recording context verification.")
+        if expected_prompt_identity is not None:
+            try:
+                current_prompt_identity = prompt_identity(root, milestone_root, current_candidate)
+            except MilestoneArtifactError as exc:
+                raise WorkflowRecordError(
+                    "The selected prompt changed; refresh before recording context verification."
+                ) from exc
+            if current_prompt_identity != expected_prompt_identity:
+                raise WorkflowRecordError(
+                    "The selected prompt changed; refresh before recording context verification."
+                )
         additions: list[dict[str, Any]] = []
         if event_type == "milestone_closed":
             latest_closeout = next(
@@ -911,6 +964,8 @@ def _record_milestone_event_locked(
                 event_fields["evidence_path"] = current_candidate["closeout_path"]
             if event_type == "milestone_reopened":
                 event_fields["reopen_target_phase"] = reopen_target_phase
+            if event_type == VERIFICATION_EVENT_TYPE:
+                event_fields["context_verification"] = context_verification
             event = _new_event(
                 event_type=event_type,
                 summary=summary,
@@ -920,6 +975,11 @@ def _record_milestone_event_locked(
                 waiting_category=state["waiting_category"],
                 waiting_reason=state["waiting_reason"],
                 event_fields=event_fields,
+                actor_attribution=(
+                    "Reported through repoctl coder-verify; trigger and identity are not authenticated by Repo Control."
+                    if event_type == VERIFICATION_EVENT_TYPE
+                    else None
+                ),
             )
             phase_after, category_after, reason_after = _apply_event(
                 state["phase"],
@@ -1092,6 +1152,10 @@ def record_milestone_event(
     bug_scope: str | None = None,
     evidence_source: str | None = None,
     result: str | None = None,
+    context_verification: dict[str, Any] | None = None,
+    expected_phase: str | None = None,
+    expected_event_count: int | None = None,
+    expected_prompt_identity: str | None = None,
 ) -> dict[str, Any]:
     with STATE_ARTIFACT_LOCK:
         return _record_milestone_event_locked(
@@ -1109,6 +1173,10 @@ def record_milestone_event(
             bug_scope=bug_scope,
             evidence_source=evidence_source,
             result=result,
+            context_verification=context_verification,
+            expected_phase=expected_phase,
+            expected_event_count=expected_event_count,
+            expected_prompt_identity=expected_prompt_identity,
         )
 
 
@@ -1122,6 +1190,7 @@ def _new_event(
     waiting_category: str | None,
     waiting_reason: str | None,
     event_fields: dict[str, Any],
+    actor_attribution: str | None = None,
 ) -> dict[str, Any]:
     return {
         "event_id": uuid.uuid4().hex,
@@ -1129,7 +1198,8 @@ def _new_event(
         "event_type": event_type,
         "summary": summary,
         "actor_role": actor_role,
-        "actor_attribution": "Reported through the local UI; role and identity are not authenticated by Repo Control.",
+        "actor_attribution": actor_attribution
+        or "Reported through the local UI; role and identity are not authenticated by Repo Control.",
         "po_approved": po_approved,
         "phase_before": phase,
         "phase_after": phase,

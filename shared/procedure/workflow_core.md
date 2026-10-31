@@ -31,6 +31,36 @@ authorized objective and boundaries remain intact. Raise material questions
 through the bounded Repo Control workflow and verify the resulting state.
 Report defects with evidence and do not self-approve a scope-expanding repair.
 
+## Context continuity and audit
+
+Apply one trigger contract across Coder and Architect contexts: NEW is a new
+independent context or lost governing context; WARM is the same context with
+valid instructions; HANDOFF is a distinct Coder taking over; AUTHORITY
+TRANSITION is a possible repository, milestone, prompt/approved-instruction,
+lifecycle/authorization, or procedure change; RECOVERY is uncertainty about
+context validity. Ordinary follow-ups and model switches with intact context
+are not triggers.
+
+At Coder NEW, HANDOFF, AUTHORITY TRANSITION, and RECOVERY triggers, run the
+fresh `coder-verify` check with the expected repository key, ID, absolute root,
+and milestone ID. Verify its live prompt hash, lifecycle/authorization/open
+conditions, shared procedure/overlay, and Git-boundary result before
+consequential work. Only `VERIFIED` with matching authority permits
+implementation; otherwise stop. This appends an audit-only event: it neither
+grants authority nor changes lifecycle. Trigger and Git-boundary
+acknowledgement are agent claims, session identity is unverified, local
+snapshot values are Repo Control observed, and provider hook delivery remains
+unverified.
+
+For HANDOFF, reconcile the active prompt, approved decisions and dispatches,
+questions/blockers, relevant tests/closeout, and read-only HEAD/status/dirty
+paths. Ambiguous ownership is a stop. WARM does not repeat bootstrap or add
+duplicate records; refresh only affected authority at material boundaries.
+The Architect uses its connected read-only `repo_status`, `repo_workflow`,
+`repo_prompt`, and bounded review interfaces, never local Coder CLI or
+assumed host hooks. Review coverage describes only recorded triggers; missing
+records cannot establish that no session started.
+
 ## Approved guidance and evidence
 
 Consume only approved Architect `INSTRUCTION`/`RESPONSE` dispatches applicable

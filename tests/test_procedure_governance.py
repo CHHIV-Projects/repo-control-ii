@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -1243,20 +1244,29 @@ class ProcedureGovernanceTests(unittest.TestCase):
             )
         self.assertEqual(target.read_bytes(), target_before)
 
-    def test_manifest_sources_are_hashed_and_skills_match_accepted_copies(self) -> None:
+    def test_manifest_sources_are_hashed_and_installed_skills_match_their_lock(self) -> None:
         self.assertEqual(self.bundle.schema_version, 1)
-        self.assertEqual(self.bundle.release, "1.1.0")
+        self.assertEqual(self.bundle.release, "1.2.0")
         for source, expected in self.bundle.source_hashes.items():
             data = (self.bundle.root / source).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
+        repository_root = Path(__file__).parents[1]
+        installed_lock = tomllib.loads(
+            (repository_root / self.bundle.lock_path).read_text(encoding="utf-8")
+        )
+        installed_hashes = {item["path"]: item["sha256"] for item in installed_lock["files"]}
         for skill in (
             "repo-control-implementation",
             "repo-control-blocker-bug-escalation",
             "repo-control-validation-closeout",
         ):
             canonical = self.bundle.root / "skills" / skill / "SKILL.md"
-            accepted = Path(__file__).parents[1] / ".agents/skills" / skill / "SKILL.md"
-            self.assertEqual(canonical.read_bytes(), accepted.read_bytes())
+            target = f".agents/skills/{skill}/SKILL.md"
+            accepted = repository_root / target
+            installed_bytes = accepted.read_bytes()
+            self.assertEqual(hashlib.sha256(installed_bytes).hexdigest(), installed_hashes[target])
+            if installed_lock["release"] == self.bundle.release:
+                self.assertEqual(canonical.read_bytes(), installed_bytes)
 
     def test_manifest_missing_malformed_and_source_hash_mismatch_fail_clearly(self) -> None:
         with tempfile.TemporaryDirectory() as td:

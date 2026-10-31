@@ -656,6 +656,73 @@ local content does not conflict with generic authority.
   journal or recovery images. Preserve them and escalate for operator
   investigation; an unknown target image is never overwritten automatically.
 
+## Agent context verification and continuity
+
+Coders and the ChatGPT Architect use the same context triggers:
+
+| Trigger | Meaning | Required behavior |
+|---|---|---|
+| `NEW` | New independent context or governing context was lost/cleared | Fresh authority lookup before consequential work |
+| `WARM` | Same context still retains valid governing instructions | Continue without a full bootstrap or duplicate audit record |
+| `HANDOFF` | A distinct Coder takes over existing work | Fresh lookup plus targeted reconciliation of prompt, decisions, blockers, evidence, and read-only Git state |
+| `AUTHORITY_TRANSITION` | Repository/milestone, prompt/approved instruction, lifecycle/authorization, or procedure may have changed | Revalidate affected values before acting |
+| `RECOVERY` | Context or authority validity is uncertain | Re-establish current state; do not infer continuity |
+
+An ordinary follow-up or model switch with intact context is not itself a
+trigger. For Coder triggers, first inspect the canonical current context and
+then record an identity-bound live verification:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context --format json
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-verify \
+  --trigger HANDOFF \
+  --expected-repository-key <key> \
+  --expected-repository-id <id> \
+  --expected-repository-root <absolute-path> \
+  --expected-milestone-id <milestone-id> \
+  --acknowledge-git-boundary
+```
+
+Use the intended identity, not whichever repository happens to be selected.
+The verification checks the expected repository key/ID/root and milestone,
+captures the current prompt path/hash, lifecycle/authorization/open
+conditions, approved instruction identities, procedure/overlay and bounded
+read-only Git state, and appends an audit-only event. Inspect the returned
+snapshot; proceed only when it is `VERIFIED` and all values match the active
+task. A `BLOCKED` or `PARTIAL_UNVERIFIED` result, mismatched identity, or
+unavailable authority is a stop. The event cannot authorize work or alter
+lifecycle; a repeated identical trigger/snapshot is idempotent.
+
+On HANDOFF, additionally inspect `coder-status` and read-only Git status,
+compare HEAD and dirty paths, and reconcile relevant questions, test/closeout
+evidence, and approved guidance. If unfinished work or dirty-file ownership
+is unclear, stop and escalate. Do not request transcripts or ceremonial
+handoff packets when Repo Control state is sufficient.
+
+The Architect performs the same authority check through its connected
+read-only `repo_status`, `repo_workflow`, `repo_prompt`, and bounded evidence
+interfaces. It does not run local Coder commands and cannot write workflow
+events through that read-only interface; its own trigger/verification
+statement therefore remains an agent claim.
+
+Architect review includes `context_verification_coverage`, a bounded view of
+recorded Coder trigger events. Each record separates Repo Control-observed
+snapshot values from agent-reported trigger and Git-boundary acknowledgement,
+marks snapshot freshness against current material authority, and reports
+provider-native hook delivery as `unverified`. `MISSING`, `INVALID`, `STALE`,
+and `UNVERIFIABLE` are distinct states. Coverage is only of events actually
+recorded: an absent event does not prove that no context or session started,
+and identical consecutive retries are deduplicated rather than counted as
+separate sessions. No host hook is claimed without a correlated provider
+receipt.
+
+The canonical shared-procedure release is published and previewed through the
+existing bundle mechanism. Reconcile a managed repository only through its
+own explicit Product Owner-authorized Procedure Updates transaction; a
+canonical release or preview does not propagate to installed artifacts or
+other repositories. Routine context verification adds no Product Owner
+approval step.
+
 ## Common recovery
 
 | Situation | What to do |

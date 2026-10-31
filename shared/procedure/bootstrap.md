@@ -39,6 +39,61 @@ The concise generic operating process is materialized at
 `project_workflow.md`, which describes project-specific workflow and
 implementation context.
 
+## Context continuity and verification
+
+Use the same trigger policy for Coder and Architect contexts:
+
+- **NEW** means a new independent context or lost/cleared governing context.
+- **WARM** means this same context retains valid governing instructions.
+- **HANDOFF** means a distinct Coder takes over existing work.
+- **AUTHORITY TRANSITION** means the selected repository/milestone, prompt or
+  approved instruction, lifecycle/authorization, or applicable procedure may
+  have changed.
+- **RECOVERY** means context or authority validity is uncertain and must be
+  re-established. A model switch with intact context and an ordinary follow-up
+  are not triggers by themselves.
+
+At each Coder NEW, HANDOFF, AUTHORITY TRANSITION, or RECOVERY trigger, use a
+fresh bounded verification, supplying the intended identity from the task or
+trusted current context:
+
+```bash
+/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-verify \
+  --trigger NEW \
+  --expected-repository-key <key> \
+  --expected-repository-id <id> \
+  --expected-repository-root <absolute-path> \
+  --expected-milestone-id <milestone-id> \
+  --acknowledge-git-boundary
+```
+
+The command resolves current Repo Control state, checks those expected
+repository and milestone bindings, and records the bounded observed snapshot.
+Before consequential work, verify its repository identity, selected prompt
+path/hash, lifecycle/authorization/open conditions, current shared procedure
+and overlay, and Git boundary. Proceed only for `VERIFIED` and matching
+authority. `BLOCKED`, `PARTIAL_UNVERIFIED`, identity mismatch, or unavailable
+incoherent state means stop. The record does not authorize work or change
+lifecycle; trigger and Git-boundary acknowledgement are agent-reported,
+session identity is unverified, and provider-native hook delivery is
+unverified.
+
+For HANDOFF, also reconcile current prompt, approved decisions/dispatches,
+questions and blockers, test/closeout evidence, and read-only Git HEAD/status.
+Inspect dirty paths before assuming ownership; if unfinished work or dirty
+file ownership is ambiguous, stop and escalate. Do not request copied
+transcripts or ceremonial handoff packets when canonical state suffices.
+
+WARM interactions do not repeat full bootstrap or write duplicate records.
+Before acting on a material transition, refresh only the affected authority
+through the canonical interface; never rely on historic authorization. The
+Coder's `coder-verify` is idempotent for a repeated identical trigger and
+snapshot. The ChatGPT Architect follows the same trigger and stop policy with
+connected read-only `repo_status`, `repo_workflow`, `repo_prompt`, and bounded
+review evidence; it must not run local Coder commands or assume host-hook
+access. Architect statements remain agent-reported because its interface is
+read-only.
+
 ## Safe implementation procedure
 
 - Follow explicit Product Owner direction, the active prompt and approved

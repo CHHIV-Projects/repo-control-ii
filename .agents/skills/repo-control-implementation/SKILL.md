@@ -9,6 +9,24 @@ This instruction-only helper derives procedure from [Coding Agent Rules](../../.
 
 Invoke after `repoctl coder-context` and read-only repository preflight have confirmed the active prompt, mode, repository, branch, and authorization. The prompt owns the current objective and acceptance criteria; select the procedure below from its stated mode, not from assumptions.
 
+## Context continuity and handoff
+
+Follow the shared trigger contract: run `coder-verify` for Coder NEW,
+HANDOFF, AUTHORITY TRANSITION, and RECOVERY contexts with the expected
+repository key/ID/root and milestone; do not repeat it for ordinary WARM
+messages or intact-context model switches. Continue only when the recorded
+result is `VERIFIED` and the live prompt, authorization, procedure/overlay,
+and Git boundary match the intended task. A blocked, partial, mismatched, or
+unavailable result is a stop, not permission to infer authority.
+
+For HANDOFF, reconcile canonical prompt/decisions/questions/blockers and
+relevant test/closeout evidence with read-only HEAD, status, and dirty paths.
+Do not assume another Coder's ownership of dirty or unfinished work. Stop and
+escalate if ownership is unclear; do not require transcripts or a ceremonial
+handoff package when Repo Control evidence suffices. The audit trigger and
+Git-boundary acknowledgement remain agent-reported, and session identity is
+unverified.
+
 ## Choose the mode
 
 - **Reconnaissance only:** inspect relevant systems and dependencies; map behavior, authority boundaries, reuse/retirement candidates, options, and validation; recommend one direction and a practical roadmap. Do not edit implementation files or start coding.

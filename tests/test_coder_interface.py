@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,7 @@ from repoctl.workflow.coder_interface import (
     resolve_repository_entry,
     submit_coder_bug,
     submit_coder_closeout,
+    submit_coder_context_verification,
     submit_coder_question,
     submit_coder_test_result,
 )
@@ -677,6 +679,163 @@ class TestCoderInterface(unittest.TestCase):
         with self.assertRaises(CoderInterfaceError):
             submit_coder_test_result("summary", "source", "", repository_path=self.repo, state_root=self.state_root)
 
+    def test_coder_context_verification_is_bounded_idempotent_and_non_authoritative(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        overlay_path = "docs/context/project_workflow.md"
+        overlay_file = self.repo / overlay_path
+        overlay_file.parent.mkdir(parents=True, exist_ok=True)
+        overlay_file.write_text("test overlay\n", encoding="utf-8")
+        bundle = SimpleNamespace(release="1.1.0", manifest_sha256="a" * 64)
+        procedure_status = {
+            "status": "CURRENT",
+            "current_release": "1.1.0",
+            "lock_sha256": "b" * 64,
+            "overlay": {"path": overlay_path, "valid": True},
+        }
+        before_head = _git(self.repo, "rev-parse", "HEAD")
+        before_refs = _git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)")
+        before_index = _git(self.repo, "diff", "--cached", "--name-only")
+
+        with (
+            mock.patch("repoctl.procedure_governance.load_bundle", return_value=bundle),
+            mock.patch("repoctl.procedure_governance.inspect_procedure", return_value=procedure_status),
+        ):
+            result = submit_coder_context_verification(
+                "NEW",
+                git_boundary_acknowledged=True,
+                expected_repository_key="test-repository",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+            self.assertEqual(result["result"], "VERIFIED")
+            self.assertFalse(result["idempotent"])
+            self.assertEqual(result["phase"], "IN_PROGRESS")
+            self.assertEqual(result["authority_snapshot"]["milestone"]["id"], "M003.001")
+            self.assertEqual(result["authority_snapshot"]["git"]["excluded_workflow_sidecar"], [
+                "docs/milestones/M003.001_test_milestone_workflow.md"
+            ])
+
+            repeated = submit_coder_context_verification(
+                "NEW",
+                git_boundary_acknowledged=True,
+                expected_repository_key="test-repository",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(repeated["event_id"], result["event_id"])
+        workflow = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        self.assertEqual(workflow["phase"], "IN_PROGRESS")
+        self.assertEqual(workflow["event_count"], 3)
+        verification = workflow["event_history"][-1]["context_verification"]
+        self.assertEqual(verification["trigger_provenance"], "agent_reported")
+        self.assertEqual(verification["session_identity"], "unverified")
+        self.assertEqual(verification["provider_delivery"], "unverified")
+        self.assertNotIn("Line 1", json.dumps(verification))
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD"), before_head)
+        self.assertEqual(
+            _git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"),
+            before_refs,
+        )
+        self.assertEqual(_git(self.repo, "diff", "--cached", "--name-only"), before_index)
+
+        with self.assertRaisesRegex(CoderInterfaceError, "does not match expected key"):
+            submit_coder_context_verification(
+                "HANDOFF",
+                expected_repository_key="wrong",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+        with self.assertRaisesRegex(CoderInterfaceError, "does not match expected ID"):
+            submit_coder_context_verification(
+                "HANDOFF",
+                expected_repository_key="test-repository",
+                expected_repository_id="wrong-id",
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+        with self.assertRaisesRegex(CoderInterfaceError, "does not match expected root"):
+            submit_coder_context_verification(
+                "HANDOFF",
+                expected_repository_key="test-repository",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.temp_path,
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+
+    def test_coder_context_verification_records_blocked_without_resuming_waiting(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        waiting = _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "question_submitted",
+            "Need a Product Owner decision",
+            waiting_category="clarification",
+            waiting_reason="Waiting for Product Owner decision",
+        )
+        self.assertEqual(waiting["phase"], "WAITING")
+
+        result = submit_coder_context_verification(
+            "NEW",
+            git_boundary_acknowledged=True,
+            expected_repository_key="test-repository",
+            expected_repository_id=make_repository_id(self.repo),
+            expected_repository_root=self.repo.resolve(),
+            expected_milestone_id="M003.001",
+            repository_path=self.repo,
+            state_root=self.state_root,
+        )
+
+        self.assertEqual(result["result"], "BLOCKED")
+        self.assertFalse(result["authorization"]["authorized"])
+        workflow = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        self.assertEqual(workflow["phase"], "WAITING")
+        self.assertEqual(workflow["event_history"][-1]["phase_after"], "WAITING")
+        self.assertTrue(
+            workflow["event_history"][-1]["context_verification"]["authority_snapshot"][
+                "milestone"
+            ]["open_conditions"]["blocking"]
+        )
+
     def test_submit_coder_closeout(self):
         save_milestone_selection(self.repo, self.state_root, "M003.001")
         _record(
@@ -731,6 +890,56 @@ class TestCoderInterface(unittest.TestCase):
         ]
         for cmd in prohibited:
             self.assertNotIn(cmd, subcommands)
+
+    def test_coder_verify_cli_requires_expected_identity_and_preserves_outcome(self):
+        argv = [
+            "coder-verify",
+            "--trigger",
+            "NEW",
+            "--expected-repository-key",
+            "test-repository",
+            "--expected-repository-id",
+            make_repository_id(self.repo),
+            "--expected-repository-root",
+            str(self.repo.resolve()),
+            "--expected-milestone-id",
+            "M003.001",
+            "--acknowledge-git-boundary",
+            "--repository",
+            str(self.repo),
+            "--state-root",
+            str(self.state_root),
+        ]
+        parsed = build_parser().parse_args(argv)
+        self.assertEqual(parsed.command, "coder-verify")
+        self.assertEqual(parsed.trigger, "NEW")
+
+        payload = {
+            "result": "VERIFIED",
+            "authority_snapshot": {"repository": {"key": "test-repository"}},
+        }
+        with (
+            mock.patch(
+                "repoctl.workflow.coder_interface.submit_coder_context_verification",
+                return_value=payload,
+            ) as submit,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(main(argv), 0)
+        self.assertEqual(submit.call_args.kwargs["expected_repository_id"], make_repository_id(self.repo))
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+        with (
+            mock.patch(
+                "repoctl.workflow.coder_interface.submit_coder_context_verification",
+                return_value={"result": "BLOCKED"},
+            ),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.assertEqual(main(argv), 3)
+
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["coder-verify", "--trigger", "NEW"])
 
     def test_coder_intelligence_refresh_cli_is_fixed_and_authorization_gated(self):
         parsed = build_parser().parse_args(["coder-intelligence-refresh"])

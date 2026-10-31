@@ -117,6 +117,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    coder_verify_parser = subparsers.add_parser(
+        "coder-verify",
+        help="Record a bounded live authority check at a required context trigger",
+    )
+    coder_verify_parser.add_argument(
+        "--trigger",
+        required=True,
+        choices=["NEW", "HANDOFF", "AUTHORITY_TRANSITION", "RECOVERY"],
+    )
+    coder_verify_parser.add_argument("--expected-repository-key", required=True)
+    coder_verify_parser.add_argument("--expected-repository-id", required=True)
+    coder_verify_parser.add_argument("--expected-repository-root", required=True)
+    coder_verify_parser.add_argument("--expected-milestone-id", required=True)
+    coder_verify_parser.add_argument(
+        "--acknowledge-git-boundary",
+        action="store_true",
+        help="Record the agent's acknowledgement of the no-Git-mutation boundary",
+    )
+    coder_verify_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_verify_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_verify_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
+
     procedure_status_parser = subparsers.add_parser(
         "coder-procedure-status", help="Inspect shared Coder procedure release and generated-file drift"
     )
@@ -682,6 +706,38 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(status_data, ensure_ascii=False, indent=2))
         else:
             print(format_coder_status_text(status_data))
+        return 0
+
+    if args.command == "coder-verify":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            submit_coder_context_verification,
+        )
+
+        try:
+            result = submit_coder_context_verification(
+                args.trigger,
+                git_boundary_acknowledged=args.acknowledge_git_boundary,
+                expected_repository_key=args.expected_repository_key,
+                expected_repository_id=args.expected_repository_id,
+                expected_repository_root=args.expected_repository_root,
+                expected_milestone_id=args.expected_milestone_id,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder verification failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder verification failed: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result["result"] == "BLOCKED":
+            return 3
+        if result["result"] != "VERIFIED":
+            return 4
         return 0
 
     if args.command in {"coder-procedure-status", "coder-procedure-preview"}:
