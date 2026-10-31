@@ -12,10 +12,12 @@ from unittest import mock
 
 from repoctl.copilot_bootstrap import (
     MAX_CONTEXT_BYTES,
+    REPOSITORY_ID,
     _write_acceptance_receipt,
     build_session_start_response,
     main,
 )
+from repoctl.scanner.util import make_repository_id
 
 
 def _event(cwd: Path, **overrides):
@@ -43,7 +45,7 @@ def _context(root: Path):
             "name": "Repo Control II",
             "path": str(root),
             "key": "repo-control-ii",
-            "repository_id": "repo-control-ii--test",
+            "repository_id": make_repository_id(root),
             "milestone_root": "docs/milestones",
             "documents": {},
         },
@@ -125,9 +127,11 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _run(self, event=None, runner=None, **kwargs):
+        repository_id = kwargs.pop("repository_id", self.context["repository"]["repository_id"])
         return build_session_start_response(
             event or _event(self.root),
             repository_root=self.root,
+            repository_id=repository_id,
             python_executable=self.root / "python",
             runner=runner or _runner_for(self.context),
             observed_at="2026-10-26T12:00:00.000Z",
@@ -158,7 +162,7 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertLessEqual(len(context_text.encode("utf-8")), MAX_CONTEXT_BYTES)
         self.assertEqual(diagnostic["cli_exit_code"], 0)
         self.assertEqual(diagnostic["source_worktree"], str(self.root))
-        self.assertEqual(diagnostic["repository_id"], "repo-control-ii--test")
+        self.assertEqual(diagnostic["repository_id"], make_repository_id(self.root))
         self.assertTrue(diagnostic["cli_invocation_attempted"])
         self.assertNotIn("TOP_SECRET_PROMPT", json.dumps(diagnostic))
         self.assertEqual(
@@ -296,6 +300,98 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertEqual(json.loads(hook_output["additionalContext"])["status"], "CURRENT_CONTEXT")
         self.assertEqual(runner.last_kwargs["cwd"], str(subdirectory))
 
+    def test_two_fixture_repository_identities_bind_live_context_without_caching_prompts(self):
+        fixtures = (
+            ("fixture-app-a", "F001.001", "alpha_prompt.md"),
+            ("fixture-app-b", "F002.009", "beta_prompt.md"),
+        )
+        for key, milestone_id, prompt_name in fixtures:
+            with self.subTest(repository=key):
+                root = self.root / key
+                root.mkdir()
+                repository_id = make_repository_id(root)
+                context = _context(root)
+                prompt_path = f"docs/milestones/{prompt_name}"
+                prompt_content = f"# {milestone_id}\nFixture-specific prompt.\n"
+                prompt_file = root / prompt_path
+                prompt_file.write_text(prompt_content, encoding="utf-8")
+                context["repository"].update({
+                    "name": key,
+                    "key": key,
+                    "repository_id": repository_id,
+                })
+                context["selection"].update({
+                    "milestone_id": milestone_id,
+                    "prompt_path": prompt_path,
+                })
+                context["milestone"]["id"] = milestone_id
+                for dispatch in context["approved_architect_dispatches"]:
+                    dispatch["milestone_id"] = milestone_id
+                prompt_bytes = prompt_content.encode("utf-8")
+                context["prompt"].update({
+                    "path": prompt_path,
+                    "content": prompt_content,
+                    "size_bytes": len(prompt_bytes),
+                    "identity": hashlib.sha256(prompt_bytes).hexdigest(),
+                })
+                runner = _runner_for(context)
+                output, diagnostic = build_session_start_response(
+                    _event(root),
+                    repository_root=root,
+                    repository_key=key,
+                    repository_id=repository_id,
+                    python_executable=Path("/trusted/central/python"),
+                    runner=runner,
+                    observed_at="2026-10-30T00:00:00.000Z",
+                    observation_id=f"observation-{key}",
+                )
+                payload = json.loads(output["additionalContext"])
+                self.assertEqual(payload["repository"]["key"], key)
+                self.assertEqual(payload["repository"]["repository_id"], repository_id)
+                self.assertEqual(payload["selection"]["milestoneId"], milestone_id)
+                self.assertEqual(payload["selection"]["promptPath"], prompt_path)
+                self.assertEqual(payload["selection"]["promptSha256"], context["prompt"]["identity"])
+                self.assertEqual(diagnostic["repository_id"], repository_id)
+                self.assertEqual(runner.last_kwargs["cwd"], str(root))
+                self.assertNotIn("Fixture-specific prompt.", output["additionalContext"])
+                self.assertNotIn("TOP_SECRET_PROMPT", output["additionalContext"])
+
+    def test_registration_repository_id_must_match_canonical_root(self):
+        runner = _runner_for(self.context)
+        output, diagnostic = self._run(
+            runner=runner,
+            repository_id="other-repository--000000000000",
+        )
+        context = json.loads(output["additionalContext"])
+        self.assertEqual(context["status"], "INVALID_NO_AUTHORITY")
+        self.assertEqual(context["reason"], "repository_identity_mismatch")
+        self.assertFalse(diagnostic["cli_invocation_attempted"])
+        self.assertIsNone(runner.last_command)
+
+    def test_main_accepts_preview_binding_arguments(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        event = json.dumps(_event(self.root))
+        with mock.patch("repoctl.copilot_bootstrap.build_session_start_response") as builder:
+            builder.return_value = (
+                {"additionalContext": "{}"},
+                {"event": "repo_control_session_start", "outcome": "invalid_no_authority"},
+            )
+            result = main(
+                stdin=io.StringIO(event),
+                stdout=stdout,
+                stderr=stderr,
+                argv=[
+                    "--repository-root", str(self.root),
+                    "--repository-key", "fixture-repo",
+                    "--repository-id", "fixture-repo--0123456789ab",
+                ],
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(builder.call_args.kwargs["repository_root"], self.root)
+        self.assertEqual(builder.call_args.kwargs["repository_key"], "fixture-repo")
+        self.assertEqual(builder.call_args.kwargs["repository_id"], "fixture-repo--0123456789ab")
+
     def test_relative_worktree_and_malformed_event_fields_fail_closed(self):
         relative = self._run(event=_event("nested"))
         self.assertEqual(
@@ -427,7 +523,7 @@ class TestCopilotBootstrap(unittest.TestCase):
                         "cli_exit_code": 0,
                         "source_worktree": str(self.root),
                         "repository_key": "repo-control-ii",
-                        "repository_id": "repo-control-ii--test",
+                        "repository_id": REPOSITORY_ID,
                         "milestone_id": "M009.001",
                         "lifecycle": "IN_PROGRESS",
                         "delivery_marker": marker,

@@ -92,6 +92,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    bootstrap_preview_parser = subparsers.add_parser(
+        "coder-bootstrap-preview",
+        help="Render read-only per-repository Copilot and Codex hook registration previews",
+    )
+    bootstrap_preview_parser.add_argument("--repository-key", required=True)
+    bootstrap_preview_parser.add_argument("--repository-id", required=True)
+    bootstrap_preview_parser.add_argument("--repository-root", required=True)
+    bootstrap_preview_parser.add_argument(
+        "--python-executable",
+        default=None,
+        help="Trusted central Repo Control II Python interpreter (defaults to its project virtualenv)",
+    )
+
     coder_status_parser = subparsers.add_parser(
         "coder-status", help="Report active milestone lifecycle and workflow status for Coder agents"
     )
@@ -199,6 +212,22 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "coder-bootstrap-preview":
+        from .bootstrap_preview import TRUSTED_PYTHON, build_bootstrap_preview, format_bootstrap_preview
+
+        try:
+            preview = build_bootstrap_preview(
+                repository_key=args.repository_key,
+                repository_id=args.repository_id,
+                repository_root=args.repository_root,
+                python_executable=args.python_executable or TRUSTED_PYTHON,
+            )
+        except ValueError as exc:
+            print(f"bootstrap preview failed: {exc}", file=sys.stderr)
+            return 2
+        print(format_bootstrap_preview(preview), end="")
+        return 0
 
     if args.command == "scan":
         try:

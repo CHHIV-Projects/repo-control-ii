@@ -14,14 +14,16 @@ from .copilot_bootstrap import (
     MAX_CONTEXT_BYTES,
     MAX_EVENT_CHARS,
     PYTHON_EXECUTABLE,
+    REPOSITORY_ID,
+    REPOSITORY_KEY,
     REPOSITORY_ROOT,
     _write_acceptance_receipt,
     build_session_start_response as build_copilot_session_start_response,
 )
+from .copilot_bootstrap import _REPOSITORY_KEY_PATTERN
 
 ADAPTER_VERSION = "1"
 MAX_HOOK_OUTPUT_BYTES = 20_000
-REPOSITORY_ID = "repo-control-ii--945e7f88eafb"
 CODEX_SESSION_SOURCES = {"startup", "resume", "clear", "compact", "fork"}
 
 
@@ -89,6 +91,8 @@ def _map_context(
     observation_id: str,
     observed_at: str,
     repository_root: Path,
+    repository_key: str,
+    repository_id: str,
 ) -> dict[str, Any]:
     try:
         bootstrap = json.loads(bootstrap_text)
@@ -138,8 +142,8 @@ def _map_context(
         if not all(isinstance(item, dict) for item in (repository, selection, workflow)):
             return _invalid_context("bootstrap_payload_invalid", observation_id, observed_at, source)
         if (
-            repository.get("key") != "repo-control-ii"
-            or repository.get("repository_id") != REPOSITORY_ID
+            repository.get("key") != repository_key
+            or repository.get("repository_id") != repository_id
             or repository.get("path") != str(repository_root.resolve(strict=True))
         ):
             return _invalid_context("repository_identity_mismatch", observation_id, observed_at, source)
@@ -212,6 +216,8 @@ def build_session_start_response(
     event: Any,
     *,
     repository_root: Path = REPOSITORY_ROOT,
+    repository_key: str = REPOSITORY_KEY,
+    repository_id: str = REPOSITORY_ID,
     python_executable: Path = PYTHON_EXECUTABLE,
     runner: Callable[..., Any] | None = None,
     observed_at: str | None = None,
@@ -224,6 +230,16 @@ def build_session_start_response(
     cwd: str | None = None
     try:
         source, cwd = _validate_event(event)
+        if (
+            not repository_root.is_absolute()
+            or not isinstance(repository_key, str)
+            or not _REPOSITORY_KEY_PATTERN.fullmatch(repository_key)
+            or not isinstance(repository_id, str)
+            or not repository_id
+            or len(repository_id) > 128
+            or any(ord(char) < 33 or ord(char) > 126 for char in repository_id)
+        ):
+            raise _CodexHookError("invalid_expected_repository_identity")
     except _CodexHookError as exc:
         payload = _invalid_context(exc.reason, observation_id, observed_at, source)
         context, byte_count, estimated_tokens = _serialize_context(payload)
@@ -253,6 +269,8 @@ def build_session_start_response(
     bootstrap_output, bootstrap_diagnostic = build_copilot_session_start_response(
         helper_event,
         repository_root=repository_root,
+        repository_key=repository_key,
+        repository_id=repository_id,
         python_executable=python_executable,
         runner=runner,
         observed_at=observed_at,
@@ -266,6 +284,8 @@ def build_session_start_response(
         observation_id=observation_id,
         observed_at=observed_at,
         repository_root=repository_root,
+        repository_key=repository_key,
+        repository_id=repository_id,
     )
     try:
         context, byte_count, estimated_tokens = _serialize_context(payload)
@@ -410,6 +430,9 @@ def main(
     stderr = stderr or sys.stderr
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--acceptance-receipt", type=Path)
+    parser.add_argument("--repository-root", type=Path, default=REPOSITORY_ROOT)
+    parser.add_argument("--repository-key", default=REPOSITORY_KEY)
+    parser.add_argument("--repository-id", default=REPOSITORY_ID)
     args = parser.parse_args(argv)
     observed_at = _timestamp()
     observation_id = uuid4().hex
@@ -460,6 +483,9 @@ def main(
         else:
             result, diagnostic = build_session_start_response(
                 event,
+                repository_root=args.repository_root,
+                repository_key=args.repository_key,
+                repository_id=args.repository_id,
                 observed_at=observed_at,
                 observation_id=observation_id,
                 delivery_marker=delivery_marker,

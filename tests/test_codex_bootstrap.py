@@ -12,10 +12,10 @@ from unittest import mock
 
 from repoctl.codex_bootstrap import (
     MAX_HOOK_OUTPUT_BYTES,
-    REPOSITORY_ID,
     build_session_start_response,
     main,
 )
+from repoctl.scanner.util import make_repository_id
 
 
 def _event(cwd: Path, **overrides):
@@ -42,7 +42,7 @@ def _context(root: Path):
             "name": "Repo Control II",
             "path": str(root),
             "key": "repo-control-ii",
-            "repository_id": REPOSITORY_ID,
+            "repository_id": make_repository_id(root),
             "milestone_root": "docs/milestones",
             "documents": {},
         },
@@ -127,6 +127,7 @@ class TestCodexBootstrap(unittest.TestCase):
         return build_session_start_response(
             event or _event(self.root),
             repository_root=self.root,
+            repository_id=self.context["repository"]["repository_id"],
             python_executable=self.root / "python",
             runner=runner or _runner_for(self.context),
             observed_at="2026-10-28T02:00:00.000Z",
@@ -152,7 +153,7 @@ class TestCodexBootstrap(unittest.TestCase):
         self.assertEqual(context["schema"], "repo-control.continuity.v1")
         self.assertEqual(context["status"], "AUTHORIZED")
         self.assertEqual(context["repository"]["key"], "repo-control-ii")
-        self.assertEqual(context["repository"]["repository_id"], REPOSITORY_ID)
+        self.assertEqual(context["repository"]["repository_id"], make_repository_id(self.root))
         self.assertEqual(context["repository"]["path"], str(self.root))
         self.assertEqual(context["worktree"]["cwd"], str(self.root))
         self.assertEqual(context["selection"]["milestone_id"], "M009.003")
@@ -196,6 +197,90 @@ class TestCodexBootstrap(unittest.TestCase):
             with self.subTest(source=source):
                 output, _ = self._run(event=_event(self.root, source=source))
                 self.assertEqual(self._context_from_output(output)["observation"]["source"], source)
+
+    def test_two_fixture_repository_identities_use_codex_envelope_and_fresh_prompt_hashes(self):
+        fixtures = (
+            ("fixture-vocab-a", "V001.002", "alpha_prompt.md"),
+            ("fixture-vocab-b", "V004.003", "beta_prompt.md"),
+        )
+        for key, milestone_id, prompt_name in fixtures:
+            with self.subTest(repository=key):
+                root = self.root / key
+                root.mkdir()
+                repository_id = make_repository_id(root)
+                context = _context(root)
+                prompt_path = f"docs/milestones/{prompt_name}"
+                prompt_content = f"# {milestone_id}\nFixture-specific prompt.\n"
+                (root / prompt_path).write_text(prompt_content, encoding="utf-8")
+                context["repository"].update({
+                    "name": key,
+                    "key": key,
+                    "repository_id": repository_id,
+                })
+                context["selection"].update({
+                    "milestone_id": milestone_id,
+                    "prompt_path": prompt_path,
+                })
+                context["milestone"]["id"] = milestone_id
+                for dispatch in context["approved_architect_dispatches"]:
+                    dispatch["milestone_id"] = milestone_id
+                prompt_bytes = prompt_content.encode("utf-8")
+                context["prompt"].update({
+                    "path": prompt_path,
+                    "content": prompt_content,
+                    "size_bytes": len(prompt_bytes),
+                    "identity": hashlib.sha256(prompt_bytes).hexdigest(),
+                })
+                runner = _runner_for(context)
+                output, diagnostic = build_session_start_response(
+                    _event(root),
+                    repository_root=root,
+                    repository_key=key,
+                    repository_id=repository_id,
+                    python_executable=Path("/trusted/central/python"),
+                    runner=runner,
+                    observed_at="2026-10-30T00:00:00.000Z",
+                    observation_id=f"observation-{key}",
+                )
+                payload = self._context_from_output(output)
+                self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "SessionStart")
+                self.assertEqual(payload["schema"], "repo-control.continuity.v1")
+                self.assertEqual(payload["repository"]["key"], key)
+                self.assertEqual(payload["repository"]["repository_id"], repository_id)
+                self.assertEqual(payload["selection"]["milestone_id"], milestone_id)
+                self.assertEqual(payload["selection"]["prompt_path"], prompt_path)
+                self.assertEqual(payload["prompt"]["sha256"], context["prompt"]["identity"])
+                self.assertEqual(diagnostic["repository_id"], repository_id)
+                self.assertEqual(runner.last_kwargs["cwd"], str(root))
+                self.assertNotIn("Fixture-specific prompt.", json.dumps(output))
+                self.assertNotIn("/private/session.jsonl", json.dumps(output))
+
+    def test_main_accepts_preview_binding_arguments(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        event = json.dumps(_event(self.root))
+        with mock.patch("repoctl.codex_bootstrap.build_session_start_response") as builder:
+            builder.return_value = (
+                {"hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "{}",
+                }},
+                {"event": "repo_control_codex_session_start", "outcome": "INVALID_NO_AUTHORITY"},
+            )
+            result = main(
+                stdin=io.StringIO(event),
+                stdout=stdout,
+                stderr=stderr,
+                argv=[
+                    "--repository-root", str(self.root),
+                    "--repository-key", "fixture-repo",
+                    "--repository-id", "fixture-repo--0123456789ab",
+                ],
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(builder.call_args.kwargs["repository_root"], self.root)
+        self.assertEqual(builder.call_args.kwargs["repository_key"], "fixture-repo")
+        self.assertEqual(builder.call_args.kwargs["repository_id"], "fixture-repo--0123456789ab")
 
     def test_no_authority_and_incoherent_stale_authority_are_not_success(self):
         self.context["milestone"]["phase"] = "WAITING"

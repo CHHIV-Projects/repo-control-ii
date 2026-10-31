@@ -15,10 +15,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, TextIO
 from uuid import uuid4
 
+from .scanner.util import make_repository_id
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_EXECUTABLE = REPOSITORY_ROOT / ".venv" / "bin" / "python"
 REPOSITORY_KEY = "repo-control-ii"
+REPOSITORY_ID = make_repository_id(REPOSITORY_ROOT)
 ADAPTER_VERSION = "1"
+_REPOSITORY_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 CLI_TIMEOUT_SECONDS = 10
 MAX_EVENT_CHARS = 1_000_000
 MAX_CLI_OUTPUT_BYTES = 1_000_000
@@ -257,6 +261,8 @@ def _condition_references(items: list[Any]) -> dict[str, Any]:
 def _validate_context(
     data: Any,
     repository_root: Path,
+    repository_key: str,
+    repository_id: str,
     source: str,
     observation_id: str,
     observed_at: str,
@@ -265,13 +271,13 @@ def _validate_context(
     repository = _mapping(context.get("repository"))
     repo_key = _required_text(repository, "key")
     repo_path = _required_text(repository, "path")
-    repository_id = _bounded_identifier(
+    reported_repository_id = _bounded_identifier(
         _required_text(repository, "repository_id"),
         "repository_identity_mismatch",
     )
     repo_name = _required_text(repository, "name")
     _required_text(repository, "milestone_root")
-    if repo_key != REPOSITORY_KEY:
+    if repo_key != repository_key or reported_repository_id != repository_id:
         raise _BootstrapError("repository_identity_mismatch")
     try:
         reported_root = Path(repo_path).resolve(strict=True)
@@ -459,6 +465,8 @@ def build_session_start_response(
     event: Any,
     *,
     repository_root: Path = REPOSITORY_ROOT,
+    repository_key: str = REPOSITORY_KEY,
+    repository_id: str = REPOSITORY_ID,
     python_executable: Path = PYTHON_EXECUTABLE,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     observed_at: str | None = None,
@@ -471,7 +479,19 @@ def build_session_start_response(
     cli_exit_code: int | None = None
     try:
         source, cwd = _validate_event(event)
+        if (
+            not repository_root.is_absolute()
+            or not isinstance(repository_key, str)
+            or not _REPOSITORY_KEY_PATTERN.fullmatch(repository_key)
+            or not isinstance(repository_id, str)
+            or not repository_id
+            or len(repository_id) > 128
+            or any(ord(char) < 33 or ord(char) > 126 for char in repository_id)
+        ):
+            raise _BootstrapError("invalid_expected_repository_identity")
         canonical_root, worktree = _resolve_worktree(cwd, repository_root)
+        if repository_id != make_repository_id(canonical_root):
+            raise _BootstrapError("repository_identity_mismatch")
     except _BootstrapError as exc:
         return _invalid_result(exc.reason, observation_id, observed_at, source, cli_exit_code)
 
@@ -578,6 +598,8 @@ def build_session_start_response(
         payload, core = _validate_context(
             context_data,
             canonical_root,
+            repository_key,
+            repository_id,
             source,
             observation_id,
             observed_at,
@@ -764,6 +786,9 @@ def main(
     stderr = stderr or sys.stderr
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--acceptance-receipt", type=Path)
+    parser.add_argument("--repository-root", type=Path, default=REPOSITORY_ROOT)
+    parser.add_argument("--repository-key", default=REPOSITORY_KEY)
+    parser.add_argument("--repository-id", default=REPOSITORY_ID)
     args = parser.parse_args(argv)
     observed_at = _timestamp()
     observation_id = uuid4().hex
@@ -779,6 +804,9 @@ def main(
         else:
             result = build_session_start_response(
                 event,
+                repository_root=args.repository_root,
+                repository_key=args.repository_key,
+                repository_id=args.repository_id,
                 observed_at=observed_at,
                 observation_id=observation_id,
                 delivery_marker=(
