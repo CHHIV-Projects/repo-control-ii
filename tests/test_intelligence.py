@@ -162,8 +162,12 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(status["source"]["file_count"], 1)
         path = self.repository_path / "src/one.py"
         original = path.read_bytes()
+        head_before_edit = source_snapshot(self.repository)["head"]
         path.write_bytes(original + b"\n")
-        self.assertEqual(graph_status(self.repository, self.root)["state"], "STALE")
+        changed = graph_status(self.repository, self.root)
+        self.assertEqual(changed["state"], "STALE")
+        self.assertEqual(changed["freshness_reason"], "supported_source_inputs_changed")
+        self.assertEqual(source_snapshot(self.repository)["head"], head_before_edit)
         self.assertEqual(self.query()["outcome"], "STALE")
         path.write_bytes(original)
         self.assertEqual(graph_status(self.repository, self.root)["state"], "CURRENT")
@@ -180,6 +184,129 @@ class IntelligenceTests(unittest.TestCase):
         manifest.update(producer="0.9.91", state="BUILDING")
         write_json(manifest_path, manifest)
         self.assertEqual(graph_status(self.repository, self.root)["state"], "FAILED")
+
+    def test_documentation_and_git_provenance_changes_do_not_stale_graph(self):
+        source = self.repository_path / "src/one.py"
+        subprocess.run(
+            ["git", "-C", str(self.repository_path), "add", "src/one.py"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repository_path), "commit", "-qm", "add supported source"],
+            check=True,
+            capture_output=True,
+        )
+
+        class CountingProvider(FakeProvider):
+            def __init__(inner_self):
+                inner_self.build_count = 0
+
+            def build(inner_self, source_path, output):
+                inner_self.build_count += 1
+                super().build(source_path, output)
+
+        provider = CountingProvider()
+        built = build_graph(self.repository, self.state, provider)
+        build_head = built["source"]["head"]
+        build_branch = built["source"]["branch"]
+        (self.repository_path / "README.md").write_text("# Documentation-only change\n")
+        subprocess.run(
+            ["git", "-C", str(self.repository_path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repository_path), "commit", "-qm", "documentation-only change"],
+            check=True,
+            capture_output=True,
+        )
+
+        after_commit = graph_status(self.repository, self.root)
+        self.assertEqual(after_commit["state"], "CURRENT")
+        self.assertEqual(after_commit["freshness_reason"], "supported_source_inputs_current")
+        self.assertEqual(after_commit["provenance_changes"], ["head_changed"])
+        self.assertEqual(after_commit["provenance_reason"], "git_provenance_changed")
+        self.assertEqual(after_commit["source"]["head"], build_head)
+        self.assertNotEqual(after_commit["current_source"]["head"], build_head)
+        self.assertEqual(after_commit["source"]["branch"], build_branch)
+        self.assertEqual(after_commit["source"]["semantic_identity"], built["source"]["semantic_identity"])
+
+        refreshed = refresh_graph(
+            self.repository,
+            self.state,
+            actor="po_manual",
+            registry_generation=0,
+            provider=provider,
+        )
+        self.assertEqual(refreshed["outcome"], "CURRENT")
+        self.assertEqual(refreshed["receipt"]["action"], "noop_current")
+        self.assertEqual(provider.build_count, 1)
+
+        subprocess.run(
+            ["git", "-C", str(self.repository_path), "checkout", "-qb", "same-source-branch"],
+            check=True,
+            capture_output=True,
+        )
+        after_branch_change = graph_status(self.repository, self.root)
+        self.assertEqual(after_branch_change["state"], "CURRENT")
+        self.assertEqual(after_branch_change["provenance_changes"], ["head_changed", "branch_changed"])
+        self.assertEqual(after_branch_change["source"]["head"], build_head)
+        self.assertEqual(after_branch_change["source"]["branch"], build_branch)
+
+    def test_provider_schema_options_and_legacy_metadata_are_incompatible(self):
+        self.build()
+        manifest_path = self.root / "manifest.json"
+        original = json.loads(manifest_path.read_text())
+        cases = (
+            ("producer", lambda item: item.update(producer="future"), "producer_version_changed"),
+            ("schema", lambda item: item.update(graph_schema=99), "graph_schema_changed"),
+            (
+                "options",
+                lambda item: item["source"]["options"].update(extractor_version=99),
+                "build_options_changed",
+            ),
+        )
+        for name, mutate, reason in cases:
+            with self.subTest(name=name):
+                manifest = copy.deepcopy(original)
+                mutate(manifest)
+                write_json(manifest_path, manifest)
+                status = graph_status(self.repository, self.root)
+                self.assertEqual(status["state"], "INCOMPATIBLE")
+                self.assertEqual(status["freshness_reason"], "graph_metadata_incompatible")
+                self.assertIn(reason, status["incompatibility_reasons"])
+
+        legacy = copy.deepcopy(original)
+        legacy["source"].pop("semantic_identity")
+        legacy["source"].pop("semantic_identity_schema")
+        write_json(manifest_path, legacy)
+        legacy_status = graph_status(self.repository, self.root)
+        self.assertEqual(legacy_status["state"], "INCOMPATIBLE")
+        self.assertIn(
+            "semantic_identity_schema_missing_or_incompatible",
+            legacy_status["incompatibility_reasons"],
+        )
+        self.assertIn("semantic_identity_missing_or_invalid", legacy_status["incompatibility_reasons"])
+
+        inconsistent = copy.deepcopy(original)
+        inconsistent["source"]["semantic_identity"] = "0" * 64
+        write_json(manifest_path, inconsistent)
+        inconsistent_status = graph_status(self.repository, self.root)
+        self.assertEqual(inconsistent_status["state"], "INCOMPATIBLE")
+        self.assertIn("semantic_identity_mismatch", inconsistent_status["incompatibility_reasons"])
+
+    def test_graph_generation_cannot_cross_repository_identity(self):
+        self.build()
+        other_path = _repo(self.directory, "other-repository", "other")
+        (other_path / "src").mkdir()
+        (other_path / "src/one.py").write_text("def one():\n    return 1\n")
+        other = RepositoryRegistry.single(other_path).active()
+
+        status = graph_status(other, self.root)
+
+        self.assertEqual(status["state"], "INCOMPATIBLE")
+        self.assertIn("repository_identity_changed", status["incompatibility_reasons"])
 
     def test_building_failure_no_stale_fallback_and_copy_cleanup(self):
         parent = self
@@ -803,14 +930,43 @@ class IntelligenceTests(unittest.TestCase):
         for key in ("repository", "graph", "operation", "arguments", "evidence", "counts", "outcome"):
             self.assertEqual(architect[key], coder[key])
         self.assertEqual(coder["outcome"], "OK")
+        self.assertEqual(coder["graph"]["freshness_reason"], "supported_source_inputs_current")
         self.assertEqual(coder["counts"]["nodes"], 1)
+
+        stats_arguments = {
+            "expected_repository_key": "default",
+            "expected_generation": "0",
+            "request": json.dumps({"operation": "stats"}),
+        }
+        with patch("repoctl.intelligence.service.GraphifyProvider", side_effect=AssertionError("stats must not query or rebuild")):
+            current_stats = browser.get(
+                "/api/coder/v1/intelligence",
+                query_string=stats_arguments,
+            ).get_json()
+        self.assertEqual(current_stats["outcome"], "OK")
+        self.assertEqual(current_stats["graph"]["state"], "CURRENT")
+        self.assertEqual(current_stats["graph"]["provenance_reason"], "unchanged")
+
+        source = self.repository_path / "src/one.py"
+        original_source = source.read_bytes()
+        source.write_bytes(original_source + b"\n# dirty source\n")
+        with patch("repoctl.intelligence.service.GraphifyProvider", side_effect=AssertionError("stats must not query or rebuild")):
+            stale_stats = browser.get(
+                "/api/coder/v1/intelligence",
+                query_string=stats_arguments,
+            ).get_json()
+        self.assertEqual(stale_stats["outcome"], "STALE")
+        self.assertEqual(stale_stats["graph"]["state"], "STALE")
+        self.assertEqual(stale_stats["graph"]["freshness_reason"], "supported_source_inputs_changed")
+        source.write_bytes(original_source)
+
         arguments["expected_generation"] = "1"
         self.assertEqual(browser.get("/api/architect/v1/intelligence", query_string=arguments).status_code, 409)
         self.assertEqual(browser.post("/intelligence/build", data={"approve": "yes"}).status_code, 400)
         page = browser.get("/intelligence")
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"Repository Intelligence Value", page.data)
-        self.assertIn(b"2</strong> recorded uses", page.data)
+        self.assertIn(b"4</strong> recorded uses", page.data)
         self.assertIn(b"Only explicit controlled benchmark runs appear here", page.data)
         self.assertIn(b"Latest comparable benchmark:</strong> Not measured", page.data)
         self.assertIn(b"% of rated uses (n=0)", page.data)
@@ -820,6 +976,30 @@ class IntelligenceTests(unittest.TestCase):
             before, subprocess.check_output(["git", "-C", str(self.repository_path), "status", "--porcelain=v1"])
         )
         self.assertEqual({row["consumer"] for row in measurements.summary(self.root)["recent"]}, {"Architect", "Coder"})
+
+    def test_stats_reports_not_available_for_unsupported_source_scope(self):
+        source = self.repository_path / "src/one.py"
+        source.unlink()
+        app = create_web_app(repository_path=str(self.repository_path), state_root=self.state)
+        browser = app.test_client()
+        arguments = {
+            "expected_repository_key": "default",
+            "expected_generation": "0",
+            "request": json.dumps({"operation": "stats"}),
+        }
+
+        with patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            side_effect=AssertionError("stats must not query or rebuild"),
+        ):
+            result = browser.get(
+                "/api/coder/v1/intelligence",
+                query_string=arguments,
+            ).get_json()
+
+        self.assertEqual(result["outcome"], "NOT_AVAILABLE")
+        self.assertEqual(result["graph"]["state"], "NOT_AVAILABLE")
+        self.assertEqual(result["graph"]["freshness_reason"], "no_supported_source_files")
 
     def test_scanner_publication_preserves_graph_and_measurements(self):
         from repoctl.scanner.core import run_scan

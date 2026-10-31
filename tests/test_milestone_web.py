@@ -145,7 +145,8 @@ class MilestoneWebTests(unittest.TestCase):
                 },
             )
             self.assertEqual(query.status_code, 200)
-            self.assertEqual(query.get_json()["graph"]["state"], "MISSING")
+            self.assertEqual(query.get_json()["graph"]["state"], "NOT_AVAILABLE")
+            self.assertEqual(query.get_json()["outcome"], "NOT_AVAILABLE")
             with mock.patch("repoctl.web.app.refresh_graph") as refresh:
                 approval = client.post(
                     "/milestones/workflow/event",

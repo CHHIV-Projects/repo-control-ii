@@ -294,12 +294,16 @@ On **Intelligence Value**, check the selected repository and graph state:
 |---|---|
 | `MISSING` | No usable graph has been built. |
 | `BUILDING` | A deliberate build is in progress. |
-| `CURRENT` | The graph matches the recorded source identity and options. |
-| `STALE` | Source identity or options changed since the build. |
+| `CURRENT` | Supported source bytes, scope/options, producer and schema match the graph's semantic input identity. |
+| `STALE` | Supported source inputs changed since the build; refresh only when new structural evidence would materially help. |
 | `FAILED` | A build or graph check failed; review the explicit error. |
-| `INCOMPATIBLE` | The stored graph does not match the supported schema/producer. |
+| `INCOMPATIBLE` | Required metadata is incomplete or the repository, producer, extractor/options, or graph schema does not match. |
+| `NOT_AVAILABLE` | The selected repository has no supported source files for this graph. |
 
-Only `CURRENT` evidence is served; queries do not refresh it. Product Owner
+HEAD and branch are retained as factual build provenance, but changes to those
+values alone do not make unchanged semantic source inputs STALE. Status reports
+freshness reason and Git provenance changes separately. Only `CURRENT` evidence
+is served; queries do not refresh it. Product Owner
 **Approve & Start** automatically establishes a CURRENT baseline for supported
 repositories before implementation begins. A required build failure leaves the
 milestone unstarted; repositories with no supported code source report
@@ -322,6 +326,14 @@ runtime behavior, and missing graph edges do not prove that behavior is absent.
 Refresh receipts and counts are shown separately from query-use ratings and
 comparative measurements; they contain bounded provenance, not source or query
 bodies.
+
+Closeout use classification is separate from freshness and maintenance:
+`USED` means a structural graph query materially informed the work; `NOT USED`
+means Intelligence was not materially helpful or needed, regardless of graph
+status; `NOT AVAILABLE` is reserved for genuinely unsupported or inaccessible
+capability/evidence with the cause stated. A `STALE` graph alone is not
+`NOT AVAILABLE`. Report refresh decisions and receipts separately from query
+uses and usefulness ratings.
 
 The **Intelligence Value** page includes an interpretation disclosure and
 serves the [Reading Intelligence Value tutorial](./intelligence_value_tutorial.md)

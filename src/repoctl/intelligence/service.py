@@ -26,7 +26,10 @@ RELATIONS = (
 )
 SOURCE_SUFFIXES = frozenset((".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".cs", ".rb", ".sh"))
 EXCLUDED_PARTS = frozenset((".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "vendor"))
-OPTIONS = {"code_only": True, "max_workers": 2, "scope_version": 1, "excluded_parts": sorted(EXCLUDED_PARTS),
+GRAPH_SCHEMA_VERSION = 1
+FRESHNESS_IDENTITY_SCHEMA_VERSION = 1
+OPTIONS = {"code_only": True, "max_workers": 2, "scope_version": 1, "extractor_version": 1,
+           "excluded_parts": sorted(EXCLUDED_PARTS),
            "suffixes": sorted(SOURCE_SUFFIXES), "max_files": 10000, "max_source_bytes": 64 * 1024 * 1024}
 DEFAULT_BOUNDS = {"max_bytes": 48 * 1024, "max_nodes": 60, "max_edges": 120, "depth": 2, "timeout": 5}
 MAX_BOUNDS = {"max_bytes": 64 * 1024, "max_nodes": 120, "max_edges": 240, "depth": 4, "timeout": 10}
@@ -111,6 +114,22 @@ def source_snapshot(repository: RepositoryEntry, destination: Path | None = None
     }
 
 
+def semantic_source_identity(
+    snapshot: dict[str, Any],
+    *,
+    producer: str = VERSION,
+    graph_schema: int = GRAPH_SCHEMA_VERSION,
+) -> str:
+    identity = {
+        "schema_version": FRESHNESS_IDENTITY_SCHEMA_VERSION,
+        "source_content_hash": snapshot["content_hash"],
+        "options": snapshot["options"],
+        "producer": producer,
+        "graph_schema": graph_schema,
+    }
+    return hashlib.sha256(encoded(identity)).hexdigest()
+
+
 def write_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
@@ -135,23 +154,118 @@ def read_manifest(root: Path) -> dict[str, Any] | None:
 
 def graph_status(repository: RepositoryEntry, root: Path) -> dict[str, Any]:
     manifest = read_manifest(root)
+    repository_identity = {
+        "key": repository.key,
+        "id": repository.repository_id,
+        "root": str(repository.path.resolve()),
+    }
     if manifest is None:
-        return {"state": "MISSING", "generation": None}
-    view = {key: manifest.get(key) for key in ("state", "generation", "built_at", "producer", "graph_schema", "graph_hash", "error")}
+        current = source_snapshot(repository)
+        if not current["files"]:
+            return {
+                "state": "NOT_AVAILABLE",
+                "generation": None,
+                "freshness_reason": "no_supported_source_files",
+                "repository": repository_identity,
+                "current_source": {
+                    "content_hash": current["content_hash"],
+                    "head": current["head"],
+                    "branch": current["branch"],
+                    "source_bytes": current["source_bytes"],
+                    "file_count": 0,
+                    "semantic_identity": semantic_source_identity(current),
+                },
+            }
+        return {
+            "state": "MISSING",
+            "generation": None,
+            "freshness_reason": "graph_missing",
+            "repository": repository_identity,
+        }
+    view = {
+        key: manifest.get(key)
+        for key in (
+            "state", "generation", "built_at", "producer", "graph_schema",
+            "graph_hash", "error", "repository_id", "repository_key", "repository_root",
+        )
+    }
+    view["repository"] = repository_identity
     if manifest.get("state") == "BUILDING":
         with safe_path(root, "build.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
+                view["freshness_reason"] = "build_in_progress"
                 return view
-        view.update(state="FAILED", error="Build was interrupted; explicit rebuild required.")
+        view.update(
+            state="FAILED",
+            error="Build was interrupted; explicit rebuild required.",
+            freshness_reason="interrupted_build",
+        )
         return view
     if manifest.get("state") == "FAILED":
+        view["freshness_reason"] = "previous_build_failed"
         return view
-    if (manifest.get("producer") != VERSION or manifest.get("graph_schema") != 1
-        or manifest.get("repository_id") != repository.repository_id
-        or manifest.get("source", {}).get("options") != OPTIONS):
-        view["state"] = "INCOMPATIBLE"
+    source = manifest.get("source")
+    incompatibilities = []
+    if manifest.get("repository_id") != repository.repository_id:
+        incompatibilities.append("repository_identity_changed")
+    if manifest.get("repository_root") != str(repository.path.resolve()):
+        incompatibilities.append("repository_root_changed_or_missing")
+    if manifest.get("producer") != VERSION:
+        incompatibilities.append("producer_version_changed")
+    if manifest.get("graph_schema") != GRAPH_SCHEMA_VERSION:
+        incompatibilities.append("graph_schema_changed")
+    if not isinstance(source, dict):
+        incompatibilities.append("source_metadata_missing")
+    else:
+        if source.get("options") != OPTIONS:
+            incompatibilities.append("build_options_changed")
+        files = source.get("files")
+        if (
+            not isinstance(files, dict)
+            or not files
+            or any(
+                not isinstance(path, str)
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                for path, digest in files.items()
+            )
+        ):
+            incompatibilities.append("source_file_metadata_missing_or_invalid")
+        elif hashlib.sha256(encoded(files)).hexdigest() != source.get("content_hash"):
+            incompatibilities.append("source_content_hash_mismatch")
+        if (
+            type(source.get("source_bytes")) is not int
+            or source["source_bytes"] < 0
+            or "head" not in source
+            or not isinstance(source.get("branch"), dict)
+        ):
+            incompatibilities.append("git_provenance_missing_or_invalid")
+        if source.get("semantic_identity_schema") != FRESHNESS_IDENTITY_SCHEMA_VERSION:
+            incompatibilities.append("semantic_identity_schema_missing_or_incompatible")
+        semantic_identity = source.get("semantic_identity")
+        if not isinstance(semantic_identity, str) or len(semantic_identity) != 64 or any(
+            character not in "0123456789abcdef" for character in semantic_identity
+        ):
+            incompatibilities.append("semantic_identity_missing_or_invalid")
+        elif (
+            isinstance(source.get("content_hash"), str)
+            and source.get("options") == OPTIONS
+            and semantic_identity != semantic_source_identity(
+                source,
+                producer=manifest.get("producer"),
+                graph_schema=manifest.get("graph_schema"),
+            )
+        ):
+            incompatibilities.append("semantic_identity_mismatch")
+    if incompatibilities:
+        view.update(
+            state="INCOMPATIBLE",
+            freshness_reason="graph_metadata_incompatible",
+            incompatibility_reasons=incompatibilities,
+        )
         return view
     generation = manifest.get("generation", "")
     if not isinstance(generation, str) or len(generation) != 32 or any(c not in "0123456789abcdef" for c in generation):
@@ -161,13 +275,40 @@ def graph_status(repository: RepositoryEntry, root: Path) -> dict[str, Any]:
         view.update(state="FAILED", error="Graph is missing or oversized.")
         return view
     if hashlib.sha256(graph.read_bytes()).hexdigest() != manifest.get("graph_hash"):
-        view.update(state="FAILED", error="Graph hash mismatch.")
+        view.update(state="FAILED", error="Graph hash mismatch.", freshness_reason="graph_hash_mismatch")
         return view
     current = source_snapshot(repository)
-    previous = manifest["source"]
-    view["source"] = {key: previous.get(key) for key in ("content_hash", "head", "branch", "source_bytes")}
-    view["source"]["file_count"] = len(previous["files"])
-    view["state"] = "CURRENT" if all(current[key] == previous.get(key) for key in ("content_hash", "head", "branch", "options")) else "STALE"
+    current_identity = semantic_source_identity(current)
+    previous = source
+    view["source"] = {
+        key: previous.get(key)
+        for key in (
+            "content_hash", "head", "branch", "source_bytes",
+            "semantic_identity_schema", "semantic_identity",
+        )
+    }
+    view["source"]["file_count"] = len(previous.get("files", {}))
+    view["current_source"] = {
+        "content_hash": current["content_hash"],
+        "head": current["head"],
+        "branch": current["branch"],
+        "source_bytes": current["source_bytes"],
+        "file_count": len(current["files"]),
+        "semantic_identity": current_identity,
+    }
+    provenance_changes = []
+    if current["head"] != previous.get("head"):
+        provenance_changes.append("head_changed")
+    if current["branch"] != previous.get("branch"):
+        provenance_changes.append("branch_changed")
+    view["provenance_changes"] = provenance_changes
+    view["provenance_reason"] = "git_provenance_changed" if provenance_changes else "unchanged"
+    if not current["files"]:
+        view.update(state="NOT_AVAILABLE", freshness_reason="no_supported_source_files")
+    elif current_identity == previous["semantic_identity"]:
+        view.update(state="CURRENT", freshness_reason="supported_source_inputs_current")
+    else:
+        view.update(state="STALE", freshness_reason="supported_source_inputs_changed")
     return view
 
 
@@ -206,26 +347,41 @@ def build_graph(
         source = output / "source"
         source.mkdir(mode=0o700)
         manifest = {
-            "state": "BUILDING", "repository_id": repository.repository_id, "repository_key": repository.key,
+            "state": "BUILDING", "repository_id": repository.repository_id,
+            "repository_key": repository.key, "repository_root": str(repository.path.resolve()),
             "generation": generation, "built_at": datetime.now(UTC).isoformat(),
-            "producer": provider.version, "graph_schema": 1,
+            "producer": provider.version, "graph_schema": GRAPH_SCHEMA_VERSION,
         }
         write_json(root / "manifest.json", manifest)
         try:
             snapshot = source_snapshot(repository, source)
             if not snapshot["files"]:
                 raise IntelligenceError("No supported code files in the selected source scope.")
+            snapshot["semantic_identity_schema"] = FRESHNESS_IDENTITY_SCHEMA_VERSION
+            snapshot["semantic_identity"] = semantic_source_identity(
+                snapshot,
+                producer=provider.version,
+                graph_schema=GRAPH_SCHEMA_VERSION,
+            )
             provider.build(source, output)
             graph = safe_path(output, "graph.json")
             if graph.stat().st_size > MAX_GRAPH_BYTES:
                 raise IntelligenceError("Graph exceeds size cap.")
             payload = json.loads(graph.read_bytes())
             metadata = payload.get("graph", {})
-            if metadata.get("schema_version") != 1 or metadata.get("graphify_version") != VERSION:
+            if (
+                metadata.get("schema_version") != GRAPH_SCHEMA_VERSION
+                or metadata.get("graphify_version") != VERSION
+            ):
                 raise IntelligenceError("Graph producer/schema incompatible.")
             # Compare after extraction so concurrent editing cannot create a false CURRENT generation.
             after = source_snapshot(repository)
-            current = all(snapshot[key] == after[key] for key in ("content_hash", "head", "branch", "options"))
+            after_identity = semantic_source_identity(
+                after,
+                producer=provider.version,
+                graph_schema=GRAPH_SCHEMA_VERSION,
+            )
+            current = snapshot["semantic_identity"] == after_identity
             manifest.update(
                 state="CURRENT" if current else "STALE", source=snapshot,
                 graph_hash=hashlib.sha256(graph.read_bytes()).hexdigest(),
@@ -283,8 +439,8 @@ def refresh_graph(
         "action": "checking",
         "generation_before": initial.get("generation"),
         "generation_after": initial.get("generation"),
-        "source_identity_before": initial.get("source", {}).get("content_hash"),
-        "source_identity_after": initial.get("source", {}).get("content_hash"),
+        "source_identity_before": initial.get("source", {}).get("semantic_identity"),
+        "source_identity_after": initial.get("source", {}).get("semantic_identity"),
         "final_freshness": initial["state"],
         "elapsed_ms": 0.0,
         "error_code": None,
@@ -309,7 +465,7 @@ def refresh_graph(
                 if source_identity_before is not None
                 else receipt["source_identity_before"]
             ),
-            source_identity_after=graph.get("source", {}).get("content_hash"),
+            source_identity_after=graph.get("source", {}).get("semantic_identity"),
             final_freshness=graph["state"],
             elapsed_ms=(time.monotonic() - started) * 1000,
             error_code=error_code,
@@ -341,13 +497,13 @@ def refresh_graph(
             "NOT_AVAILABLE",
             action="not_available",
             graph=unavailable,
-            source_identity_before=snapshot["content_hash"],
+            source_identity_before=semantic_source_identity(snapshot),
         )
 
     measurements.finish_refresh(root, {
         **receipt,
         "action": "build",
-        "source_identity_before": snapshot["content_hash"],
+        "source_identity_before": semantic_source_identity(snapshot),
     })
     try:
         refreshed = build_graph(
@@ -358,7 +514,8 @@ def refresh_graph(
         )
         if (
             refreshed["state"] != "CURRENT"
-            or refreshed.get("source", {}).get("content_hash") != snapshot["content_hash"]
+            or refreshed.get("source", {}).get("semantic_identity")
+            != semantic_source_identity(snapshot)
         ):
             reason = (
                 "Source identity changed during the graph build."
@@ -371,7 +528,7 @@ def refresh_graph(
                 graph=refreshed,
                 error_code="source_changed" if refreshed["state"] == "STALE" else "non_current",
                 error=reason,
-                source_identity_before=snapshot["content_hash"],
+                source_identity_before=semantic_source_identity(snapshot),
             )
     except (IntelligenceError, ScanError, OSError, ValueError, KeyError) as exc:
         try:
@@ -391,13 +548,13 @@ def refresh_graph(
             graph=final_status,
             error_code="authorization_changed" if authorization_changed else "build_failed",
             error=str(exc)[:1200],
-            source_identity_before=snapshot["content_hash"],
+            source_identity_before=semantic_source_identity(snapshot),
         )
     return finish(
         "REFRESHED",
         action="build",
         graph=refreshed,
-        source_identity_before=snapshot["content_hash"],
+        source_identity_before=semantic_source_identity(snapshot),
     )
 
 
@@ -500,11 +657,20 @@ def intelligence_query(
         status = graph_status(repository, root)
         result["graph"] = status
         if arguments["operation"] == "stats":
-            result["outcome"] = {"CURRENT": "OK", "STALE": "STALE", "FAILED": "FAILED"}.get(status["state"], "INCONCLUSIVE")
+            result["outcome"] = {
+                "CURRENT": "OK",
+                "STALE": "STALE",
+                "FAILED": "FAILED",
+                "NOT_AVAILABLE": "NOT_AVAILABLE",
+            }.get(status["state"], "INCONCLUSIVE")
             if status["state"] == "CURRENT":
                 result["evidence"]["stats"] = read_manifest(root)["stats"]
         elif status["state"] != "CURRENT":
-            result["outcome"] = {"STALE": "STALE", "FAILED": "FAILED"}.get(status["state"], "INCONCLUSIVE")
+            result["outcome"] = {
+                "STALE": "STALE",
+                "FAILED": "FAILED",
+                "NOT_AVAILABLE": "NOT_AVAILABLE",
+            }.get(status["state"], "INCONCLUSIVE")
         else:
             remaining = arguments["timeout"] - (time.monotonic() - started)
             if remaining <= 0:

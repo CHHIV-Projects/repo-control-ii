@@ -7,7 +7,7 @@
 **Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); this document contains unresolved work only
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-007, GIT-001, UX-001, UI-001, INTEL-001, and DOC-001 remain unresolved below. Managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved; accepted current behavior and completed milestone history are documented in their owning project and milestone artifacts.
+**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-007, GIT-001, UI-001, INTEL-001, and DOC-001 remain unresolved below. Managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved; accepted current behavior and completed milestone history are documented in their owning project and milestone artifacts.
 
 ---
 
@@ -696,41 +696,6 @@ Preserve explicit review before mutation and the existing Coder no-Git-mutation 
 
 ---
 
-## UX-001 — WAITING Resolution Rejects Pasted Control Characters
-
-### Status
-
-Resolved by M009.006
-
-### Summary
-
-Investigate recurring rejection of pasted event-summary text while resolving a WAITING condition (`Event summary contains unsupported control characters`).
-
-### Why It Is Parked
-
-M005.002 is limited to Agent Skills SOP adoption. The reported cause—carriage returns in CRLF-pasted text—is plausible but not yet reproduced or confirmed.
-
-### Trigger for Reconsideration
-
-Revisit when browser WAITING-resolution friction is prioritized for a focused reproduction and bounded UX fix.
-
-### Likely Scope
-
-Reproduce pasted CR, CRLF, LF, and tab behavior across the browser input and workflow validation boundary; then determine whether UI normalization or validation changes are appropriate.
-
-### Dependencies
-
-A reproducible case and explicit implementation scope before changing validation behavior.
-
-### Notes
-
-Do not weaken lifecycle event validation or accept arbitrary control characters without review. No fix is authorized by this note.
-
-M009.006 reproduced the defect at the browser WAITING-resolution boundary and
-normalizes pasted CR and CRLF line endings to LF only for that summary field.
-Regression coverage confirms LF, TAB, and ordinary text remain unchanged while
-the lifecycle validator continues to reject other control characters.
-
 ## UI-001 — Dashboard Refresh Status HTTP 500
 
 ### Status
@@ -803,72 +768,6 @@ Must preserve optional feedback, recorded use identity, and the distinction betw
 Do not manufacture ratings for past uses. PO rating remains optional rather than expected when the PO did not consume the evidence.
 
 ---
-
-## INTEL-002 — Repository Intelligence Freshness, Provenance, and Coder Usage Classification
-
-### Status
-
-Deferred — workflow and provenance reconciliation required.
-
-### Summary
-
-Ensure Repository Intelligence freshness is managed correctly throughout milestone approval, Coder preflight, implementation, and closeout.
-
-A STALE graph must never, by itself, justify reporting Repository Intelligence as `NOT AVAILABLE`. The Coder should either use Intelligence when materially helpful or explicitly explain why it was not used.
-
-### Why It Is Parked
-
-M008.003, M008.003.001, and M008.004 reported Repository Intelligence as `NOT AVAILABLE` because the graph was STALE.
-
-Investigation found that graph freshness depends on Git HEAD as well as source-code hashes, branch, and graph configuration. Consequently, a documentation-only commit can invalidate an otherwise structurally unchanged graph.
-
-The accepted workflow already establishes a CURRENT graph during **Approve & Start**, and an authorized Coder can subsequently refresh a non-CURRENT graph when structural evidence would materially help.
-
-The existing mechanism and reporting conventions therefore need reconciliation. STALE represents a refreshable or explainable freshness condition, not necessarily an unavailable capability.
-
-### Trigger for Reconsideration
-
-Prioritize when refining Repository Intelligence provenance, preflight behavior, or Coder workflow reliability, particularly before treating Intelligence usage statistics as evidence of adoption or effectiveness.
-
-### Likely Scope
-
-1. **Graph freshness and provenance**
-   - Distinguish actual supported-source changes from Git HEAD-only changes.
-   - Evaluate whether documentation-only commits should invalidate a code-only graph.
-   - Preserve reliable source identity, generation, branch, and configuration provenance.
-
-2. **Milestone lifecycle**
-   - Preserve the expected sequence: prompt approval and Git commit precede the final **Approve & Start** action.
-   - Confirm Approve & Start establishes a CURRENT graph for supported repositories.
-   - Verify graph status during Coder preflight and identify unexpected freshness changes.
-
-3. **Coder refresh and usage**
-   - If Intelligence would materially help and the graph is STALE, the authorized Coder should refresh it using the existing bounded command.
-   - If Intelligence would not materially help, the Coder may proceed without refreshing and must explain that decision.
-   - Refresh failures that prevent required evidence use should be recorded and escalated appropriately, not concealed as routine non-use.
-
-4. **Closeout reporting**
-   - `USED` — Identify the structural questions answered and evidence used.
-   - `NOT USED` — Explain why Intelligence was not materially useful.
-   - `NOT AVAILABLE` — Reserve for genuinely unsupported or unavailable capability, with the actual cause documented; STALE alone is not sufficient.
-   - Report graph refresh decisions and outcomes separately from Intelligence usage and usefulness ratings.
-
-### Dependencies
-
-Preserve the M008.001 lifecycle integration, existing Coder refresh authorization, M008.002 measurement/provenance contracts, and the canonical shared-procedure authority boundaries.
-
-Any changes to generic Coder reporting requirements must follow controlled shared-procedure versioning and Product Owner approval.
-
-### Notes
-
-The objective is **reliable Intelligence availability and meaningful usage reporting**, not mandatory Intelligence queries or ceremonial graph rebuilding.
-
-Coders retain discretion to determine when structural evidence is useful. However, stale provenance should not create a misleading `NOT AVAILABLE` classification.
-
-Future acceptance testing should reproduce the milestone approval and Git sequence, supported-source changes, documentation-only commits, Coder refresh, and final closeout reporting.
-
-No implementation or canonical procedure change is authorized by this parking-lot entry.
-
 
 ## DOC-001 — Controlled Governing Document Maintenance
 

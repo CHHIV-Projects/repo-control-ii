@@ -31,11 +31,11 @@ This instruction-only helper derives procedure from the [Coder bootstrap](../../
 
    For every implementation milestone, include a concise Repository Intelligence disposition in the closeout:
 
-   - `Repository Intelligence: USED — <question(s) it materially informed>.`
-   - `Repository Intelligence: NOT USED — <brief reason it was not materially useful>.`
-   - `Repository Intelligence: NOT AVAILABLE — <observed state/reason>; proceeded with <other evidence>.`
+   - `Repository Intelligence: USED — <structural question(s) and evidence materially used>.`
+   - `Repository Intelligence: NOT USED — <why it was not materially useful or needed, regardless of graph status>.`
+   - `Repository Intelligence: NOT AVAILABLE — <genuinely unsupported/inaccessible capability or evidence and observed cause>; proceeded with <other evidence>.`
 
-   When USED, distinguish structural evidence from source/runtime proof. If the existing rating workflow is available, the consuming Coder rates materially relied-on uses according to current Repo Control procedure. Do not manufacture uses or ratings. This disposition is not mandatory for documentation-only, lifecycle-only, or trivially localized work unless the active prompt requires it.
+   `STALE` alone does not mean `NOT AVAILABLE`. Report graph freshness/status, whether refresh was considered/attempted and its outcome, and the evidence-use classification separately. When USED, distinguish structural evidence from source/runtime proof. If the existing rating workflow is available, the consuming Coder rates materially relied-on uses according to current Repo Control procedure. Do not count refresh receipts as queries or manufacture uses or ratings. This disposition is not mandatory for documentation-only, lifecycle-only, or trivially localized work unless the active prompt requires it.
 
    Also report whether a graph refresh was considered/attempted, why it was or was not needed, the bounded outcome/limitations, and distinguish refresh receipts from structural query uses.
 

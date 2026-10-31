@@ -1246,7 +1246,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
     def test_manifest_sources_are_hashed_and_installed_skills_match_their_lock(self) -> None:
         self.assertEqual(self.bundle.schema_version, 1)
-        self.assertEqual(self.bundle.release, "1.2.0")
+        self.assertEqual(self.bundle.release, "1.3.0")
         for source, expected in self.bundle.source_hashes.items():
             data = (self.bundle.root / source).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)

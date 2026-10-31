@@ -62,10 +62,26 @@
      Missing relationships do not prove absence. Communities and graph viewer are excluded.</p>
   <h3>Graph: {{ intelligence_status.state }}</h3>
   <p>Generation: {{ intelligence_status.generation or "none" }} &middot; Built: {{ intelligence_status.built_at or "never" }}</p>
+  {% if intelligence_status.freshness_reason %}
+  <p>Freshness reason: {{ intelligence_status.freshness_reason }}</p>
+  {% endif %}
+  {% if intelligence_status.incompatibility_reasons %}
+  <p>Incompatible metadata: {{ intelligence_status.incompatibility_reasons|join(", ") }}</p>
+  {% endif %}
   {% if intelligence_status.error %}<p class="flash error">{{ intelligence_status.error }}</p>{% endif %}
   {% if intelligence_status.source %}
-  <p>{{ intelligence_status.source.file_count }} code files &middot; HEAD {{ intelligence_status.source.head }} &middot;
-     content {{ intelligence_status.source.content_hash }}</p>
+  <p>Built from {{ intelligence_status.source.file_count }} code files &middot; HEAD {{ intelligence_status.source.head }}
+     &middot; content {{ intelligence_status.source.content_hash }} &middot;
+     semantic identity {{ intelligence_status.source.semantic_identity }}</p>
+  {% endif %}
+  {% if intelligence_status.current_source %}
+  <p>Current inputs: {{ intelligence_status.current_source.file_count }} code files &middot;
+     HEAD {{ intelligence_status.current_source.head }} &middot; branch
+     {{ intelligence_status.current_source.branch.name or intelligence_status.current_source.branch.state }}
+     {% if intelligence_status.provenance_changes %}
+     &middot; Git provenance changed ({{ intelligence_status.provenance_changes|join(", ") }}); this alone does not stale the graph.
+     {% endif %}
+  </p>
   {% endif %}
   <p>Queries never rebuild. Only CURRENT evidence is served. Approve &amp; Start establishes a CURRENT graph where supported.
      During authorized IN_PROGRESS work, Coder may refresh the fixed configured graph when fresh structural evidence would help.</p>
