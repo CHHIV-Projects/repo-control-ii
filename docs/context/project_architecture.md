@@ -210,12 +210,19 @@ versioned [`shared/procedure`](../../shared/procedure/) bundle. The bundle
 renders the host entrypoint `.github/copilot-instructions.md`, repository-local
 copy of the concise workflow core, physical Skill copies, and a small SHA-256
 lock. M009.009 prepared canonical release `1.3.0`; M009.010 accepted the
-runtime/release-preparation safeguards without changing that release. Each
-managed repository retains its independently recorded installed release, so
-version and integrity must be inspected rather than inferred. The registry-
-mapped `docs/context/coding_agent_rules.md` is the Repo Control II-specific
-overlay, not the generic bootstrap; generic materialization never overwrites
-that overlay.
+runtime/release-preparation safeguards without changing that release. M009.015
+extends engine validation and transactions for a future optional root
+`AGENTS.md`, rendered from the same bootstrap source as the existing host
+entrypoint. The published `1.3.0` manifest and its five-artifact behavior
+remain unchanged; the optional sixth artifact is valid only in a numeric
+release newer than `1.3.0`. Existing root `AGENTS.md` files without matching
+procedure-lock provenance are protected collisions, including when their
+bytes happen to match the generated output. Each managed repository retains
+its independently recorded installed release, so version and integrity must
+be inspected rather than inferred. The registry-mapped
+`docs/context/coding_agent_rules.md` is the Repo Control II-specific overlay,
+not the generic bootstrap; generic materialization never overwrites that
+overlay.
 
 `coder-procedure-status` reports deterministic version, hash, overlay, and
 path drift. `coder-procedure-preview` produces proposed file diffs without
@@ -234,11 +241,13 @@ The M008.004 transaction records before/after images in a private sibling of
 scanner state, outside the scanner-replaced per-repository state directory and
 managed worktree. It uses the existing cross-process scanner/transaction lock,
 records `PREPARING`, `PREPARED`, `APPLYING`, `VERIFIED`,
-`RECOVERY_REQUIRED`, and `RECOVERED`, replaces the five generated artifacts
+`RECOVERY_REQUIRED`, and `RECOVERED`, replaces every generated artifact
 before the release lock, and permits a separate PO-confirmed recovery only
-when targets match recorded before/after images. Corrupt images, unknown
-external edits, and unsafe/missing parents fail closed. Individual rename
-replacements are atomic; the six-file set is not simultaneously visible.
+when targets match recorded before/after images. Existing five-target journals
+remain recoverable; new future-release journals may include the allowlisted
+root `AGENTS.md`. Corrupt images, unknown external edits, and unsafe/missing
+parents fail closed. Individual rename replacements are atomic; the
+multi-file set is not simultaneously visible.
 Repo Control locking excludes its own cooperating scans and transactions, not
 arbitrary external writers. A fixture demonstrated a parent-directory rename
 after final validation where an already-open descriptor wrote into the moved

@@ -17,8 +17,13 @@ workflow core, and accepted Skills in
 [`shared/procedure`](../../shared/procedure/). Each managed repository has
 physical/generated copies of the host entrypoint, workflow core, and Skills,
 plus `.repo-control/shared-procedure.lock.toml` recording the release and
-hashes materialized there. Each repository is therefore pinned to its own
-installed release.
+hashes materialized there. A future numeric release newer than `1.3.0` may
+also generate root `AGENTS.md` from the same canonical bootstrap source as
+`.github/copilot-instructions.md`. The published `1.3.0` manifest and its
+five-artifact installations remain unchanged. An existing `AGENTS.md` without
+matching procedure-lock provenance is a protected collision and must not be
+overwritten, even if its contents match the generated bootstrap. Each
+repository is therefore pinned to its own installed release.
 
 Publishing a newer canonical release does not automatically update other
 managed repositories. A repository whose installed release is older may

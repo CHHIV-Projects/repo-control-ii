@@ -76,6 +76,31 @@ def _crash_apply_after_first_target(entry: RepositoryEntry, state_root: str, tok
         )
 
 
+def _crash_apply_after_target(
+    entry: RepositoryEntry,
+    state_root: str,
+    token: str,
+    bundle,
+    target: str,
+) -> None:
+    original = procedure_transactions._write_target
+
+    def write_then_exit(*args, **kwargs):
+        original(*args, **kwargs)
+        if args[1] == target:
+            os._exit(77)
+
+    with mock.patch("repoctl.procedure_transactions._write_target", side_effect=write_then_exit):
+        apply_confirmed(
+            entry,
+            token,
+            state_root,
+            active_key=entry.key,
+            registry_generation=0,
+            bundle=bundle,
+        )
+
+
 def _crash_apply_after_prepared(entry: RepositoryEntry, state_root: str, token: str) -> None:
     original = procedure_transactions._write_journal
 
@@ -259,6 +284,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
             documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
         )
         self.bundle = load_bundle()
+        self._future_bundle_count = 0
         self.registry_path = self.root / "repositories.toml"
         self._write_registry([self.entry])
         self.registry_patcher = mock.patch(
@@ -289,22 +315,50 @@ class ProcedureGovernanceTests(unittest.TestCase):
                 lines.append(f"{role} = {json.dumps(path)}")
         self.registry_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def _materialize(self) -> None:
-        plan = preview_reconciliation(self.entry, self.bundle)
+    def _materialize(self, bundle=None) -> None:
+        active_bundle = bundle or self.bundle
+        plan = preview_reconciliation(self.entry, active_bundle)
         self.assertTrue(plan.can_materialize, plan.blockers)
         materialize_preview(self.entry, plan)
 
-    def _apply_confirmation(self, state_root: Path) -> dict:
-        plan = preview_reconciliation(self.entry, self.bundle)
+    def _apply_confirmation(self, state_root: Path, bundle=None) -> dict:
+        active_bundle = bundle or self.bundle
+        plan = preview_reconciliation(self.entry, active_bundle)
         self.assertTrue(plan.can_materialize, plan.blockers)
         return review_apply(
             self.entry,
             state_root,
             active_key=self.entry.key,
             registry_generation=0,
-            reviewed_plan_sha256=procedure_plan_digest(self.entry, self.bundle, plan),
-            bundle=self.bundle,
+            reviewed_plan_sha256=procedure_plan_digest(self.entry, active_bundle, plan),
+            bundle=active_bundle,
         )
+
+    def _future_six_artifact_bundle(
+        self,
+        *,
+        release: str = "1.4.0",
+        source: str = "bootstrap.md",
+        target: str = "AGENTS.md",
+        renderer: str = "bootstrap",
+    ):
+        root = self.root / f"procedure-{self._future_bundle_count}"
+        self._future_bundle_count += 1
+        shutil.copytree(self.bundle.root, root)
+        manifest_path = root / "manifest.toml"
+        manifest = manifest_path.read_text(encoding="utf-8").replace(
+            'release = "1.3.0"',
+            f'release = "{release}"',
+            1,
+        )
+        manifest += (
+            "\n[[artifacts]]\n"
+            f"source = {json.dumps(source)}\n"
+            f"target = {json.dumps(target)}\n"
+            f"renderer = {json.dumps(renderer)}\n"
+        )
+        manifest_path.write_text(manifest, encoding="utf-8")
+        return load_bundle(root)
 
     def _overlay_confirmation(self, state_root: Path) -> dict:
         plan = preview_overlay_initialization(self.entry, self.bundle)
@@ -336,6 +390,175 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self.entry = replace(self.entry, documents=documents)
         self._write_registry([self.entry])
         return original
+
+    def test_published_130_installation_ignores_and_preserves_user_agents_file(self) -> None:
+        self.assertEqual(self.bundle.release, "1.3.0")
+        self.assertNotIn("AGENTS.md", {artifact.target for artifact in self.bundle.artifacts})
+        self._materialize()
+        agents = self.repo / "AGENTS.md"
+        original = b"User-owned Codex instructions\n"
+        agents.write_bytes(original)
+
+        status = inspect_procedure(self.entry, self.bundle)
+        plan = preview_reconciliation(self.entry, self.bundle)
+
+        self.assertEqual(status["status"], "CURRENT")
+        self.assertTrue(plan.can_materialize, plan.blockers)
+        self.assertNotIn("AGENTS.md", {change["path"] for change in plan.changes})
+        self.assertEqual(agents.read_bytes(), original)
+
+    def test_six_artifact_manifest_is_future_only_and_renders_shared_bootstrap(self) -> None:
+        self.assertEqual(len(self.bundle.artifacts), len(FIXED_TARGETS))
+        with self.assertRaisesRegex(ProcedureGovernanceError, "newer than 1.3.0"):
+            self._future_six_artifact_bundle(release="1.3.0")
+        with self.assertRaisesRegex(ProcedureGovernanceError, "materialized more than once"):
+            self._future_six_artifact_bundle(source="workflow_core.md", renderer="copy")
+
+        future_bundle = self._future_six_artifact_bundle()
+        plan = preview_reconciliation(self.entry, future_bundle)
+        self.assertTrue(plan.can_materialize, plan.blockers)
+        generated = dict(plan.files)
+        expected_bootstrap = (
+            (future_bundle.root / "bootstrap.md")
+            .read_text(encoding="utf-8")
+            .replace("{{release}}", future_bundle.release)
+            .replace("{{project_overlay_path}}", "docs/context/coding_agent_rules.md")
+            .replace("{{workflow_core_path}}", ".repo-control/workflow_core.md")
+            .encode("utf-8")
+        )
+        self.assertEqual(generated[".github/copilot-instructions.md"], expected_bootstrap)
+        self.assertEqual(generated["AGENTS.md"], expected_bootstrap)
+
+    def test_future_agents_collision_is_blocked_even_when_bytes_match(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        initial_plan = preview_reconciliation(self.entry, future_bundle)
+        generated_agents = dict(initial_plan.files)["AGENTS.md"]
+        agents = self.repo / "AGENTS.md"
+        agents.write_bytes(generated_agents)
+
+        status = inspect_procedure(self.entry, future_bundle)
+        plan = preview_reconciliation(self.entry, future_bundle)
+
+        self.assertEqual(status["status"], "INCOMPATIBLE")
+        self.assertFalse(plan.can_materialize)
+        self.assertTrue(any(change.get("action") == "blocked" for change in plan.changes))
+        self.assertEqual(agents.read_bytes(), generated_agents)
+
+    def test_future_agents_symlink_collision_is_blocked(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        outside = self.root / "outside-agents.md"
+        outside.write_bytes(b"outside user data\n")
+        (self.repo / "AGENTS.md").symlink_to(outside)
+
+        status = inspect_procedure(self.entry, future_bundle)
+        plan = preview_reconciliation(self.entry, future_bundle)
+
+        self.assertEqual(status["status"], "INCOMPATIBLE")
+        self.assertFalse(plan.can_materialize)
+        self.assertEqual(outside.read_bytes(), b"outside user data\n")
+
+    def test_changed_agents_target_invalidates_apply_confirmation(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        state_root = self.root / "state"
+        confirmation = self._apply_confirmation(state_root, future_bundle)
+        agents = self.repo / "AGENTS.md"
+        user_content = b"User-owned instructions added after review\n"
+        agents.write_bytes(user_content)
+
+        with self.assertRaises(ProcedureTransactionError):
+            apply_confirmed(
+                self.entry,
+                confirmation["confirmation"]["token"],
+                state_root,
+                active_key=self.entry.key,
+                registry_generation=0,
+                bundle=future_bundle,
+            )
+
+        self.assertEqual(agents.read_bytes(), user_content)
+        self.assertFalse((self.repo / ".github/copilot-instructions.md").exists())
+        self.assertFalse((self.repo / future_bundle.lock_path).exists())
+
+    def test_incomplete_future_artifact_mapping_is_rejected(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        manifest_path = future_bundle.root / "manifest.toml"
+        manifest = manifest_path.read_text(encoding="utf-8").replace(
+            'target = ".repo-control/workflow_core.md"',
+            'target = ".repo-control/custom_workflow.md"',
+            1,
+        )
+        manifest_path.write_text(manifest, encoding="utf-8")
+
+        with self.assertRaisesRegex(ProcedureGovernanceError, "does not map workflow"):
+            load_bundle(future_bundle.root)
+
+    def test_six_artifact_apply_records_and_verifies_root_agents(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        state_root = self.root / "state"
+        confirmation = self._apply_confirmation(state_root, future_bundle)
+
+        result = apply_confirmed(
+            self.entry,
+            confirmation["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            bundle=future_bundle,
+        )
+
+        expected_targets = {*FIXED_TARGETS, "AGENTS.md", future_bundle.lock_path}
+        self.assertEqual(result["state"], "VERIFIED")
+        self.assertEqual(set(result["target_hashes"]), expected_targets)
+        self.assertEqual(
+            (self.repo / "AGENTS.md").read_bytes(),
+            (self.repo / ".github/copilot-instructions.md").read_bytes(),
+        )
+        self.assertEqual(inspect_procedure(self.entry, future_bundle)["status"], "CURRENT")
+        self.assertEqual(inspect_transaction(self.entry, state_root)["state"], "VERIFIED")
+
+    def test_interrupted_six_artifact_apply_recovers_exact_original_target_set(self) -> None:
+        future_bundle = self._future_six_artifact_bundle()
+        state_root = self.root / "state"
+        confirmation = self._apply_confirmation(state_root, future_bundle)
+        process = multiprocessing.get_context("fork").Process(
+            target=_crash_apply_after_target,
+            args=(
+                self.entry,
+                str(state_root),
+                confirmation["confirmation"]["token"],
+                future_bundle,
+                "AGENTS.md",
+            ),
+        )
+        process.start()
+        process.join(15)
+
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.exitcode, 77)
+        self.assertTrue((self.repo / "AGENTS.md").is_file())
+        pending = inspect_transaction(self.entry, state_root)
+        self.assertEqual(pending["state"], "APPLYING")
+        review = review_recovery(
+            self.entry,
+            pending["operation_id"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+        )
+        self.assertIn("AGENTS.md", review["targets"])
+        recovered = recover_confirmed(
+            self.entry,
+            pending["operation_id"],
+            review["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+        )
+
+        self.assertEqual(recovered["state"], "RECOVERED")
+        self.assertEqual(inspect_procedure(self.entry, future_bundle)["status"], "MISSING")
+        self.assertFalse(any((self.repo / path).exists() for path in (*FIXED_TARGETS, "AGENTS.md", future_bundle.lock_path)))
+        self.assertFalse((self.repo / ".github").exists())
 
     def test_initial_overlay_review_preserves_large_rules_and_enables_separate_apply(self) -> None:
         original = self._install_large_nonconforming_v8_overlay()

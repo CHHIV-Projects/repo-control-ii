@@ -7,6 +7,7 @@ import unittest
 import re
 import os
 import json
+import shutil
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +15,7 @@ from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
 from repoctl.procedure_governance import (
+    BUNDLE_ROOT,
     load_bundle,
     materialize_preview,
     preview_reconciliation,
@@ -572,6 +574,125 @@ class WebTests(unittest.TestCase):
                 )
                 self.assertEqual(replay.status_code, 400)
                 self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
+
+    def test_future_six_artifact_uses_the_po_confirmed_web_apply_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root, "future-six-repo")
+            state_root = root / "state"
+            (repo / "docs/milestones").mkdir(parents=True)
+            overlay = repo / "docs/context/coding_agent_rules.md"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(
+                "# Project overlay\n\n"
+                "<!-- repo-control-project-overlay:v1 -->\n\n"
+                "## Repository-specific rules\n\n- Keep fixture data local.\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "docs/context/coding_agent_rules.md")
+            _git(repo, "commit", "-m", "add project overlay")
+
+            bundle_root = root / "future-procedure"
+            shutil.copytree(BUNDLE_ROOT, bundle_root)
+            manifest_path = bundle_root / "manifest.toml"
+            manifest = manifest_path.read_text(encoding="utf-8").replace(
+                'release = "1.3.0"',
+                'release = "1.4.0"',
+                1,
+            )
+            manifest += (
+                '\n[[artifacts]]\nsource = "bootstrap.md"\n'
+                'target = "AGENTS.md"\nrenderer = "bootstrap"\n'
+            )
+            manifest_path.write_text(manifest, encoding="utf-8")
+            future_bundle = load_bundle(bundle_root)
+
+            registry_path = root / "repositories.toml"
+            registry_path.write_text(
+                "\n".join(
+                    [
+                        'default = "fixture"',
+                        "",
+                        "[repositories.fixture]",
+                        'name = "Fixture Repository"',
+                        f"path = {json.dumps(str(repo))}",
+                        'milestone_root = "docs/milestones"',
+                        "",
+                        "[repositories.fixture.documents]",
+                        'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch(
+                    "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                    registry_path,
+                ),
+                mock.patch("repoctl.procedure_governance.load_bundle", return_value=future_bundle),
+                mock.patch("repoctl.procedure_transactions.load_bundle", return_value=future_bundle),
+            ):
+                app = create_web_app(repository_registry_path=registry_path, state_root=state_root)
+                app.testing = True
+                client = app.test_client()
+                initial = client.get("/procedure-updates?repository=fixture")
+                self.assertEqual(initial.status_code, 200)
+                self.assertIn(b"AGENTS.md", initial.data)
+                self.assertIn(b"Review Apply", initial.data)
+                self.assertFalse((repo / "AGENTS.md").exists())
+
+                csrf = _extract_csrf_token(client)
+                plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', initial.data)
+                self.assertIsNotNone(plan_digest)
+                review = client.post(
+                    "/procedure-updates/apply-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "plan_sha256": plan_digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(review.status_code, 302)
+                confirmation = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Confirm Apply", confirmation.data)
+                self.assertIn(b"AGENTS.md", confirmation.data)
+                self.assertFalse((repo / "AGENTS.md").exists())
+                token = re.search(rb'name="confirmation_token" value="([^"]+)"', confirmation.data)
+                self.assertIsNotNone(token)
+
+                applied = client.post(
+                    "/procedure-updates/apply",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": token.group(1).decode(),
+                    },
+                )
+
+                self.assertEqual(applied.status_code, 302)
+                self.assertEqual(
+                    (repo / "AGENTS.md").read_bytes(),
+                    (repo / ".github/copilot-instructions.md").read_bytes(),
+                )
+                self.assertEqual(inspect_transaction(
+                    RepositoryEntry(
+                        key="fixture",
+                        name="Fixture Repository",
+                        path=repo,
+                        repository_id=make_repository_id(repo),
+                        milestone_root="docs/milestones",
+                        documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
+                    ),
+                    state_root,
+                )["state"], "VERIFIED")
+                final = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"CURRENT", final.data)
+                self.assertIn(b"VERIFIED", final.data)
 
     def test_first_time_overlay_initialization_is_a_separate_po_confirmed_operation(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -595,10 +595,14 @@ repository selection.
    inspect the separate confirmation page: it names the repository, stable
    ID, full path, release, exact generated targets, and before/after hashes.
    Only the explicit, CSRF-protected **Confirm Apply** POST materializes the
-   fixed five generated procedure files and release lock. Review and
-   confirmation are separate actions; an unblocked preview alone is never
-   authorization. The workflow covers one selected registered repository at
-   a time and does not change the active Repo Control selection.
+   exact targets declared by the validated bundle and release lock: five
+   generated files for published `1.3.0`, or those five plus root `AGENTS.md`
+   for a supported future release. An existing `AGENTS.md` without matching
+   lock provenance is a protected collision and is never adopted or
+   overwritten. Review and confirmation are separate actions; an unblocked
+   preview alone is never authorization. The workflow covers one selected
+   registered repository at a time and does not change the active Repo
+   Control selection.
 5. Apply reports success only after an independent full-set check returns
    `CURRENT`. A no-op is reported without rewriting files. Then use ordinary
    PO Git Review for the generated working-tree changes; procedure

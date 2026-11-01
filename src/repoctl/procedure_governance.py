@@ -17,11 +17,15 @@ from .web.repository_registry import RepositoryEntry
 BUNDLE_ROOT = Path(__file__).resolve().parents[2] / "shared" / "procedure"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_NUMERIC_RELEASE_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _REQUIRED_SKILLS = {
     "skills/repo-control-implementation/SKILL.md",
     "skills/repo-control-blocker-bug-escalation/SKILL.md",
     "skills/repo-control-validation-closeout/SKILL.md",
 }
+_CODEX_ENTRYPOINT = "AGENTS.md"
+_HOST_ENTRYPOINT = ".github/copilot-instructions.md"
+_CURRENT_RELEASE_BASELINE = (1, 3, 0)
 _MAX_INITIAL_OVERLAY_BYTES = 1024 * 1024
 
 
@@ -189,6 +193,8 @@ def load_bundle(root: str | Path = BUNDLE_ROOT) -> ProcedureBundle:
         raise ProcedureGovernanceError("Canonical procedure manifest has no overlay marker.")
     lock_path = _relative_path(lock_path, "lock path")
     host_entrypoint = _relative_path(host_entrypoint, "host entrypoint")
+    if host_entrypoint != _HOST_ENTRYPOINT:
+        raise ProcedureGovernanceError("Canonical manifest uses an unsupported host entrypoint.")
     if not isinstance(sources_raw, list) or not isinstance(artifacts_raw, list):
         raise ProcedureGovernanceError("Canonical procedure manifest must list sources and artifacts.")
 
@@ -218,7 +224,7 @@ def load_bundle(root: str | Path = BUNDLE_ROOT) -> ProcedureBundle:
 
     artifacts: list[ProcedureArtifact] = []
     targets: set[str] = set()
-    artifact_sources: set[str] = set()
+    artifact_targets_by_source: dict[str, list[str]] = {}
     for artifact in artifacts_raw:
         if not isinstance(artifact, dict):
             raise ProcedureGovernanceError("Canonical artifact entries must be tables.")
@@ -229,31 +235,42 @@ def load_bundle(root: str | Path = BUNDLE_ROOT) -> ProcedureBundle:
             raise ProcedureGovernanceError(f"Invalid canonical artifact source or renderer: {target}")
         if target in targets:
             raise ProcedureGovernanceError(f"Canonical artifact target is listed more than once: {target}")
-        if source in artifact_sources:
-            raise ProcedureGovernanceError(f"Canonical source is materialized more than once: {source}")
         if renderer == "bootstrap" and source != "bootstrap.md":
             raise ProcedureGovernanceError("Only bootstrap.md may use the bootstrap renderer.")
         targets.add(target)
-        artifact_sources.add(source)
+        artifact_targets_by_source.setdefault(source, []).append(target)
         artifacts.append(ProcedureArtifact(source, target, renderer))
     expected_artifacts = {
-        "bootstrap.md": (host_entrypoint, "bootstrap"),
-        "skills/repo-control-implementation/SKILL.md": (
-            ".agents/skills/repo-control-implementation/SKILL.md",
+        host_entrypoint: ("bootstrap.md", "bootstrap"),
+        ".agents/skills/repo-control-implementation/SKILL.md": (
+            "skills/repo-control-implementation/SKILL.md",
             "copy",
         ),
-        "skills/repo-control-blocker-bug-escalation/SKILL.md": (
-            ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md",
+        ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md": (
+            "skills/repo-control-blocker-bug-escalation/SKILL.md",
             "copy",
         ),
-        "skills/repo-control-validation-closeout/SKILL.md": (
-            ".agents/skills/repo-control-validation-closeout/SKILL.md",
+        ".agents/skills/repo-control-validation-closeout/SKILL.md": (
+            "skills/repo-control-validation-closeout/SKILL.md",
             "copy",
         ),
-        "workflow_core.md": (".repo-control/workflow_core.md", "copy"),
+        ".repo-control/workflow_core.md": ("workflow_core.md", "copy"),
     }
-    configured_artifacts = {item.source: (item.target, item.renderer) for item in artifacts}
-    if host_entrypoint not in targets or configured_artifacts != expected_artifacts:
+    if _CODEX_ENTRYPOINT in targets:
+        version_match = _NUMERIC_RELEASE_RE.fullmatch(release)
+        if not version_match or tuple(map(int, version_match.groups())) <= _CURRENT_RELEASE_BASELINE:
+            raise ProcedureGovernanceError(
+                "The optional Codex AGENTS.md artifact requires a numeric release newer than 1.3.0."
+            )
+        expected_artifacts[_CODEX_ENTRYPOINT] = ("bootstrap.md", "bootstrap")
+    for source, source_targets in artifact_targets_by_source.items():
+        if len(source_targets) > 1 and not (
+            source == "bootstrap.md"
+            and set(source_targets) == {host_entrypoint, _CODEX_ENTRYPOINT}
+        ):
+            raise ProcedureGovernanceError(f"Canonical source is materialized more than once: {source}")
+    configured_artifacts = {item.target: (item.source, item.renderer) for item in artifacts}
+    if configured_artifacts != expected_artifacts:
         raise ProcedureGovernanceError("Canonical manifest does not map workflow, bootstrap, and Skills to accepted targets.")
     return ProcedureBundle(
         root=bundle_root,
@@ -607,15 +624,24 @@ def _status_for(root: Path, entry: RepositoryEntry, bundle: ProcedureBundle) -> 
         actual_hash = _sha256(path.read_bytes())
         recorded_hash = lock_hashes.get(target)
         if recorded_hash is None:
-            if lock is None and actual_hash == _sha256(expected_bytes):
+            if target == _CODEX_ENTRYPOINT:
+                issues.append(
+                    {
+                        "status": "INCOMPATIBLE",
+                        "path": target,
+                        "detail": "existing AGENTS.md has no matching procedure lock provenance",
+                    }
+                )
+            elif lock is None and actual_hash == _sha256(expected_bytes):
                 continue
-            issues.append(
-                {
-                    "status": "INCOMPATIBLE",
-                    "path": target,
-                    "detail": "existing file has no matching provenance entry in the procedure lock",
-                }
-            )
+            else:
+                issues.append(
+                    {
+                        "status": "INCOMPATIBLE",
+                        "path": target,
+                        "detail": "existing file has no matching provenance entry in the procedure lock",
+                    }
+                )
         elif actual_hash != recorded_hash:
             issues.append(
                 {
@@ -730,7 +756,12 @@ def preview_reconciliation(
         snapshots[target] = _sha256(current) if current is not None else None
         recorded_hash = lock_hashes.get(target)
         if current is not None and not trusted_lock:
-            if lock is None and lock_error is None and current == expected:
+            if (
+                target != _CODEX_ENTRYPOINT
+                and lock is None
+                and lock_error is None
+                and current == expected
+            ):
                 changes.append(
                     {
                         "path": target,

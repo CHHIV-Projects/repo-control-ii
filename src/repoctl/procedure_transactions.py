@@ -37,6 +37,7 @@ FIXED_TARGETS = (
     ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md",
     ".agents/skills/repo-control-validation-closeout/SKILL.md",
 )
+OPTIONAL_TARGETS = ("AGENTS.md",)
 MAX_TARGET_BYTES = 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_JOURNAL_BYTES = 256 * 1024
@@ -265,8 +266,15 @@ def _read_journal(operation_directory: Path, repository: RepositoryEntry) -> dic
         raise ProcedureTransactionError("Procedure transaction journal root or plan identity is invalid.")
     operation_type = journal.get("operation_type", "procedure_apply")
     if operation_type == "procedure_apply":
-        expected_targets = [*FIXED_TARGETS, ".repo-control/shared-procedure.lock.toml"]
-        expected_lock_index = len(FIXED_TARGETS)
+        allowed_target_sets = (
+            [*FIXED_TARGETS, ".repo-control/shared-procedure.lock.toml"],
+            [*FIXED_TARGETS, *OPTIONAL_TARGETS, ".repo-control/shared-procedure.lock.toml"],
+        )
+        target_paths = [item.get("path") for item in journal["targets"] if isinstance(item, dict)]
+        if target_paths not in allowed_target_sets:
+            raise ProcedureTransactionError("Procedure transaction journal contains an unauthorized target set.")
+        expected_targets = target_paths
+        expected_lock_index = len(expected_targets) - 1
     elif operation_type == "overlay_initialize":
         try:
             overlay_path = _repository_overlay_path(repository)
@@ -377,7 +385,9 @@ def _write_journal(operation_directory: Path, journal: dict[str, Any]) -> None:
 
 def _target_paths(bundle: ProcedureBundle) -> tuple[str, ...]:
     _validate_bundle_targets(bundle)
-    return (*FIXED_TARGETS, bundle.lock_path)
+    bundle_targets = {artifact.target for artifact in bundle.artifacts}
+    optional_targets = tuple(target for target in OPTIONAL_TARGETS if target in bundle_targets)
+    return (*FIXED_TARGETS, *optional_targets, bundle.lock_path)
 
 
 def _root_identity(repository: RepositoryEntry) -> dict[str, int]:
@@ -746,8 +756,21 @@ def initialize_overlay_confirmed(
 
 
 def _validate_bundle_targets(bundle: ProcedureBundle) -> None:
-    if tuple(sorted(artifact.target for artifact in bundle.artifacts)) != tuple(sorted(FIXED_TARGETS)):
-        raise ProcedureTransactionError("Canonical manifest differs from the fixed five generated procedure targets.")
+    targets = [artifact.target for artifact in bundle.artifacts]
+    allowed_targets = (
+        set(FIXED_TARGETS),
+        {*FIXED_TARGETS, *OPTIONAL_TARGETS},
+    )
+    if len(targets) != len(set(targets)) or set(targets) not in allowed_targets:
+        raise ProcedureTransactionError(
+            "Canonical manifest differs from the fixed five targets and optional Codex AGENTS.md target."
+        )
+    if any(
+        artifact.target in OPTIONAL_TARGETS
+        and (artifact.source != "bootstrap.md" or artifact.renderer != "bootstrap")
+        for artifact in bundle.artifacts
+    ):
+        raise ProcedureTransactionError("Optional AGENTS.md must render the canonical bootstrap source.")
     if bundle.lock_path != ".repo-control/shared-procedure.lock.toml":
         raise ProcedureTransactionError("Canonical manifest lock path differs from the approved fixed target.")
 
