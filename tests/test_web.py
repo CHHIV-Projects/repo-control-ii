@@ -188,9 +188,14 @@ class WebTests(unittest.TestCase):
             second_page = client.get("/")
             self.assertIn("Active Repository", second_page.get_data(as_text=True))
             self.assertIn("Second Repository", second_page.get_data(as_text=True))
-            self.assertEqual(
-                client.get("/healthz").get_json(),
-                {"service": "repo-control", "active_repository": "second"},
+            health = client.get("/healthz").get_json()
+            self.assertEqual(health["service"], "repo-control")
+            self.assertEqual(health["active_repository"], "second")
+            self.assertEqual(health["runtime_capabilities"]["capability_schema_version"], 1)
+            self.assertTrue(health["runtime_capabilities"]["instance_id"])
+            self.assertIn(
+                "context_verification_recorded",
+                health["runtime_capabilities"]["workflow"]["supported_event_types"],
             )
             self.assertEqual(first_head, _git_text(first, "rev-parse", "HEAD"))
             self.assertEqual(first_status, _git_status_porcelain(first))
@@ -346,6 +351,98 @@ class WebTests(unittest.TestCase):
                     second_generated,
                     {path: (second / path).read_bytes() for path in second_generated},
                 )
+
+                with (
+                    mock.patch(
+                        "repoctl.workflow.coder_interface.resolve_coder_release_preparation_context",
+                        return_value=(entries["first"], {}, {}),
+                    ),
+                    mock.patch(
+                        "repoctl.procedure_release.inspect_procedure_release_preparation",
+                        return_value={
+                            "status": "RELEASE_IN_PREPARATION",
+                            "authorized": True,
+                            "candidate_release": "1.4.0",
+                            "milestone_id": "M009.010",
+                            "authorized_sources": ["workflow_core.md"],
+                        },
+                    ),
+                ):
+                    blocked_page = client.get("/procedure-updates?repository=second")
+                    blocked_html = blocked_page.get_data(as_text=True)
+                    self.assertIn("Apply is disabled; safe transaction recovery remains available.", blocked_html)
+                    self.assertNotIn("Review Apply", blocked_html)
+                    self.assertNotIn("Review Recovery", blocked_html)
+                    csrf = _extract_csrf_token(client)
+                    self.assertEqual(
+                        client.post(
+                            "/procedure-updates/apply-review",
+                            data={
+                                "csrf_token": csrf,
+                                "repository_key": "second",
+                                "active_repository_key": "first",
+                                "repository_generation": "0",
+                                "plan_sha256": "a" * 64,
+                            },
+                        ).status_code,
+                        409,
+                    )
+                    self.assertEqual(
+                        client.post(
+                            "/procedure-updates/recovery-review",
+                            data={
+                                "csrf_token": csrf,
+                                "repository_key": "second",
+                                "active_repository_key": "first",
+                                "repository_generation": "0",
+                                "operation_id": "0" * 32,
+                            },
+                        ).status_code,
+                        302,
+                    )
+
+                from repoctl.procedure_governance import ProcedureGovernanceError
+
+                with mock.patch(
+                    "repoctl.procedure_governance.load_bundle",
+                    side_effect=ProcedureGovernanceError(
+                        "Canonical source hash mismatch: workflow_core.md"
+                    ),
+                ):
+                    unavailable = client.get("/procedure-updates?repository=second")
+                    unavailable_html = unavailable.get_data(as_text=True)
+                    self.assertEqual(unavailable.status_code, 200)
+                    self.assertIn("Canonical bundle integrity unavailable", unavailable_html)
+                    self.assertIn("Second Repository", unavailable_html)
+                    self.assertIn("Comparison unavailable", unavailable_html)
+                    self.assertNotIn("No repositories are configured for this service.", unavailable_html)
+                    csrf = _extract_csrf_token(client)
+                    self.assertEqual(
+                        client.post(
+                            "/procedure-updates/apply-review",
+                            data={
+                                "csrf_token": csrf,
+                                "repository_key": "second",
+                                "active_repository_key": "first",
+                                "repository_generation": "0",
+                                "plan_sha256": "a" * 64,
+                            },
+                        ).status_code,
+                        409,
+                    )
+                    self.assertEqual(
+                        client.post(
+                            "/procedure-updates/recovery-review",
+                            data={
+                                "csrf_token": csrf,
+                                "repository_key": "second",
+                                "active_repository_key": "first",
+                                "repository_generation": "0",
+                                "operation_id": "0" * 32,
+                            },
+                        ).status_code,
+                        302,
+                    )
 
                 invalid = client.get("/procedure-updates?repository=/tmp/arbitrary")
                 self.assertEqual(invalid.status_code, 400)
@@ -535,43 +632,54 @@ class WebTests(unittest.TestCase):
                 client = app.test_client()
                 pending = inspect_transaction(entry, state_root)
                 self.assertEqual(pending["state"], "APPLYING")
-                page = client.get("/procedure-updates?repository=fixture")
-                self.assertIn(b"Review Recovery", page.data)
-                self.assertNotIn(b"Confirm Recover", page.data)
-                csrf = _extract_csrf_token(client)
-                review = client.post(
-                    "/procedure-updates/recovery-review",
-                    data={
-                        "csrf_token": csrf,
-                        "repository_key": "fixture",
-                        "active_repository_key": "fixture",
-                        "repository_generation": "0",
-                        "operation_id": pending["operation_id"],
-                    },
-                )
-                self.assertEqual(review.status_code, 302)
-                confirmation_page = client.get("/procedure-updates?repository=fixture")
-                self.assertIn(b"Confirm Recover", confirmation_page.data)
-                token = re.search(
-                    rb'name="confirmation_token" value="([^"]+)"',
-                    confirmation_page.data,
-                )
-                self.assertIsNotNone(token)
-                recovered = client.post(
-                    "/procedure-updates/recover",
-                    data={
-                        "csrf_token": csrf,
-                        "repository_key": "fixture",
-                        "active_repository_key": "fixture",
-                        "repository_generation": "0",
-                        "operation_id": pending["operation_id"],
-                        "confirmation_token": token.group(1).decode(),
-                    },
-                )
-                self.assertEqual(recovered.status_code, 302)
+                from repoctl.procedure_governance import ProcedureGovernanceError
+
+                with mock.patch(
+                    "repoctl.procedure_governance.load_bundle",
+                    side_effect=ProcedureGovernanceError("Canonical source hash mismatch"),
+                ):
+                    page = client.get("/procedure-updates?repository=fixture")
+                    self.assertIn(b"Canonical bundle integrity unavailable", page.data)
+                    self.assertIn(b"Review Recovery", page.data)
+                    self.assertNotIn(b"Confirm Recover", page.data)
+                    csrf = _extract_csrf_token(client)
+                    review = client.post(
+                        "/procedure-updates/recovery-review",
+                        data={
+                            "csrf_token": csrf,
+                            "repository_key": "fixture",
+                            "active_repository_key": "fixture",
+                            "repository_generation": "0",
+                            "operation_id": pending["operation_id"],
+                        },
+                    )
+                    self.assertEqual(review.status_code, 302)
+                    confirmation_page = client.get("/procedure-updates?repository=fixture")
+                    self.assertIn(b"Confirm Recover", confirmation_page.data)
+                    token = re.search(
+                        rb'name="confirmation_token" value="([^"]+)"',
+                        confirmation_page.data,
+                    )
+                    self.assertIsNotNone(token)
+                    recovered = client.post(
+                        "/procedure-updates/recover",
+                        data={
+                            "csrf_token": csrf,
+                            "repository_key": "fixture",
+                            "active_repository_key": "fixture",
+                            "repository_generation": "0",
+                            "operation_id": pending["operation_id"],
+                            "confirmation_token": token.group(1).decode(),
+                        },
+                    )
+                    self.assertEqual(recovered.status_code, 302)
                 self.assertFalse((repo / ".github/copilot-instructions.md").exists())
                 self.assertEqual(inspect_transaction(entry, state_root)["state"], "RECOVERED")
-                final_page = client.get("/procedure-updates?repository=fixture")
+                with mock.patch(
+                    "repoctl.procedure_governance.load_bundle",
+                    side_effect=ProcedureGovernanceError("Canonical source hash mismatch"),
+                ):
+                    final_page = client.get("/procedure-updates?repository=fixture")
                 self.assertIn(b"RECOVERED", final_page.data)
 
     def test_dashboard_renders_clean_state_and_upstream_caveat(self) -> None:

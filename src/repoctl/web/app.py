@@ -67,8 +67,10 @@ from ..workflow.lifecycle import (
     record_milestone_event,
     record_milestone_action,
     record_milestone_reopen,
+    workflow_runtime_capabilities,
     waiting_resolution,
 )
+from ..workflow.context_verification import VERIFICATION_RECORD_SCHEMA_VERSION
 from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
@@ -414,6 +416,7 @@ def create_web_app(
     app.config["STATE_ROOT"] = effective_state_root
     app.config["BOUND_HOST"] = bound_host
     app.config["BOUND_PORT"] = port
+    app.config["RUNTIME_INSTANCE_ID"] = secrets.token_hex(16)
 
     @app.before_request
     def _bind_active_repository() -> None:
@@ -421,6 +424,28 @@ def create_web_app(
 
     def current_repository() -> RepositoryEntry:
         return g.active_repository
+
+    def active_release_preparation() -> dict[str, Any]:
+        from ..procedure_release import inspect_procedure_release_preparation
+        from ..workflow.coder_interface import (
+            CoderInterfaceError,
+            resolve_coder_release_preparation_context,
+        )
+
+        active = registry.active()
+        try:
+            entry, candidate, workflow = resolve_coder_release_preparation_context(
+                repository_path=active.path,
+                state_root=effective_state_root,
+                milestone_root=active.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            return {
+                "status": "UNAVAILABLE",
+                "authorized": False,
+                "reason": str(exc),
+            }
+        return inspect_procedure_release_preparation(entry.path, candidate, workflow)
 
     def require_current_repository_selection() -> None:
         active_repository, generation = registry.snapshot()
@@ -841,6 +866,17 @@ def create_web_app(
                     expected_generation=expected_generation,
                     expected_milestone_id=expected_milestone_id,
                 )
+                if resource == "status":
+                    payload["data"]["runtime_capabilities"] = {
+                        "capability_schema_version": 1,
+                        "instance_id": app.config["RUNTIME_INSTANCE_ID"],
+                        "workflow": {
+                            **workflow_runtime_capabilities(),
+                            "context_verification_record_schema_version": (
+                                VERIFICATION_RECORD_SCHEMA_VERSION
+                            ),
+                        },
+                    }
                 active_repository, active_generation = registry.snapshot()
                 if (
                     active_repository.key != current_repository().key
@@ -1183,7 +1219,25 @@ def create_web_app(
                     repository_statuses.append(
                         {"entry": entry, "status": None, "transaction": None, "error": bounded_error(exc)}
                     )
+        else:
+            for entry in registry.entries:
+                try:
+                    transaction = inspect_transaction(entry, effective_state_root)
+                    transaction_error = None
+                except (ProcedureTransactionError, OSError) as exc:
+                    transaction = None
+                    transaction_error = bounded_error(exc)
+                repository_statuses.append(
+                    {
+                        "entry": entry,
+                        "status": None,
+                        "transaction": transaction,
+                        "error": bundle_error,
+                        "transaction_error": transaction_error,
+                    }
+                )
 
+        release_preparation = active_release_preparation()
         preview = None
         preview_error = None
         if selected_entry is not None and bundle is not None:
@@ -1240,6 +1294,7 @@ def create_web_app(
                 selected_transaction=selected_transaction,
                 bundle=bundle,
                 bundle_error=bundle_error,
+                release_preparation=release_preparation,
                 active_repository_key=active_repository.key,
                 active_repository_generation=active_generation,
             ),
@@ -1248,7 +1303,11 @@ def create_web_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def procedure_action_preconditions(allowed_fields: frozenset[str]) -> RepositoryEntry:
+    def procedure_action_preconditions(
+        allowed_fields: frozenset[str],
+        *,
+        require_bundle_integrity: bool,
+    ) -> RepositoryEntry:
         _require_csrf()
         required = {"csrf_token", "repository_key", "active_repository_key", "repository_generation"}
         if not required.issubset(request.form.keys()) or not request.form.keys() <= required | allowed_fields:
@@ -1267,6 +1326,24 @@ def create_web_app(
         selected = next((entry for entry in registry.entries if entry.key == selected_key), None)
         if selected is None:
             raise WebUIError("invalid_procedure_repository", "Select a repository from the configured list.")
+        if require_bundle_integrity:
+            release_preparation = active_release_preparation()
+            if release_preparation.get("authorized"):
+                raise WebUIError(
+                    "procedure_release_preparation_active",
+                    "Apply is blocked while an explicitly authorized shared-procedure release is being prepared.",
+                    status_code=409,
+                )
+            from ..procedure_governance import ProcedureGovernanceError, load_bundle
+
+            try:
+                load_bundle()
+            except (ProcedureGovernanceError, OSError, UnicodeError) as exc:
+                raise WebUIError(
+                    "canonical_bundle_unavailable",
+                    f"Apply is blocked because canonical bundle integrity is unavailable: {str(exc)[:1200]}",
+                    status_code=409,
+                ) from exc
         return selected
 
     @app.post("/procedure-updates/apply-review")
@@ -1278,7 +1355,10 @@ def create_web_app(
             review_apply,
         )
 
-        entry = procedure_action_preconditions(frozenset({"plan_sha256"}))
+        entry = procedure_action_preconditions(
+            frozenset({"plan_sha256"}),
+            require_bundle_integrity=True,
+        )
         posted_digest = request.form.get("plan_sha256", "")
         if len(posted_digest) != 64 or any(character not in "0123456789abcdef" for character in posted_digest):
             raise WebUIError("invalid_procedure_plan", "Procedure plan digest is required.")
@@ -1316,7 +1396,10 @@ def create_web_app(
     def procedure_apply_confirm():
         from ..procedure_transactions import ProcedureTransactionError, apply_confirmed
 
-        entry = procedure_action_preconditions(frozenset({"confirmation_token"}))
+        entry = procedure_action_preconditions(
+            frozenset({"confirmation_token"}),
+            require_bundle_integrity=True,
+        )
         confirmation = session.get("procedure_apply_review")
         token = request.form.get("confirmation_token", "")
         if (
@@ -1363,7 +1446,10 @@ def create_web_app(
     def procedure_recovery_review():
         from ..procedure_transactions import ProcedureTransactionError, review_recovery
 
-        entry = procedure_action_preconditions(frozenset({"operation_id"}))
+        entry = procedure_action_preconditions(
+            frozenset({"operation_id"}),
+            require_bundle_integrity=False,
+        )
         active_repository, generation = registry.snapshot()
         operation_id = request.form.get("operation_id", "")
         try:
@@ -1393,7 +1479,10 @@ def create_web_app(
     def procedure_recover_confirm():
         from ..procedure_transactions import ProcedureTransactionError, recover_confirmed
 
-        entry = procedure_action_preconditions(frozenset({"operation_id", "confirmation_token"}))
+        entry = procedure_action_preconditions(
+            frozenset({"operation_id", "confirmation_token"}),
+            require_bundle_integrity=False,
+        )
         confirmation = session.get("procedure_recovery_review")
         operation_id = request.form.get("operation_id", "")
         token = request.form.get("confirmation_token", "")
@@ -1805,6 +1894,16 @@ def create_web_app(
             {
                 "service": "repo-control",
                 "active_repository": active_repository.key,
+                "runtime_capabilities": {
+                    "capability_schema_version": 1,
+                    "instance_id": app.config["RUNTIME_INSTANCE_ID"],
+                    "workflow": {
+                        **workflow_runtime_capabilities(),
+                        "context_verification_record_schema_version": (
+                            VERIFICATION_RECORD_SCHEMA_VERSION
+                        ),
+                    },
+                },
             }
         )
 

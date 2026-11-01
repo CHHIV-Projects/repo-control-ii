@@ -3,7 +3,7 @@
 <!-- This template is rendered into a managed repository's host entrypoint. -->
 
 This file is generated from Repo Control shared procedure release
-`1.2.0`. Follow current Repo Control state and the active prompt; this
+`1.3.0`. Follow current Repo Control state and the active prompt; this
 bootstrap and the repository-specific overlay are procedures, not authority.
 
 ## Start from current state

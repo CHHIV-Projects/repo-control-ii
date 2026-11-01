@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from repoctl.cli import build_parser, main
+from repoctl.procedure_governance import ProcedureGovernanceError
 from repoctl.scanner.util import make_repository_id
 from repoctl.workflow.coder_interface import (
     CoderInterfaceError,
@@ -26,6 +27,7 @@ from repoctl.workflow.coder_interface import (
     submit_coder_question,
     submit_coder_test_result,
 )
+from repoctl.workflow.runtime_compatibility import RuntimeCompatibilityError
 from repoctl.workflow.lifecycle import (
     load_milestone_workflow,
     record_milestone_event,
@@ -709,6 +711,21 @@ class TestCoderInterface(unittest.TestCase):
         with (
             mock.patch("repoctl.procedure_governance.load_bundle", return_value=bundle),
             mock.patch("repoctl.procedure_governance.inspect_procedure", return_value=procedure_status),
+            mock.patch(
+                "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+                return_value={
+                    "status": "COMPATIBLE",
+                    "runtime_instance_id": "b" * 32,
+                    "producer_contract_id": "repoctl-workflow-event-writer:v1",
+                    "event_type": "context_verification_recorded",
+                    "required_event_capabilities": {
+                        "context_verification_record_schema_version": 2,
+                    },
+                    "ledger_schema_version": 1,
+                    "event_schema_version": 1,
+                    "context_verification_record_schema_version": 2,
+                },
+            ),
         ):
             result = submit_coder_context_verification(
                 "NEW",
@@ -789,6 +806,156 @@ class TestCoderInterface(unittest.TestCase):
                 state_root=self.state_root,
             )
 
+    def test_incompatible_runtime_blocks_context_verification_before_sidecar_write(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        sidecar = self.repo / "docs/milestones/M003.001_test_milestone_workflow.md"
+        original_sidecar = sidecar.read_bytes()
+        selection_path = self.state_root / make_repository_id(self.repo) / "milestones" / "selection.json"
+        original_selection = selection_path.read_bytes()
+        original_git_status = _git(self.repo, "status", "--porcelain")
+        workflow_before = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+
+        with mock.patch(
+            "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+            side_effect=RuntimeCompatibilityError(
+                "runtime_upgrade_required",
+                "Running reader does not support this event.",
+            ),
+        ):
+            with self.assertRaisesRegex(
+                CoderInterfaceError,
+                "runtime_upgrade_required: Running reader does not support this event",
+            ):
+                submit_coder_context_verification(
+                    "NEW",
+                    git_boundary_acknowledged=True,
+                    expected_repository_key="test-repository",
+                    expected_repository_id=make_repository_id(self.repo),
+                    expected_repository_root=self.repo.resolve(),
+                    expected_milestone_id="M003.001",
+                    repository_path=self.repo,
+                    state_root=self.state_root,
+                )
+
+        self.assertEqual(sidecar.read_bytes(), original_sidecar)
+        self.assertEqual(selection_path.read_bytes(), original_selection)
+        self.assertEqual(_git(self.repo, "status", "--porcelain"), original_git_status)
+        workflow_after = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        self.assertEqual(workflow_after["event_count"], workflow_before["event_count"])
+        self.assertEqual(workflow_after["phase"], workflow_before["phase"])
+        self.assertEqual(
+            (self.repo / ".repo-control" / "shared-procedure.lock.toml").exists(),
+            False,
+        )
+        for code in ("runtime_unavailable", "runtime_capability_unknown"):
+            with mock.patch(
+                "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+                side_effect=RuntimeCompatibilityError(code, "No compatible reader was established."),
+            ):
+                with self.assertRaisesRegex(CoderInterfaceError, code):
+                    submit_coder_context_verification(
+                        "HANDOFF",
+                        git_boundary_acknowledged=True,
+                        expected_repository_key="test-repository",
+                        expected_repository_id=make_repository_id(self.repo),
+                        expected_repository_root=self.repo.resolve(),
+                        expected_milestone_id="M003.001",
+                        repository_path=self.repo,
+                        state_root=self.state_root,
+                    )
+            self.assertEqual(sidecar.read_bytes(), original_sidecar)
+            self.assertEqual(selection_path.read_bytes(), original_selection)
+            self.assertEqual(_git(self.repo, "status", "--porcelain"), original_git_status)
+
+    def test_coder_verify_records_scoped_release_preparation_separately_from_verification(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved release preparation",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        release_preparation = {
+            "status": "RELEASE_IN_PREPARATION",
+            "authorized": True,
+            "milestone_id": "M003.001",
+            "candidate_release": "1.4.0",
+            "base_manifest_sha256": "a" * 64,
+            "authorized_sources": ["workflow_core.md"],
+            "changed_sources": ["workflow_core.md"],
+            "candidate_validation_status": "INVALID",
+            "candidate_validation_error": "Candidate still needs editing.",
+        }
+        runtime = {
+            "status": "COMPATIBLE",
+            "runtime_instance_id": "b" * 32,
+            "producer_contract_id": "repoctl-workflow-event-writer:v1",
+            "event_type": "context_verification_recorded",
+            "required_event_capabilities": {
+                "context_verification_record_schema_version": 2,
+            },
+            "ledger_schema_version": 1,
+            "event_schema_version": 1,
+            "context_verification_record_schema_version": 2,
+        }
+        with (
+            mock.patch(
+                "repoctl.procedure_governance.load_bundle",
+                side_effect=ProcedureGovernanceError(
+                    "Canonical source hash mismatch: workflow_core.md"
+                ),
+            ),
+            mock.patch(
+                "repoctl.procedure_release.inspect_procedure_release_preparation",
+                return_value=release_preparation,
+            ),
+            mock.patch(
+                "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+                return_value=runtime,
+            ),
+        ):
+            result = submit_coder_context_verification(
+                "NEW",
+                git_boundary_acknowledged=True,
+                expected_repository_key="test-repository",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+
+        self.assertEqual(result["result"], "RELEASE_PREPARATION")
+        self.assertTrue(result["authorization"]["authorized"])
+        self.assertEqual(result["procedure_status"], "RELEASE_IN_PREPARATION")
+        workflow = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        record = workflow["event_history"][-1]["context_verification"]
+        self.assertEqual(record["result"], "RELEASE_PREPARATION")
+        self.assertEqual(
+            record["authority_snapshot"]["procedure"]["release_preparation"]["authorized_sources"],
+            ["workflow_core.md"],
+        )
+
     def test_coder_context_verification_records_blocked_without_resuming_waiting(self):
         save_milestone_selection(self.repo, self.state_root, "M003.001")
         _record(
@@ -812,16 +979,31 @@ class TestCoderInterface(unittest.TestCase):
         )
         self.assertEqual(waiting["phase"], "WAITING")
 
-        result = submit_coder_context_verification(
-            "NEW",
-            git_boundary_acknowledged=True,
-            expected_repository_key="test-repository",
-            expected_repository_id=make_repository_id(self.repo),
-            expected_repository_root=self.repo.resolve(),
-            expected_milestone_id="M003.001",
-            repository_path=self.repo,
-            state_root=self.state_root,
-        )
+        with mock.patch(
+            "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+            return_value={
+                "status": "COMPATIBLE",
+                "runtime_instance_id": "b" * 32,
+                "producer_contract_id": "repoctl-workflow-event-writer:v1",
+                "event_type": "context_verification_recorded",
+                "required_event_capabilities": {
+                    "context_verification_record_schema_version": 2,
+                },
+                "ledger_schema_version": 1,
+                "event_schema_version": 1,
+                "context_verification_record_schema_version": 2,
+            },
+        ):
+            result = submit_coder_context_verification(
+                "NEW",
+                git_boundary_acknowledged=True,
+                expected_repository_key="test-repository",
+                expected_repository_id=make_repository_id(self.repo),
+                expected_repository_root=self.repo.resolve(),
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
 
         self.assertEqual(result["result"], "BLOCKED")
         self.assertFalse(result["authorization"]["authorized"])
@@ -835,6 +1017,40 @@ class TestCoderInterface(unittest.TestCase):
                 "milestone"
             ]["open_conditions"]["blocking"]
         )
+
+    def test_closeout_is_blocked_during_authorized_release_preparation(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "prompt_approved",
+            "Approved",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        _record(self.repo, self.state_root, self.candidate, "implementation_started", "Start")
+        before = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        with mock.patch(
+            "repoctl.procedure_release.inspect_procedure_release_preparation",
+            return_value={
+                "status": "RELEASE_IN_PREPARATION",
+                "authorized": True,
+                "authorized_sources": ["workflow_core.md"],
+            },
+        ):
+            with self.assertRaisesRegex(CoderInterfaceError, "Closeout is unavailable"):
+                submit_coder_closeout(
+                    "Premature closeout",
+                    repository_path=self.repo,
+                    state_root=self.state_root,
+                )
+        after = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate
+        )
+        self.assertEqual(after["event_count"], before["event_count"])
 
     def test_submit_coder_closeout(self):
         save_milestone_selection(self.repo, self.state_root, "M003.001")

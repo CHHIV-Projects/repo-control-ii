@@ -652,6 +652,18 @@ class MilestoneLifecycleTests(unittest.TestCase):
             snapshot=snapshot,
             result="BLOCKED",
             git_boundary_acknowledged=True,
+            runtime_compatibility={
+                "status": "COMPATIBLE",
+                "runtime_instance_id": "b" * 32,
+                "producer_contract_id": "repoctl-workflow-event-writer:v1",
+                "event_type": "context_verification_recorded",
+                "required_event_capabilities": {
+                    "context_verification_record_schema_version": 2,
+                },
+                "ledger_schema_version": 1,
+                "event_schema_version": 1,
+                "context_verification_record_schema_version": 2,
+            },
         )
 
         updated = record_milestone_event(

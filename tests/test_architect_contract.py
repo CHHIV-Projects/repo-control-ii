@@ -605,6 +605,11 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(status_body["data"]["milestone"]["waiting_reason"], "Requires a future milestone.")
         self.assertEqual(status_body["data"]["milestone"]["closeout"]["status"], "present")
         self.assertEqual(status_body["data"]["milestone"]["workflow"]["status"], "present")
+        runtime = status_body["data"]["runtime_capabilities"]
+        self.assertEqual(runtime["capability_schema_version"], 1)
+        self.assertTrue(runtime["instance_id"])
+        self.assertEqual(runtime["workflow"]["ledger_schema_version"], 1)
+        self.assertEqual(runtime["workflow"]["context_verification_record_schema_version"], 2)
 
         prompt = self.client.get("/api/architect/v1/prompt").get_json()["data"]
         self.assertEqual(prompt["source_type"], "milestone_prompt")

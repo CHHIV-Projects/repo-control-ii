@@ -14,8 +14,10 @@ from .lifecycle import (
     WorkflowRecordError,
     load_milestone_workflow,
     record_milestone_event,
+    workflow_runtime_capabilities,
 )
 from .context_verification import (
+    VERIFICATION_RECORD_SCHEMA_VERSION,
     VERIFICATION_EVENT_TYPE,
     VERIFICATION_TRIGGERS,
     build_authority_snapshot,
@@ -23,6 +25,11 @@ from .context_verification import (
     make_verification_record,
     snapshot_digest,
     validate_verification_record,
+)
+from .runtime_compatibility import (
+    PRODUCER_CONTRACT_ID,
+    RuntimeCompatibilityError,
+    require_event_runtime_compatibility,
 )
 from .milestones import (
     MilestoneArtifactError,
@@ -133,6 +140,20 @@ def get_coder_status(
     phase = workflow["phase"]
     is_corr = _is_correction_mode(workflow)
     auth = get_authorization_status(phase, is_corr)
+    from ..procedure_release import inspect_procedure_release_preparation
+
+    release_preparation = inspect_procedure_release_preparation(
+        entry.path,
+        candidate,
+        workflow,
+    )
+    local_runtime_capabilities = {
+        "producer_contract_id": PRODUCER_CONTRACT_ID,
+        "workflow": {
+            **workflow_runtime_capabilities(),
+            "context_verification_record_schema_version": VERIFICATION_RECORD_SCHEMA_VERSION,
+        },
+    }
 
     binding_lock_ins = [
         event
@@ -173,6 +194,8 @@ def get_coder_status(
             "closeout_path": candidate.get("closeout_path"),
         },
         "authorization": auth,
+        "procedure_release_preparation": release_preparation,
+        "local_runtime_capabilities": local_runtime_capabilities,
         "workflow": {
             "phase": phase,
             "waiting_category": workflow.get("waiting_category"),
@@ -191,6 +214,19 @@ def get_coder_status(
             "identity": workflow["prompt_identity"],
         },
     }
+
+
+def resolve_coder_release_preparation_context(
+    repository_path: str | Path | None = None,
+    state_root: str | Path | None = None,
+    milestone_root: str | None = None,
+) -> tuple[RepositoryEntry, dict[str, Any], dict[str, Any]]:
+    entry, _, candidate, workflow = _resolve_context_and_workflow(
+        repository_path=repository_path,
+        state_root=state_root,
+        milestone_root=milestone_root,
+    )
+    return entry, candidate, workflow
 
 
 def get_coder_context(
@@ -283,6 +319,13 @@ def format_coder_status_text(data: dict[str, Any]) -> str:
         f"Prompt Path:    {prompt['path']} ({prompt.get('size_bytes', 0)} bytes)",
         f"Lifecycle:      {milestone['phase']}",
         f"Authorization:  {auth['message']}",
+        f"Procedure Release: {data.get('procedure_release_preparation', {}).get('status', 'UNKNOWN')}",
+        "Local Workflow Schema: "
+        + json.dumps(data.get("local_runtime_capabilities", {}).get("workflow", {}), sort_keys=True),
+        (
+            "Procedure Release Diagnostic: "
+            + data.get("procedure_release_preparation", {}).get("reason", "No additional diagnostic.")
+        ),
         f"Next Action:    {wf.get('next_action')}",
         f"Closeout:       {closeout_text}",
         f"Waiting State:  {waiting_text}",
@@ -333,6 +376,43 @@ def format_coder_context_text(data: dict[str, Any]) -> str:
             )
     else:
         lines.append("None.")
+    release_preparation = data.get("procedure_release_preparation", {})
+    if release_preparation.get("authorized"):
+        lines.extend(
+            [
+                "",
+                "-" * 80,
+                "RELEASE-PREPARATION SCOPE RESTRICTION",
+                "-" * 80,
+                "Only the explicitly authorized shared-procedure release may be prepared. "
+                "Do not perform generic milestone work or use generated instructions as authority.",
+                "Authorized canonical source paths: "
+                + ", ".join(release_preparation.get("authorized_sources", [])),
+                "Use coder-procedure-release-preview before coder-procedure-release-publish. "
+                "Procedure Apply remains unavailable; independently safe transaction Recover remains available.",
+            ]
+        )
+        if release_preparation.get("candidate_validation_status"):
+            lines.append(
+                "Candidate validation: "
+                f"{release_preparation['candidate_validation_status']}"
+            )
+        if release_preparation.get("candidate_validation_error"):
+            lines.append(
+                "Candidate validation error: "
+                f"{release_preparation['candidate_validation_error']}"
+            )
+    elif release_preparation.get("status") == "RELEASE_PUBLISHED":
+        lines.extend(
+            [
+                "",
+                "-" * 80,
+                "RELEASE-PREPARATION SCOPE RESTRICTION",
+                "-" * 80,
+                "The approved canonical release is published. Do not edit additional canonical sources "
+                "or perform generic milestone work; finish validation and closeout only.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -510,6 +590,7 @@ def submit_coder_context_verification(
     repository_path: str | Path | None = None,
     state_root: str | Path | None = None,
     milestone_root: str | None = None,
+    runtime_url: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(trigger, str) or trigger not in VERIFICATION_TRIGGERS:
         raise CoderInterfaceError("Choose NEW, HANDOFF, AUTHORITY_TRANSITION, or RECOVERY as the trigger.")
@@ -551,7 +632,7 @@ def submit_coder_context_verification(
             f"{expected_milestone_id!r}."
         )
 
-    sources = collect_verification_sources(entry, candidate, effective_state_root)
+    sources = collect_verification_sources(entry, candidate, workflow, effective_state_root)
     procedure = sources["procedure"]
     git_state = sources["git_state"]
     approved_dispatches = sources["approved_dispatches"]
@@ -580,6 +661,20 @@ def submit_coder_context_verification(
     if not authorization["authorized"]:
         result = "BLOCKED"
     elif (
+        sources["release_preparation"].get("authorized")
+        and git_state is not None
+        and approved_dispatches is not None
+        and git_boundary_acknowledged
+    ):
+        result = "RELEASE_PREPARATION"
+    elif (
+        sources["release_preparation"].get("status") == "RELEASE_PUBLISHED"
+        and git_state is not None
+        and approved_dispatches is not None
+        and git_boundary_acknowledged
+    ):
+        result = "RELEASE_PUBLISHED"
+    elif (
         procedure.get("inspection_status") != "available"
         or procedure.get("status") != "CURRENT"
         or not procedure.get("overlay_valid")
@@ -590,12 +685,14 @@ def submit_coder_context_verification(
         result = "PARTIAL_UNVERIFIED"
     else:
         result = "VERIFIED"
-    verification = make_verification_record(
-        trigger=trigger,
-        snapshot=snapshot,
-        result=result,
-        git_boundary_acknowledged=git_boundary_acknowledged,
-    )
+    try:
+        runtime_compatibility = require_event_runtime_compatibility(
+            VERIFICATION_EVENT_TYPE,
+            runtime_url,
+        )
+    except RuntimeCompatibilityError as exc:
+        raise CoderInterfaceError(f"{exc.code}: {exc}") from exc
+
     current_digest = snapshot_digest(snapshot)
     latest_verification = next(
         (
@@ -612,6 +709,7 @@ def submit_coder_context_verification(
             and prior.get("trigger") == trigger
             and prior.get("authority_snapshot_sha256") == current_digest
             and prior.get("git_boundary_acknowledged") is git_boundary_acknowledged
+            and prior.get("runtime_compatibility") == runtime_compatibility
         ):
             return {
                 "event_id": latest_verification["event_id"],
@@ -625,7 +723,16 @@ def submit_coder_context_verification(
                 "phase": workflow["phase"],
                 "session_identity": prior["session_identity"],
                 "provider_delivery": prior["provider_delivery"],
+                "runtime_compatibility": prior["runtime_compatibility"],
             }
+
+    verification = make_verification_record(
+        trigger=trigger,
+        snapshot=snapshot,
+        result=result,
+        git_boundary_acknowledged=git_boundary_acknowledged,
+        runtime_compatibility=runtime_compatibility,
+    )
 
     try:
         updated_workflow = record_milestone_event(
@@ -657,6 +764,8 @@ def submit_coder_context_verification(
         "phase": updated_workflow["phase"],
         "authorization": authorization,
         "procedure_status": procedure.get("status", "UNAVAILABLE"),
+        "release_preparation": sources["release_preparation"],
+        "runtime_compatibility": verification["runtime_compatibility"],
         "git_state": snapshot["git"],
         "session_identity": verification["session_identity"],
         "provider_delivery": verification["provider_delivery"],
@@ -671,11 +780,19 @@ def submit_coder_closeout(
 ) -> dict[str, Any]:
     clean_summary = summary.strip() if summary and summary.strip() else "Closeout submitted for review"
 
-    entry, effective_state_root, candidate, _ = _resolve_context_and_workflow(
+    entry, effective_state_root, candidate, workflow = _resolve_context_and_workflow(
         repository_path=repository_path,
         state_root=state_root,
         milestone_root=milestone_root,
     )
+    from ..procedure_release import inspect_procedure_release_preparation
+
+    release_preparation = inspect_procedure_release_preparation(entry.path, candidate, workflow)
+    if release_preparation.get("authorized"):
+        raise CoderInterfaceError(
+            "Closeout is unavailable while an authorized shared-procedure release is being prepared. "
+            "Validate and publish the candidate bundle first, then recheck canonical integrity."
+        )
 
     try:
         updated_workflow = record_milestone_event(

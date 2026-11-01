@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ VERIFICATION_TRIGGERS = {
     "RECOVERY",
 }
 MAX_VERIFICATION_RECORD_BYTES = 16_000
+VERIFICATION_RECORD_SCHEMA_VERSION = 2
 AUDIT_RECORD_LIMIT = 5
 _SENSITIVE_PATH_PARTS = {
     ".aws",
@@ -25,6 +27,7 @@ _SENSITIVE_PATH_PARTS = {
     "id_ed25519",
     "id_rsa",
 }
+_RUNTIME_INSTANCE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
 def _canonical_json(value: Any) -> str:
@@ -96,8 +99,16 @@ def normalize_approved_dispatches(
 def collect_verification_sources(
     repository: Any,
     candidate: dict[str, Any],
+    workflow: dict[str, Any],
     state_root: str | Path,
 ) -> dict[str, Any]:
+    from ..procedure_release import inspect_procedure_release_preparation
+
+    release_preparation = inspect_procedure_release_preparation(
+        repository.path,
+        candidate,
+        workflow,
+    )
     try:
         from ..procedure_governance import ProcedureGovernanceError, inspect_procedure, load_bundle
 
@@ -121,10 +132,20 @@ def collect_verification_sources(
             overlay_sha256=overlay_hash,
         )
     except (OSError, UnicodeError, ProcedureGovernanceError) as exc:
-        procedure = {
-            "inspection_status": "unavailable",
-            "failure_type": type(exc).__name__,
-        }
+        if release_preparation.get("authorized"):
+            procedure = {
+                "inspection_status": "release_in_preparation",
+                "status": release_preparation["status"],
+                "failure_type": type(exc).__name__,
+                "integrity_error": str(exc)[:1200],
+            }
+        else:
+            procedure = {
+                "inspection_status": "unavailable",
+                "failure_type": type(exc).__name__,
+                "integrity_error": str(exc)[:1200],
+            }
+    procedure["release_preparation"] = release_preparation
 
     from .git_state import WorkflowGitStateError, inspect_git_state
 
@@ -156,6 +177,7 @@ def collect_verification_sources(
 
     return {
         "procedure": procedure,
+        "release_preparation": release_preparation,
         "git_state": git_state,
         "git_failure_type": git_failure_type,
         "approved_dispatches": approved_dispatches,
@@ -362,9 +384,10 @@ def make_verification_record(
     snapshot: dict[str, Any],
     result: str,
     git_boundary_acknowledged: bool,
+    runtime_compatibility: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": VERIFICATION_RECORD_SCHEMA_VERSION,
         "trigger": trigger,
         "trigger_provenance": "agent_reported",
         "session_identity": "unverified",
@@ -377,13 +400,14 @@ def make_verification_record(
         "git_boundary_acknowledged": git_boundary_acknowledged,
         "authority_snapshot_sha256": snapshot_digest(snapshot),
         "authority_snapshot": snapshot,
+        "runtime_compatibility": runtime_compatibility,
     }
 
 
 def validate_verification_record(record: Any) -> bool:
     if not isinstance(record, dict):
         return False
-    required = {
+    common_required = {
         "schema_version",
         "trigger",
         "trigger_provenance",
@@ -398,18 +422,25 @@ def validate_verification_record(record: Any) -> bool:
         "authority_snapshot_sha256",
         "authority_snapshot",
     }
-    if set(record) != required:
+    schema_version = record.get("schema_version")
+    required = common_required | ({"runtime_compatibility"} if schema_version == 2 else set())
+    if schema_version not in {1, VERIFICATION_RECORD_SCHEMA_VERSION} or set(record) != required:
         return False
     if (
         type(record["schema_version"]) is not int
-        or record["schema_version"] != 1
         or not isinstance(record["trigger"], str)
         or record["trigger"] not in VERIFICATION_TRIGGERS
         or record["trigger_provenance"] != "agent_reported"
         or record["session_identity"] != "unverified"
         or record["lookup_source"] != "repoctl coder-verify"
         or not isinstance(record["result"], str)
-        or record["result"] not in {"VERIFIED", "BLOCKED", "PARTIAL_UNVERIFIED"}
+        or record["result"] not in {
+            "VERIFIED",
+            "BLOCKED",
+            "PARTIAL_UNVERIFIED",
+            "RELEASE_PREPARATION",
+            "RELEASE_PUBLISHED",
+        }
         or record["evidence_provenance"] != "repo_control_observed_local_state"
         or record["evidence_strength"] != "live_local_snapshot"
         or record["provider_delivery"] != "unverified"
@@ -417,6 +448,39 @@ def validate_verification_record(record: Any) -> bool:
         or not isinstance(record["authority_snapshot"], dict)
     ):
         return False
+    if schema_version == VERIFICATION_RECORD_SCHEMA_VERSION:
+        runtime = record["runtime_compatibility"]
+        runtime_keys = {
+            "status",
+            "runtime_instance_id",
+            "producer_contract_id",
+            "event_type",
+            "required_event_capabilities",
+            "ledger_schema_version",
+            "event_schema_version",
+            "context_verification_record_schema_version",
+        }
+        if (
+            not isinstance(runtime, dict)
+            or set(runtime) != runtime_keys
+            or runtime.get("status") != "COMPATIBLE"
+            or not isinstance(runtime.get("runtime_instance_id"), str)
+            or not _RUNTIME_INSTANCE_ID_RE.fullmatch(runtime["runtime_instance_id"])
+            or runtime.get("producer_contract_id") != "repoctl-workflow-event-writer:v1"
+            or runtime.get("event_type") != VERIFICATION_EVENT_TYPE
+            or runtime.get("required_event_capabilities")
+            != {
+                "context_verification_record_schema_version": VERIFICATION_RECORD_SCHEMA_VERSION
+            }
+            or type(runtime.get("ledger_schema_version")) is not int
+            or runtime.get("ledger_schema_version") != 1
+            or type(runtime.get("event_schema_version")) is not int
+            or runtime.get("event_schema_version") != 1
+            or type(runtime.get("context_verification_record_schema_version")) is not int
+            or runtime.get("context_verification_record_schema_version")
+            != VERIFICATION_RECORD_SCHEMA_VERSION
+        ):
+            return False
     if not isinstance(record["lookup_at"], str):
         return False
     try:
@@ -478,6 +542,35 @@ def validate_verification_record(record: Any) -> bool:
         return False
     if record["result"] == "PARTIAL_UNVERIFIED" and milestone["authorization"]["authorized"] is not True:
         return False
+    if record["result"] == "RELEASE_PREPARATION":
+        preparation = procedure.get("release_preparation")
+        if not (
+            milestone["lifecycle"] == "IN_PROGRESS"
+            and milestone["authorization"]["authorized"] is True
+            and isinstance(preparation, dict)
+            and preparation.get("authorized") is True
+            and preparation.get("status") in {"RELEASE_IN_PREPARATION", "CANDIDATE_READY"}
+            and git.get("inspection_status") == "available"
+            and dispatches.get("inspection_status") == "available"
+            and record["git_boundary_acknowledged"] is True
+        ):
+            return False
+    if record["result"] == "RELEASE_PUBLISHED":
+        preparation = procedure.get("release_preparation")
+        if not (
+            milestone["lifecycle"] == "IN_PROGRESS"
+            and milestone["authorization"]["authorized"] is True
+            and isinstance(preparation, dict)
+            and preparation.get("status") == "RELEASE_PUBLISHED"
+            and preparation.get("authorized") is False
+            and preparation.get("integrity_status") == "CURRENT"
+            and isinstance(preparation.get("manifest_sha256"), str)
+            and re.fullmatch(r"[a-f0-9]{64}", preparation["manifest_sha256"])
+            and git.get("inspection_status") == "available"
+            and dispatches.get("inspection_status") == "available"
+            and record["git_boundary_acknowledged"] is True
+        ):
+            return False
     if (
         not isinstance(record["authority_snapshot_sha256"], str)
         or record["authority_snapshot_sha256"] != snapshot_digest(snapshot)

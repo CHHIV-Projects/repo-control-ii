@@ -7,8 +7,21 @@
   <p>Product Owner role attribution is not identity authentication. Apply and Recover remain loopback service operations,
      apply to one selected registered repository, do not change Git or milestone state, and never write the five local
      <code>docs/context</code> authorities.</p>
+  {% if release_preparation.authorized %}
+  <div class="card error">
+       <strong>{{ release_preparation.status }} — Apply is disabled; safe transaction recovery remains available.</strong>
+    Candidate release {{ release_preparation.candidate_release }} is scoped to milestone
+    {{ release_preparation.milestone_id }} and paths:
+    {{ release_preparation.authorized_sources|join(", ") }}.
+    {% if release_preparation.candidate_validation_error %}
+    <div>Candidate validation: {{ release_preparation.candidate_validation_error }}</div>
+    {% else %}
+    <div>Run the authorized CLI release preview and publish flow; this page never publishes the candidate.</div>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if bundle_error %}
-  <div class="card error"><strong>Canonical bundle unavailable.</strong> {{ bundle_error }}</div>
+  <div class="card error"><strong>Canonical bundle integrity unavailable.</strong> {{ bundle_error }}</div>
   {% elif bundle %}
   <dl class="procedure-provenance">
     <dt>Canonical release</dt><dd>{{ bundle.release }}</dd>
@@ -47,11 +60,18 @@
           {% if row.transaction.cleanup_pending %}<div>Terminal recovery-image cleanup pending</div>{% endif %}
         {% else %}None unresolved{% endif %}</td>
         {% else %}
-        <td>Unavailable</td><td><strong>Status unavailable</strong><div>{{ row.error }}</div></td><td>Not checked</td><td>Unavailable</td>
+        <td>Unavailable</td><td><strong>Comparison unavailable</strong><div>{{ row.error }}</div></td>
+        <td>Unavailable</td><td>
+          {% if row.transaction %}<strong>{{ row.transaction.state }}</strong>
+            {% if row.transaction_error %}<div class="error">{{ row.transaction_error }}</div>{% endif %}
+            {% if row.transaction.blocked %}<div class="error">{{ row.transaction.error or row.transaction.conflicts|join(", ") }}</div>{% endif %}
+            {% if row.transaction.cleanup_pending %}<div>Terminal recovery-image cleanup pending</div>{% endif %}
+          {% else %}Unavailable{% endif %}
+        </td>
         {% endif %}
         <td><a href="{{ url_for('procedure_updates_page', repository=row.entry.key) }}">Review Update</a></td>
       </tr>
-      {% else %}<tr><td colspan="7">No managed repositories are configured.</td></tr>{% endfor %}</tbody>
+      {% else %}<tr><td colspan="7">No repositories are configured for this service.</td></tr>{% endfor %}</tbody>
     </table>
   </div>
   <p>`STALE_VERSION` means the installed procedure release is older than the canonical release; by itself it is expected drift, not a defect.</p>
@@ -92,27 +112,8 @@
   </table></div>
   <p>Removals: {{ preview.removals|length }}. No generated file is deleted by this preview.</p>
   {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
-  <div class="card error">
-    <h4>Unresolved procedure transaction: {{ selected_transaction.state }}</h4>
-    {% if selected_transaction.operation_id %}<p>Operation: <code>{{ selected_transaction.operation_id }}</code></p>{% endif %}
-    {% if selected_transaction.error %}<p>{{ selected_transaction.error }}</p>{% endif %}
-    {% if selected_transaction.conflicts %}<p>Conflicting targets: {{ selected_transaction.conflicts|join(", ") }}</p>{% endif %}
-    <p>Apply is blocked. Status, preview, and page load do not repair or recover files.</p>
-    {% if selected_transaction.recoverable and selected_transaction.operation_id %}
-    <form method="post" action="{{ url_for('procedure_recovery_review') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
-      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
-      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
-      <input type="hidden" name="operation_id" value="{{ selected_transaction.operation_id }}">
-      <button type="submit">Review Recovery</button>
-    </form>
-    {% else %}
-    <p>Recovery is blocked. Preserve the journal and images and escalate for operator investigation; no target was reconciled.</p>
-    {% endif %}
-  </div>
-  {% endif %}
-  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  {% elif release_preparation.authorized %}
+  <p>Apply is blocked while canonical release preparation is authorized, even when the currently published bundle is valid.</p>
   {% elif preview.materialization_available %}
   <section class="card">
     <h4>Apply requires a separate, explicit confirmation</h4>
@@ -151,6 +152,28 @@
     </form>
   </section>
   {% endif %}
+  {% endif %}
+  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  <section class="card error">
+    <h4>Transaction recovery: {{ selected_transaction.state }}</h4>
+    {% if selected_transaction.operation_id %}<p>Operation: <code>{{ selected_transaction.operation_id }}</code></p>{% endif %}
+    {% if selected_transaction.error %}<p>{{ selected_transaction.error }}</p>{% endif %}
+    {% if selected_transaction.conflicts %}<p>Conflicting targets: {{ selected_transaction.conflicts|join(", ") }}</p>{% endif %}
+    <p>Apply remains blocked. Recovery is independently reviewed and only restores verified original images; it does not use or publish the canonical bundle.</p>
+    {% if selected_transaction.recoverable and selected_transaction.operation_id %}
+    <form method="post" action="{{ url_for('procedure_recovery_review') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="operation_id" value="{{ selected_transaction.operation_id }}">
+      <button type="submit">Review Recovery</button>
+    </form>
+    {% else %}
+    <p>Recovery is blocked. Preserve the journal and images and escalate for operator investigation; no target was reconciled.</p>
+    {% endif %}
+  </section>
+  {% endif %}
   {% if recovery_review %}
   <section class="card error">
     <h4>Confirm Recovery — restore the original state</h4>
@@ -167,7 +190,6 @@
       <button type="submit">Confirm Recover</button>
     </form>
   </section>
-  {% endif %}
   {% endif %}
 </section>
 {% endif %}

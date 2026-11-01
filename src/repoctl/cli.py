@@ -138,6 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
     coder_verify_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_verify_parser.add_argument("--state-root", help="Explicit state root override")
     coder_verify_parser.add_argument(
+        "--runtime-url",
+        help="Loopback Repo Control service URL (defaults to REPO_CONTROL_RUNTIME_URL or http://127.0.0.1:8765)",
+    )
+    coder_verify_parser.add_argument(
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
@@ -156,6 +160,39 @@ def build_parser() -> argparse.ArgumentParser:
     procedure_preview_parser.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
     )
+
+    release_marker_parser = subparsers.add_parser(
+        "coder-procedure-release-marker",
+        help="Render an approved-prompt marker bound to the current canonical manifest",
+    )
+    release_marker_parser.add_argument("--candidate-release", required=True)
+    release_marker_parser.add_argument(
+        "--source",
+        action="append",
+        required=True,
+        help="Canonical source path to allowlist; repeat for each source",
+    )
+
+    for command, help_text in (
+        (
+            "coder-procedure-release-preview",
+            "Validate and preview an explicitly authorized shared procedure release candidate",
+        ),
+        (
+            "coder-procedure-release-publish",
+            "Publish a fully validated, explicitly authorized shared procedure release candidate",
+        ),
+    ):
+        release_parser = subparsers.add_parser(command, help=help_text)
+        release_parser.add_argument("--repository", help="Path inside the active managed repository")
+        release_parser.add_argument("--state-root", help="Explicit state root override")
+        release_parser.add_argument(
+            "--milestone-root",
+            help="Compatibility assertion; must match the centrally configured milestone root",
+        )
+        release_parser.add_argument(
+            "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
+        )
 
     from .intelligence.service import DEFAULT_BOUNDS, OPERATIONS
     from .intelligence.measurements import RATINGS
@@ -725,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                runtime_url=args.runtime_url,
             )
         except CoderInterfaceError as exc:
             print(f"coder verification failed: {exc}", file=sys.stderr)
@@ -736,8 +774,76 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result["result"] == "BLOCKED":
             return 3
+        if result["result"] in {"RELEASE_PREPARATION", "RELEASE_PUBLISHED"}:
+            return 0
         if result["result"] != "VERIFIED":
             return 4
+        return 0
+
+    if args.command == "coder-procedure-release-marker":
+        from .procedure_release import (
+            ProcedureReleaseError,
+            render_release_preparation_marker,
+        )
+        from .procedure_governance import ProcedureGovernanceError
+
+        try:
+            marker = render_release_preparation_marker(
+                args.candidate_release,
+                args.source,
+            )
+        except (ProcedureReleaseError, ProcedureGovernanceError, OSError, UnicodeError) as exc:
+            print(f"coder procedure release marker failed: {exc}", file=sys.stderr)
+            return 2
+        print(marker)
+        return 0
+
+    if args.command in {
+        "coder-procedure-release-preview",
+        "coder-procedure-release-publish",
+    }:
+        from .procedure_release import (
+            ProcedureReleaseError,
+            preview_authorized_procedure_release,
+            publish_authorized_procedure_release,
+        )
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            resolve_coder_release_preparation_context,
+        )
+
+        try:
+            entry, candidate, workflow = resolve_coder_release_preparation_context(
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+            if args.command == "coder-procedure-release-preview":
+                result = preview_authorized_procedure_release(entry, candidate, workflow)
+            else:
+                result = publish_authorized_procedure_release(entry, candidate, workflow)
+        except (CoderInterfaceError, ProcedureReleaseError, OSError, UnicodeError) as exc:
+            print(f"coder procedure release command failed: {exc}", file=sys.stderr)
+            return 2
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            preparation = result.get("release_preparation", {})
+            print(f"status: {preparation.get('status', result.get('status'))}")
+            print(f"milestone: {preparation.get('milestone_id', 'published candidate')}")
+            print(f"candidate release: {preparation.get('candidate_release', result.get('release'))}")
+            if preparation.get("base_manifest_sha256"):
+                print(f"base manifest SHA-256: {preparation['base_manifest_sha256']}")
+            if preparation.get("changed_sources"):
+                print("changed authorized sources: " + ", ".join(preparation["changed_sources"]))
+            if "preview" in result:
+                preview = result["preview"]
+                print(f"preview status: {preview['status']}")
+                print(f"preview materialization available: {preview['materialization_available']}")
+                for blocker in preview["blockers"]:
+                    print(f"blocker: {blocker}")
+            if result.get("manifest_sha256"):
+                print(f"published manifest SHA-256: {result['manifest_sha256']}")
         return 0
 
     if args.command in {"coder-procedure-status", "coder-procedure-preview"}:
@@ -749,18 +855,73 @@ def main(argv: list[str] | None = None) -> int:
             load_bundle,
             preview_reconciliation,
         )
-        from .workflow.coder_interface import CoderInterfaceError, resolve_repository_entry
+        from .procedure_release import inspect_procedure_release_preparation
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            resolve_coder_release_preparation_context,
+            resolve_repository_entry,
+        )
 
         try:
             entry = resolve_repository_entry(repository_path=args.repository)
-            bundle = load_bundle()
-            if args.command == "coder-procedure-status":
-                result = inspect_procedure(entry, bundle)
-                text = format_procedure_status_text(result)
-            else:
+            if args.command == "coder-procedure-preview":
+                bundle = load_bundle()
                 plan = preview_reconciliation(entry, bundle)
                 result = plan.as_dict(include_diffs=True)
                 text = format_procedure_preview_text(plan)
+            else:
+                try:
+                    bundle = load_bundle()
+                except ProcedureGovernanceError as integrity_error:
+                    try:
+                        release_entry, candidate, workflow = resolve_coder_release_preparation_context(
+                            repository_path=args.repository,
+                            state_root=getattr(args, "state_root", None),
+                            milestone_root=getattr(args, "milestone_root", None),
+                        )
+                        release_preparation = inspect_procedure_release_preparation(
+                            release_entry.path,
+                            candidate,
+                            workflow,
+                        )
+                    except CoderInterfaceError as context_error:
+                        release_preparation = {
+                            "status": "UNAVAILABLE",
+                            "authorized": False,
+                            "reason": str(context_error),
+                        }
+                    result = {
+                        "status": (
+                            release_preparation["status"]
+                            if release_preparation.get("authorized")
+                            else "INTEGRITY_UNAVAILABLE"
+                        ),
+                        "integrity_error": str(integrity_error),
+                        "release_preparation": release_preparation,
+                    }
+                    text = (
+                        f"status: {result['status']}\n"
+                        f"canonical integrity: unavailable — {result['integrity_error']}\n"
+                        f"release preparation: {release_preparation.get('status')}\n"
+                        f"diagnostic: {release_preparation.get('reason', 'No active authorization details.')}"
+                    )
+                else:
+                    result = inspect_procedure(entry, bundle)
+                    try:
+                        _, candidate, workflow = resolve_coder_release_preparation_context(
+                            repository_path=args.repository,
+                            state_root=getattr(args, "state_root", None),
+                            milestone_root=getattr(args, "milestone_root", None),
+                        )
+                    except CoderInterfaceError:
+                        pass
+                    else:
+                        result["release_preparation"] = inspect_procedure_release_preparation(
+                            entry.path,
+                            candidate,
+                            workflow,
+                        )
+                    text = format_procedure_status_text(result)
         except (CoderInterfaceError, ProcedureGovernanceError, OSError, UnicodeError) as exc:
             print(f"coder procedure command failed: {exc}", file=sys.stderr)
             return 2

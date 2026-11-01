@@ -784,6 +784,13 @@ def format_procedure_status_text(status: dict[str, Any]) -> str:
         f"Target release: {status['target_release']}",
         f"Overlay: {status['overlay']['path']} ({'valid' if status['overlay']['valid'] else 'invalid'})",
     ]
+    release_preparation = status.get("release_preparation")
+    if isinstance(release_preparation, dict):
+        lines.append(f"Release preparation: {release_preparation.get('status', 'UNKNOWN')}")
+        if release_preparation.get("candidate_release"):
+            lines.append(f"Candidate release: {release_preparation['candidate_release']}")
+        if release_preparation.get("reason"):
+            lines.append(f"Release diagnostic: {release_preparation['reason']}")
     for issue in status["issues"]:
         lines.append(f"- {issue['status']} {issue['path']}: {issue['detail']}")
     return "\n".join(lines)

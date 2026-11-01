@@ -26,7 +26,9 @@ from .milestones import (
     prompt_identity,
 )
 
-_LEDGER_SCHEMA_VERSION = 1
+WORKFLOW_LEDGER_SCHEMA_VERSION = 1
+WORKFLOW_EVENT_SCHEMA_VERSION = 1
+_LEDGER_SCHEMA_VERSION = WORKFLOW_LEDGER_SCHEMA_VERSION
 _MAX_SIDECAR_BYTES = 5_000_000
 _MAX_EVENTS = 2000
 _PHASES = {"PLANNING", "READY", "IN_PROGRESS", "WAITING", "REVIEW", "CLOSED"}
@@ -84,6 +86,14 @@ ACTOR_OPTIONS = (
     ("repo_control", "Repo Control (reported context)"),
 )
 _SIDECAR_MARKER = "<!-- repoctl-workflow-ledger:v1 -->"
+
+
+def workflow_runtime_capabilities() -> dict[str, Any]:
+    return {
+        "ledger_schema_version": WORKFLOW_LEDGER_SCHEMA_VERSION,
+        "event_schema_version": WORKFLOW_EVENT_SCHEMA_VERSION,
+        "supported_event_types": sorted(_EVENT_TYPES),
+    }
 
 
 class WorkflowRecordError(RuntimeError):

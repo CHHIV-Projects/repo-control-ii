@@ -12,6 +12,19 @@ from repoctl.workflow.context_verification import (
 
 
 class ContextVerificationTests(unittest.TestCase):
+    runtime_compatibility = {
+        "status": "COMPATIBLE",
+        "runtime_instance_id": "b" * 32,
+        "producer_contract_id": "repoctl-workflow-event-writer:v1",
+        "event_type": "context_verification_recorded",
+        "required_event_capabilities": {
+            "context_verification_record_schema_version": 2,
+        },
+        "ledger_schema_version": 1,
+        "event_schema_version": 1,
+        "context_verification_record_schema_version": 2,
+    }
+
     def setUp(self) -> None:
         self.snapshot = {
             "repository": {"key": "repo", "id": "repo--123", "root": "/work/repo"},
@@ -39,6 +52,7 @@ class ContextVerificationTests(unittest.TestCase):
             snapshot=self.snapshot,
             result="VERIFIED",
             git_boundary_acknowledged=True,
+            runtime_compatibility=self.runtime_compatibility,
         )
 
         self.assertTrue(validate_verification_record(record))
@@ -50,12 +64,38 @@ class ContextVerificationTests(unittest.TestCase):
         record["authority_snapshot"]["milestone"]["id"] = "M003.002"
         self.assertFalse(validate_verification_record(record))
 
+    def test_release_preparation_result_requires_live_authority_and_explicit_scope(self) -> None:
+        snapshot = {
+            **self.snapshot,
+            "procedure": {
+                **self.snapshot["procedure"],
+                "release_preparation": {
+                    "status": "RELEASE_IN_PREPARATION",
+                    "authorized": True,
+                    "authorized_sources": ["workflow_core.md"],
+                },
+            },
+        }
+        record = make_verification_record(
+            trigger="NEW",
+            snapshot=snapshot,
+            result="RELEASE_PREPARATION",
+            git_boundary_acknowledged=True,
+            runtime_compatibility=self.runtime_compatibility,
+        )
+        self.assertTrue(validate_verification_record(record))
+
+        record["authority_snapshot"]["procedure"]["release_preparation"]["authorized"] = False
+        record["authority_snapshot_sha256"] = snapshot_digest(record["authority_snapshot"])
+        self.assertFalse(validate_verification_record(record))
+
     def test_coverage_reports_missing_invalid_stale_and_current_records(self) -> None:
         record = make_verification_record(
             trigger="HANDOFF",
             snapshot=self.snapshot,
             result="PARTIAL_UNVERIFIED",
             git_boundary_acknowledged=False,
+            runtime_compatibility=self.runtime_compatibility,
         )
         events = [
             {
@@ -110,6 +150,7 @@ class ContextVerificationTests(unittest.TestCase):
             snapshot=self.snapshot,
             result="VERIFIED",
             git_boundary_acknowledged=True,
+            runtime_compatibility=self.runtime_compatibility,
         )
         event = {
             "event_id": "event",

@@ -83,8 +83,15 @@ operation for the centrally registered Coder workspace and active milestone,
 and changes only the existing external derived graph. It grants no Git,
 lifecycle, repository-selection, provider/configuration, schema, or source
 scope authority. If refresh is not useful, do not run it; use direct evidence
-and record the decision. Closeout reports USED/NOT USED/NOT AVAILABLE and any
-refresh decision/outcome separately from query-use ratings.
+and record the decision.
+
+Closeout separates graph status, refresh decision/outcome, and evidence-use
+classification. `USED` means queried structural evidence materially informed
+the work. `NOT USED` means Intelligence was not materially useful or needed,
+regardless of graph state. `NOT AVAILABLE` is reserved for genuinely
+unsupported or inaccessible capability/evidence, with the cause stated;
+`STALE` alone is not unavailability. Refresh receipts describe maintenance,
+not query uses or usefulness ratings.
 
 Repository Intelligence is optional deterministic evidence, not mandatory
 ceremony; implementation milestones explicitly disposition its use, non-use,

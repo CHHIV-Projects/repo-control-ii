@@ -1267,6 +1267,7 @@ def _selected_response(
         verification_sources = collect_verification_sources(
             repository,
             candidate,
+            workflow,
             state_root,
         )
         procedure = verification_sources["procedure"]
