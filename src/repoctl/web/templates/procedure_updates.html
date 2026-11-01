@@ -4,9 +4,10 @@
   <h2>Shared Procedure Updates</h2>
   <p>Review the canonical shared Coder procedure release and per-repository drift. Status and preview are read-only;
      a separately confirmed POST is required before any generated file is changed.</p>
-  <p>Product Owner role attribution is not identity authentication. Apply and Recover remain loopback service operations,
-     apply to one selected registered repository, do not change Git or milestone state, and never write the five local
-     <code>docs/context</code> authorities.</p>
+  <p>Product Owner role attribution is not identity authentication. Generated-procedure Apply and Recover remain
+     loopback service operations for one registered repository; they do not change Git or milestone state and never
+     write the five local <code>docs/context</code> authorities. A separate, explicitly confirmed overlay-initialization
+     transaction may update only the selected repository's existing mapped Coder overlay.</p>
   {% if release_preparation.authorized %}
   <div class="card error">
        <strong>{{ release_preparation.status }} — Apply is disabled; safe transaction recovery remains available.</strong>
@@ -77,6 +78,75 @@
   <p>`STALE_VERSION` means the installed procedure release is older than the canonical release; by itself it is expected drift, not a defect.</p>
 </section>
 {% if selected_entry %}
+{% if overlay_initialization or overlay_initialization_error %}
+<section class="card">
+  <h3>First-time project overlay preparation: {{ selected_entry.name }} (<code>{{ selected_entry.key }}</code>)</h3>
+  <p>This separate Product Owner operation addresses an existing invalid local overlay only. It never replaces
+     project rules: the reviewed candidate adds a contract header and preserves the original file bytes exactly.
+     The resulting overlay is not a shared-procedure installation and does not make Coder verification VERIFIED.</p>
+  {% if overlay_initialization_error %}
+  <div class="card error"><strong>Overlay preparation unavailable.</strong> {{ overlay_initialization_error }}</div>
+  {% elif overlay_initialization %}
+  <p>Repository root: <code>{{ selected_entry.path }}</code><br>
+     Current registry mapping: <code>{{ overlay_initialization.path }}</code><br>
+     Registry mapping change: <strong>none</strong></p>
+  <dl class="procedure-provenance">
+    <dt>Original file</dt>
+    <dd>{{ overlay_initialization.before_bytes }} bytes · SHA-256 <code>{{ overlay_initialization.before_sha256 }}</code></dd>
+    <dt>Proposed file</dt>
+    <dd>{{ overlay_initialization.after_bytes }} bytes · SHA-256 <code>{{ overlay_initialization.after_sha256 }}</code></dd>
+    <dt>Preserves original bytes</dt><dd>{{ "yes, byte-for-byte suffix" if overlay_initialization.preserves_original_bytes else "no" }}</dd>
+    <dt>Resulting overlay contract</dt>
+    <dd>{{ "valid" if overlay_initialization.resulting_contract_valid else "invalid" }} — proposed candidate has the required marker and section</dd>
+    <dt>Required structural contract</dt>
+    <dd><code>{{ bundle.overlay_marker }}</code> within the first 12 lines and
+      <code>## Repository-specific rules</code></dd>
+  </dl>
+  <details open>
+    <summary>Complete proposed additive diff</summary>
+    <pre class="procedure-diff">{{ overlay_initialization.diff }}</pre>
+  </details>
+  {% if not selected_transaction or selected_transaction.state in ["VERIFIED", "RECOVERED"] %}
+  <form method="post" action="{{ url_for('procedure_overlay_review') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+    <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+    <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+    <input type="hidden" name="plan_sha256" value="{{ overlay_initialization.plan_sha256 }}">
+    <button type="submit">Review Overlay Initialization</button>
+  </form>
+  {% else %}
+  <p>Overlay initialization is blocked by unresolved transaction state <strong>{{ selected_transaction.state }}</strong>.
+     Review or recover that transaction first.</p>
+  {% endif %}
+  {% endif %}
+  {% if overlay_review %}
+  <section class="card">
+    <h4>Confirm Overlay Initialization — {{ selected_entry.name }} (<code>{{ selected_entry.key }}</code>)</h4>
+    <p>Repository: <code>{{ selected_entry.path }}</code><br>
+       Target: <code>{{ overlay_review.plan.path }}</code><br>
+       Original SHA-256: <code>{{ overlay_review.plan.before_sha256 }}</code><br>
+       Candidate SHA-256: <code>{{ overlay_review.plan.after_sha256 }}</code><br>
+       Confirmation expires: {{ overlay_review.expires_at }}</p>
+    <p>Confirmation writes only the shown existing mapped overlay. Durable before/after images are journaled separately
+       from generated-procedure Apply; exact-image recovery is available if the transaction does not complete.
+       It does not update the registry, install generated files, or change Git/lifecycle state.</p>
+    <details open>
+      <summary>Review the complete candidate diff again</summary>
+      <pre class="procedure-diff">{{ overlay_review.plan.diff }}</pre>
+    </details>
+    <form method="post" action="{{ url_for('procedure_overlay_initialize') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="repository_key" value="{{ selected_entry.key }}">
+      <input type="hidden" name="active_repository_key" value="{{ active_repository_key }}">
+      <input type="hidden" name="repository_generation" value="{{ active_repository_generation }}">
+      <input type="hidden" name="confirmation_token" value="{{ overlay_review.token }}">
+      <button type="submit">Confirm Overlay Initialization</button>
+    </form>
+  </section>
+  {% endif %}
+</section>
+{% endif %}
 <section class="card">
   <h3>Read-only update preview: {{ selected_entry.name }} (<code>{{ selected_entry.key }}</code>)</h3>
   <p>Target path: <code>{{ selected_entry.path }}</code>. Active browser selection remains <code>{{ active_repository_key }}</code>
@@ -88,7 +158,7 @@
   <p>Installed release: {{ preview.current_release or "none" }} &middot; Target release: {{ preview.target_release }}
      &middot; Status: <strong>{{ preview.status }}</strong></p>
   <p>Project overlay <code>{{ preview.overlay.path }}</code> is
-     <strong>{{ "valid" if preview.overlay.valid else "invalid" }}</strong> and explicitly untouched.
+     <strong>{{ "valid" if preview.overlay.valid else "invalid" }}</strong> and untouched by generated-procedure Apply.
      Internal preview safety result: <strong>{{ "unblocked" if preview.materialization_available else "blocked" }}</strong>.
      An unblocked preview is not authorization; Apply requires a second, explicit confirmation.</p>
   {% if preview.blockers %}

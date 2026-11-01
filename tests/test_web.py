@@ -13,7 +13,11 @@ from unittest import mock
 from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
-from repoctl.procedure_governance import load_bundle, materialize_preview, preview_reconciliation
+from repoctl.procedure_governance import (
+    load_bundle,
+    materialize_preview,
+    preview_reconciliation,
+)
 from repoctl import procedure_transactions
 from repoctl.procedure_transactions import (
     apply_confirmed,
@@ -27,11 +31,14 @@ from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
 from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
 from repoctl.workflow.architect_dispatches import submit_dispatch
+from repoctl.workflow.coder_interface import submit_coder_context_verification
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
 from repoctl.workflow.diff import GitReviewError
 from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
+from repoctl.workflow.lifecycle import load_milestone_workflow, record_milestone_event
+from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -564,6 +571,239 @@ class WebTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(replay.status_code, 400)
+                self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
+
+    def test_first_time_overlay_initialization_is_a_separate_po_confirmed_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root, "first-time-repo")
+            state_root = root / "state"
+            docs = {
+                "context": "docs/context/project_context_v8.md",
+                "architecture": "docs/context/project_architecture_v8.md",
+                "workflow": "docs/context/project_workflow_v8.md",
+                "coding_agent_rules": "docs/context/coding_agent_rules_v8.md",
+                "parking_lot": "docs/context/canonical_parking_lot_v8.md",
+            }
+            for role, relative in docs.items():
+                path = repo / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if role != "coding_agent_rules":
+                    path.write_text(f"# Existing {role}\n\nFixture authority.\n", encoding="utf-8")
+            original = b"# Existing project rules\n\n" + b"Preserve this rule exactly.\n" * 1500
+            overlay = repo / docs["coding_agent_rules"]
+            overlay.write_bytes(original)
+            milestone_root = repo / "docs/milestones"
+            milestone_root.mkdir(parents=True, exist_ok=True)
+            (milestone_root / "M001.001_onboarding_prompt.md").write_text("# Onboarding\n", encoding="utf-8")
+            registry_path = root / "repositories.toml"
+            registry_lines = [
+                'default = "fixture"',
+                "",
+                "[repositories.fixture]",
+                'name = "First-Time Repository"',
+                f"path = {json.dumps(str(repo))}",
+                'milestone_root = "docs/milestones"',
+                "",
+                "[repositories.fixture.documents]",
+            ]
+            registry_lines.extend(f"{role} = {json.dumps(path)}" for role, path in docs.items())
+            registry_path.write_text("\n".join(registry_lines) + "\n", encoding="utf-8")
+
+            candidate = discover_milestones(repo)["candidates"][0]
+            save_milestone_selection(repo, state_root, candidate["milestone_id"])
+            record_milestone_event(
+                repo,
+                state_root,
+                "docs/milestones",
+                candidate,
+                event_type="prompt_approved",
+                summary="Fixture onboarding approved",
+                actor_role="product_owner",
+                po_approved=True,
+            )
+            record_milestone_event(
+                repo,
+                state_root,
+                "docs/milestones",
+                candidate,
+                event_type="implementation_started",
+                summary="Fixture onboarding started",
+                actor_role="coder",
+            )
+            waiting = record_milestone_event(
+                repo,
+                state_root,
+                "docs/milestones",
+                candidate,
+                event_type="question_submitted",
+                summary="Fixture onboarding blocked",
+                actor_role="coder",
+                waiting_category="clarification",
+                waiting_reason="Awaiting project-owner clarification",
+            )
+            self.assertEqual(waiting["phase"], "WAITING")
+
+            with mock.patch(
+                "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
+                registry_path,
+            ):
+                app = create_web_app(repository_registry_path=registry_path, state_root=state_root)
+                app.testing = True
+                client = app.test_client()
+                initial = client.get("/procedure-updates?repository=fixture")
+                self.assertEqual(initial.status_code, 200)
+                self.assertIn(b"OVERLAY_INVALID", initial.data)
+                self.assertIn(b"Complete proposed additive diff", initial.data)
+                self.assertIn(b"Preserves original bytes", initial.data)
+                self.assertIn(b"Resulting overlay contract", initial.data)
+                self.assertIn(b"valid", initial.data)
+                self.assertIn(b"Review Overlay Initialization", initial.data)
+                self.assertNotIn(b"Confirm Overlay Initialization", initial.data)
+                self.assertEqual(overlay.read_bytes(), original)
+                csrf = _extract_csrf_token(client)
+                digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', initial.data)
+                self.assertIsNotNone(digest)
+                wrong_key = client.post(
+                    "/procedure-updates/overlay-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "unknown",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "plan_sha256": digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(wrong_key.status_code, 400)
+                wrong_selection = client.post(
+                    "/procedure-updates/overlay-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "another-repository",
+                        "repository_generation": "0",
+                        "plan_sha256": digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(wrong_selection.status_code, 409)
+                stale_generation = client.post(
+                    "/procedure-updates/overlay-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "1",
+                        "plan_sha256": digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(stale_generation.status_code, 409)
+                self.assertEqual(overlay.read_bytes(), original)
+                reviewed = client.post(
+                    "/procedure-updates/overlay-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "plan_sha256": digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(reviewed.status_code, 302)
+                confirm_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Confirm Overlay Initialization", confirm_page.data)
+                self.assertIn(b"Durable before/after images", confirm_page.data)
+                self.assertEqual(overlay.read_bytes(), original)
+                token = re.search(
+                    rb'name="confirmation_token" value="([^"]+)"',
+                    confirm_page.data,
+                )
+                self.assertIsNotNone(token)
+                initialized = client.post(
+                    "/procedure-updates/overlay-initialize",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": token.group(1).decode(),
+                    },
+                )
+                self.assertEqual(initialized.status_code, 302)
+                candidate_overlay = overlay.read_bytes()
+                self.assertTrue(candidate_overlay.endswith(original))
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+                current_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Review Apply", current_page.data)
+                self.assertIn(b"Coder verification remains non-VERIFIED", current_page.data)
+                self.assertEqual(load_milestone_workflow(repo, state_root, "docs/milestones", candidate)["phase"], "WAITING")
+
+                apply_digest = re.search(
+                    rb'name="plan_sha256" value="([0-9a-f]{64})"',
+                    current_page.data,
+                )
+                self.assertIsNotNone(apply_digest)
+                apply_reviewed = client.post(
+                    "/procedure-updates/apply-review",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "plan_sha256": apply_digest.group(1).decode(),
+                    },
+                )
+                self.assertEqual(apply_reviewed.status_code, 302)
+                apply_confirmation_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"Confirm Apply", apply_confirmation_page.data)
+                apply_token = re.search(
+                    rb'name="confirmation_token" value="([^"]+)"',
+                    apply_confirmation_page.data,
+                )
+                self.assertIsNotNone(apply_token)
+                applied = client.post(
+                    "/procedure-updates/apply",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "fixture",
+                        "active_repository_key": "fixture",
+                        "repository_generation": "0",
+                        "confirmation_token": apply_token.group(1).decode(),
+                    },
+                )
+                self.assertEqual(applied.status_code, 302)
+                self.assertTrue((repo / ".github/copilot-instructions.md").is_file())
+                self.assertEqual(overlay.read_bytes(), candidate_overlay)
+                final_page = client.get("/procedure-updates?repository=fixture")
+                self.assertIn(b"CURRENT", final_page.data)
+                with mock.patch(
+                    "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+                    return_value={
+                        "status": "COMPATIBLE",
+                        "runtime_instance_id": "b" * 32,
+                        "producer_contract_id": "repoctl-workflow-event-writer:v1",
+                        "event_type": "context_verification_recorded",
+                        "required_event_capabilities": {
+                            "context_verification_record_schema_version": 2,
+                        },
+                        "ledger_schema_version": 1,
+                        "event_schema_version": 1,
+                        "context_verification_record_schema_version": 2,
+                    },
+                ):
+                    verification = submit_coder_context_verification(
+                        "NEW",
+                        git_boundary_acknowledged=True,
+                        expected_repository_key="fixture",
+                        expected_repository_id=make_repository_id(repo),
+                        expected_repository_root=repo,
+                        expected_milestone_id=candidate["milestone_id"],
+                        repository_path=repo,
+                        state_root=state_root,
+                        milestone_root="docs/milestones",
+                    )
+                self.assertEqual(verification["procedure_status"], "CURRENT")
+                self.assertEqual(verification["result"], "BLOCKED")
+                self.assertEqual(verification["phase"], "WAITING")
                 self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
 
     def test_procedure_recovery_requires_its_own_review_and_confirmation(self) -> None:

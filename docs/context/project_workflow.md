@@ -40,6 +40,75 @@ workflow remains Repo Control II's project-specific operating and
 implementation document, not the canonical generic workflow source for other
 managed repositories.
 
+### First-time project-overlay initialization
+
+A registered repository with an existing mapped `coding_agent_rules` file
+that fails the structural overlay contract may use the separate
+**First-time project overlay preparation** action in Procedure Updates. This
+is a bounded Product Owner operation for the selected repository only. It
+requires an existing, safely mapped UTF-8 file; missing mappings, unsafe
+paths, oversized files, malformed UTF-8, and ambiguous existing marker
+content remain blocked for separate review.
+
+Before any write, review the repository key and root, mapped target, original
+and candidate byte counts and hashes, the required marker/section, the
+resulting overlay-contract validity, and the complete additive diff. The
+candidate prepends a contract header and references the other existing mapped
+project documents; the prior rules remain a byte-for-byte suffix and the
+registry mapping is unchanged. Review and confirmation are separate
+CSRF-protected actions, bound to the reviewed candidate, repository selection
+generation, and fresh target state. The one-file transaction stores exact
+before/after images in the private transaction journal and supports the
+existing reviewed exact-image recovery flow. It does not install generated
+procedure files or make `coder-verify` VERIFIED.
+
+After confirming overlay initialization, independently confirm the ordinary
+generated-procedure Apply through its existing full-set preview and separate
+confirmation. Verify `coder-procedure-status` reports `CURRENT`, then run
+`coder-verify` with the correct trigger and expected repository/milestone
+identity. Verification still depends on the active milestone authorization,
+valid procedure, available Git and dispatch evidence, and Git-boundary
+acknowledgement; neither overlay initialization nor Apply changes lifecycle
+state or proves provider delivery/session identity. Use ordinary Git Review
+for the resulting visible repository changes.
+
+#### Photo Organizer first-time operator runbook
+
+The following is a Product Owner procedure, not authorization for a Coder to
+operate on Photo Organizer. It remains **pending live operational acceptance**
+until the Product Owner exercises and reviews it on the registered
+`photo-organizer` repository:
+
+1. In Procedure Updates, choose Photo Organizer's **Review Update** entry
+   without changing the global repository selection. Confirm the displayed
+   key, repository root, and mapped
+   `docs/context/coding_agent_rules_v8.md`.
+2. Review the complete additive diff, original/candidate hashes, byte-for-byte
+   preservation statement, resulting overlay validity, and references to the
+   other mapped project documents. Do not proceed if any source content would
+   be removed or reinterpreted.
+3. As Product Owner, use **Review Overlay Initialization**, inspect the
+   second complete candidate diff and confirmation details, then separately
+   choose **Confirm Overlay Initialization**. Confirm that only the mapped
+   rules file changed and that the transaction reports a valid overlay while
+   shared-procedure status remains non-`CURRENT`.
+4. Return to the ordinary update preview. Review the generated target set and
+   diff; separately review and confirm the existing procedure Apply. Verify
+   all generated artifacts and the lock report `CURRENT`. Use normal Git
+   Review to inspect the local changes; do not infer acceptance from the
+   transaction receipt.
+5. Run `coder-verify` for Photo Organizer's exact repository identity and
+   milestone. Do not treat overlay or procedure status alone as authorization
+   or VERIFIED context. If M001.001 remains `WAITING`, leave it unchanged
+   during onboarding; return to its open question and resolve it separately
+   through the established PO/Architect workflow. Resume that milestone only
+   after Repo Control records the authorized transition.
+6. Start a fresh Codex session after the Product Owner's accepted procedure
+   installation. Check the live host bootstrap, installed release/lock, exact
+   repository and milestone, and `coder-verify` result. Report provider-native
+   delivery and session identity as unverified unless independently
+   established.
+
 M008.004 stores exact before/after images and the transaction journal in a
 private sibling of scanner state, not inside the scanner-replaced per-repo
 directory or a managed worktree. Its states are `PREPARING`, `PREPARED`,

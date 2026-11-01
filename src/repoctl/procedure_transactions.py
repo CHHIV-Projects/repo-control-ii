@@ -12,13 +12,18 @@ import uuid
 from typing import Any, Callable
 
 from .procedure_governance import (
+    OverlayInitializationPlan,
     ProcedureBundle,
+    ProcedureGovernanceError,
     ReconciliationPlan,
+    _overlay_status,
+    _repository_overlay_path,
     _render_artifacts,
     _render_lock,
     _sha256,
     _status_for,
     load_bundle,
+    preview_overlay_initialization,
     preview_reconciliation,
 )
 from .scanner.core import DEFAULT_STATE_ROOT, state_artifact_lock
@@ -258,11 +263,24 @@ def _read_journal(operation_directory: Path, repository: RepositoryEntry) -> dic
         or any(character not in "0123456789abcdef" for character in journal["plan_sha256"])
     ):
         raise ProcedureTransactionError("Procedure transaction journal root or plan identity is invalid.")
+    operation_type = journal.get("operation_type", "procedure_apply")
+    if operation_type == "procedure_apply":
+        expected_targets = [*FIXED_TARGETS, ".repo-control/shared-procedure.lock.toml"]
+        expected_lock_index = len(FIXED_TARGETS)
+    elif operation_type == "overlay_initialize":
+        try:
+            overlay_path = _repository_overlay_path(repository)
+        except ProcedureGovernanceError as exc:
+            raise ProcedureTransactionError("Overlay transaction has no valid registered overlay path.") from exc
+        expected_targets = [overlay_path]
+        expected_lock_index = None
+    else:
+        raise ProcedureTransactionError("Procedure transaction journal has an unsupported operation type.")
     target_paths = [item.get("path") for item in journal["targets"] if isinstance(item, dict)]
-    if target_paths != [*FIXED_TARGETS, ".repo-control/shared-procedure.lock.toml"]:
+    if target_paths != expected_targets:
         raise ProcedureTransactionError("Procedure transaction journal contains an unauthorized target set.")
     expected_directories = set()
-    for relative in [*FIXED_TARGETS, ".repo-control/shared-procedure.lock.toml"]:
+    for relative in expected_targets:
         parts: list[str] = []
         for part in PurePosixPath(relative).parts[:-1]:
             parts.append(part)
@@ -273,7 +291,7 @@ def _read_journal(operation_directory: Path, repository: RepositoryEntry) -> dic
     if any(
         not isinstance(item, dict)
         or item.get("index") != index
-        or item.get("is_lock") != (index == len(FIXED_TARGETS))
+        or item.get("is_lock") != (expected_lock_index is not None and index == expected_lock_index)
         or type(item.get("before_present")) is not bool
         or item.get("after_present") is not True
         or not isinstance(item.get("after_sha256"), str)
@@ -618,6 +636,113 @@ def _plan_digest(entry: RepositoryEntry, bundle: ProcedureBundle, plan: Reconcil
 def procedure_plan_digest(entry: RepositoryEntry, bundle: ProcedureBundle, plan: ReconciliationPlan) -> str:
     _validate_bundle_targets(bundle)
     return _plan_digest(entry, bundle, plan)
+
+
+def overlay_initialization_plan_digest(
+    entry: RepositoryEntry,
+    bundle: ProcedureBundle,
+    plan: OverlayInitializationPlan,
+) -> str:
+    if (
+        Path(entry.path).resolve() != plan.repository_path
+        or entry.repository_id != plan.repository_id
+        or bundle.release != plan.release
+        or bundle.manifest_sha256 != plan.manifest_sha256
+        or _repository_overlay_path(entry) != plan.path
+    ):
+        raise ProcedureTransactionError("Prepared overlay belongs to a different repository or canonical bundle.")
+    return _digest_json(
+        {
+            "operation_type": "overlay_initialize",
+            "repository_key": entry.key,
+            "repository_id": entry.repository_id,
+            "repository_path": str(entry.path),
+            "release": bundle.release,
+            "manifest_sha256": bundle.manifest_sha256,
+            "source_hashes": bundle.source_hashes,
+            "root_identity": _root_identity(entry),
+            "target_path": plan.path,
+            "target_state": _target_state(entry, plan.path),
+            "directory_states": _directory_states(entry, (plan.path,)),
+            "before_sha256": plan.before_sha256,
+            "after_sha256": plan.after_sha256,
+            "after_bytes": len(plan.after_bytes),
+            "diff": plan.diff,
+        }
+    )
+
+
+def review_overlay_initialization(
+    entry: RepositoryEntry,
+    state_root: str | Path = DEFAULT_STATE_ROOT,
+    *,
+    active_key: str,
+    registry_generation: int,
+    reviewed_plan_sha256: str,
+    bundle: ProcedureBundle | None = None,
+) -> dict[str, Any]:
+    active_bundle = bundle or load_bundle()
+    with state_artifact_lock(state_root):
+        store = _repository_store(state_root, entry.repository_id, create=True)
+        active, errors = _active_operations(store, entry)
+        if errors:
+            raise ProcedureTransactionError(f"Transaction state requires operator review: {errors[0]}")
+        if active:
+            raise ProcedureTransactionError("An unresolved transaction blocks overlay initialization.")
+        plan = preview_overlay_initialization(entry, active_bundle)
+        digest = overlay_initialization_plan_digest(entry, active_bundle, plan)
+        if not secrets.compare_digest(digest, reviewed_plan_sha256):
+            raise ProcedureTransactionError("Overlay preview changed; review the current candidate again.")
+        binding = _confirmation_binding(entry, active_key, registry_generation, digest)
+        _prune_expired_tokens(store)
+        _prune_terminal(store, entry)
+        confirmation = _issue_token(store, purpose="overlay_initialize", binding=binding)
+        return {
+            "confirmation": confirmation,
+            "plan": plan.as_dict(),
+        }
+
+
+def initialize_overlay_confirmed(
+    entry: RepositoryEntry,
+    token: str,
+    state_root: str | Path = DEFAULT_STATE_ROOT,
+    *,
+    active_key: str,
+    registry_generation: int,
+    bundle: ProcedureBundle | None = None,
+) -> dict[str, Any]:
+    active_bundle = bundle or load_bundle()
+    with state_artifact_lock(state_root):
+        store = _repository_store(state_root, entry.repository_id, create=False)
+        active, errors = _active_operations(store, entry)
+        if errors:
+            raise ProcedureTransactionError(f"Transaction state requires operator review: {errors[0]}")
+        if active:
+            raise ProcedureTransactionError("An unresolved transaction blocks overlay initialization.")
+        token_id = _token_id(token)
+        confirmation_path = _token_directory(store, create=False) / f"{token_id}.json"
+        raw = _read_regular(confirmation_path, MAX_JOURNAL_BYTES, required=False)
+        if raw is None:
+            raise ProcedureTransactionError("Overlay confirmation token is unknown, expired, or already used.")
+        try:
+            record = json.loads(raw.decode("utf-8"))
+            binding = record["binding"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ProcedureTransactionError("Overlay confirmation record is malformed.") from exc
+        _assert_active_binding(active_key, registry_generation, binding)
+        if (
+            binding.get("repository_key") != entry.key
+            or binding.get("repository_id") != entry.repository_id
+            or binding.get("repository_path") != str(entry.path)
+        ):
+            raise ProcedureTransactionError("Overlay confirmation belongs to a different managed repository.")
+        plan = preview_overlay_initialization(entry, active_bundle)
+        digest = overlay_initialization_plan_digest(entry, active_bundle, plan)
+        expected_binding = _confirmation_binding(entry, active_key, registry_generation, digest)
+        _consume_token(store, token, purpose="overlay_initialize", expected_binding=expected_binding)
+        _invalidate_apply_tokens(store, entry)
+        return _execute_overlay_initialization(entry, active_bundle, plan, store, digest)
 
 
 def _validate_bundle_targets(bundle: ProcedureBundle) -> None:
@@ -1152,6 +1277,63 @@ def _new_journal(
     return journal, images
 
 
+def _new_overlay_journal(
+    entry: RepositoryEntry,
+    bundle: ProcedureBundle,
+    plan: OverlayInitializationPlan,
+    operation_id: str,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    relative = _repository_overlay_path(entry)
+    if relative != plan.path:
+        raise ProcedureTransactionError("Registered overlay mapping changed after review.")
+    before_state = _target_state(entry, relative)
+    if not before_state["present"] or before_state["sha256"] != plan.before_sha256:
+        raise ProcedureTransactionError("Existing project rules changed after overlay review.")
+    before_bytes = _read_target_bytes(entry, relative)
+    if before_bytes != plan.before_bytes:
+        raise ProcedureTransactionError("Existing project rules changed while preparing the transaction.")
+    if len(plan.after_bytes) > MAX_TARGET_BYTES or len(before_bytes) + len(plan.after_bytes) > MAX_IMAGE_BYTES:
+        raise ProcedureTransactionError("Overlay transaction exceeds its target or aggregate image size limit.")
+    paths = (relative,)
+    directories = _directory_states(entry, paths)
+    target = {
+        "index": 0,
+        "path": relative,
+        "is_lock": False,
+        "before_present": True,
+        "before_sha256": before_state["sha256"],
+        "before_mode": before_state["mode"],
+        "before_gid": before_state["gid"],
+        "after_present": True,
+        "after_sha256": plan.after_sha256,
+        "after_mode": before_state["mode"],
+        "after_gid": before_state["gid"],
+        "before_file": "before-0.bin",
+        "before_sha256_image": _sha256(before_bytes),
+        "after_file": "after-0.bin",
+    }
+    digest = overlay_initialization_plan_digest(entry, bundle, plan)
+    journal = {
+        "schema_version": SCHEMA_VERSION,
+        "operation_type": "overlay_initialize",
+        "operation_id": operation_id,
+        "repository_key": entry.key,
+        "repository_id": entry.repository_id,
+        "repository_path": str(entry.path),
+        "release": bundle.release,
+        "manifest_sha256": bundle.manifest_sha256,
+        "source_hashes": bundle.source_hashes,
+        "plan_sha256": digest,
+        "root_identity": _root_identity(entry),
+        "state": "PREPARING",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "targets": [target],
+        "directories": directories,
+    }
+    return journal, {"before-0.bin": before_bytes, "after-0.bin": plan.after_bytes}
+
+
 def _read_target_bytes(repository: RepositoryEntry, relative: str) -> bytes:
     descriptor, name = _open_parent(repository, relative)
     if descriptor is None:
@@ -1470,6 +1652,128 @@ def _execute_apply(
         ) from apply_error
 
 
+def _execute_overlay_initialization(
+    entry: RepositoryEntry,
+    bundle: ProcedureBundle,
+    plan: OverlayInitializationPlan,
+    store: Path,
+    approved_digest: str,
+) -> dict[str, Any]:
+    transactions = _transaction_directories(store, create=True)
+    operation_id = uuid.uuid4().hex
+    operation_directory = transactions / operation_id
+    operation_directory.mkdir(mode=0o700)
+    os.chmod(operation_directory, 0o700, follow_symlinks=False)
+    _checked_directory(operation_directory, create=False)
+    journal: dict[str, Any] | None = None
+    try:
+        journal, images = _new_overlay_journal(entry, bundle, plan, operation_id)
+        if not secrets.compare_digest(journal["plan_sha256"], approved_digest):
+            raise ProcedureTransactionError("Overlay target changed while the durable journal was prepared.")
+        _write_journal(operation_directory, journal)
+        for name, data in images.items():
+            _write_image(operation_directory / name, data)
+        _fsync_directory(operation_directory)
+        _fsync_directory(operation_directory.parent)
+        journal["state"] = "PREPARED"
+        _write_journal(operation_directory, journal)
+    except Exception as preparation_error:
+        try:
+            _remove_unpublished_operation(operation_directory)
+        except Exception as cleanup_error:
+            raise ProcedureTransactionError(
+                f"Overlay transaction preparation failed ({preparation_error}); "
+                f"incomplete transaction cleanup also failed ({cleanup_error})."
+            ) from preparation_error
+        if isinstance(preparation_error, OSError):
+            raise ProcedureTransactionError(
+                f"Overlay transaction preparation failed before any target write: {preparation_error}"
+            ) from preparation_error
+        raise
+
+    try:
+        journal["state"] = "APPLYING"
+        _write_journal(operation_directory, journal)
+        _assert_root_identity(entry, journal["root_identity"])
+        _assert_directory_states(entry, journal["directories"], permit_created=False)
+        target = journal["targets"][0]
+        if not _state_matches(_target_state(entry, target["path"]), _target_before_state(target)):
+            raise ProcedureTransactionError("Project rules changed immediately before overlay initialization.")
+        _write_target(
+            entry,
+            target["path"],
+            plan.after_bytes,
+            _target_before_state(target),
+            target["after_mode"],
+            target["after_gid"],
+            _temp_name(operation_id, target["index"]),
+            directory_states=journal["directories"],
+        )
+        if not _state_matches(_target_state(entry, target["path"]), _target_after_state(target)):
+            raise ProcedureTransactionError("Initialized overlay does not match the reviewed candidate.")
+        overlay = _overlay_status(entry.path, entry, bundle)
+        if not overlay["valid"]:
+            raise ProcedureTransactionError(f"Initialized overlay failed contract validation: {overlay['reason']}")
+        procedure_status = _status_for(entry.path, entry, bundle)
+        journal["state"] = "VERIFIED"
+        journal["verified_at"] = _now()
+        journal["verified_overlay_sha256"] = target["after_sha256"]
+        _write_journal(operation_directory, journal)
+        cleanup_error = None
+        try:
+            _cleanup_images(operation_directory, journal)
+        except (OSError, ProcedureTransactionError) as exc:
+            cleanup_error = str(exc)
+        return {
+            "operation_id": operation_id,
+            "operation_type": "overlay_initialize",
+            "state": "VERIFIED",
+            "repository_key": entry.key,
+            "repository_id": entry.repository_id,
+            "release": bundle.release,
+            "overlay_path": target["path"],
+            "overlay_sha256": target["after_sha256"],
+            "overlay_valid": True,
+            "procedure_status": procedure_status["status"],
+            "procedure_current": procedure_status["status"] == "CURRENT",
+            "completed_at": journal["verified_at"],
+            "cleanup_pending": cleanup_error is not None,
+            "cleanup_error": cleanup_error,
+        }
+    except Exception as apply_error:
+        try:
+            _restore_original(entry, operation_directory, journal)
+            journal["state"] = "RECOVERED"
+            journal["recovered_at"] = _now()
+            journal["recovery_reason"] = "Overlay initialization failed; the exact original project rules were restored."
+            _write_journal(operation_directory, journal)
+        except Exception as recovery_error:
+            journal["state"] = "RECOVERY_REQUIRED"
+            journal["failure"] = str(apply_error)[:1000]
+            journal["recovery_failure"] = str(recovery_error)[:1000]
+            try:
+                _write_journal(operation_directory, journal)
+            except Exception as journal_error:
+                raise ProcedureTransactionError(
+                    f"Overlay initialization failed ({apply_error}); rollback failed ({recovery_error}); "
+                    f"journal update also failed ({journal_error})."
+                ) from apply_error
+            raise ProcedureTransactionError(
+                f"Overlay initialization did not complete and exact rollback failed; "
+                f"operation {operation_id} requires PO recovery: {recovery_error}"
+            ) from apply_error
+        cleanup_error = None
+        try:
+            _cleanup_images(operation_directory, journal)
+        except (OSError, ProcedureTransactionError) as exc:
+            cleanup_error = str(exc)
+        suffix = f" Recovery-image cleanup remains pending: {cleanup_error}" if cleanup_error else ""
+        raise ProcedureTransactionError(
+            f"Overlay initialization failed; original project rules were restored. "
+            f"Operation {operation_id}: {apply_error}.{suffix}"
+        ) from apply_error
+
+
 def _remove_unpublished_operation(operation_directory: Path) -> None:
     if not operation_directory.exists() and not operation_directory.is_symlink():
         return
@@ -1524,6 +1828,7 @@ def inspect_transaction(
                     _assert_recovery_safe(entry, operation_directory, journal)
                     return {
                         "state": journal["state"],
+                        "operation_type": journal.get("operation_type", "procedure_apply"),
                         "blocked": False,
                         "recoverable": True,
                         "conflicts": [],
@@ -1552,6 +1857,7 @@ def inspect_transaction(
             _, latest = max(terminals, key=lambda item: item[0])
             return {
                 "state": latest["state"],
+                "operation_type": latest.get("operation_type", "procedure_apply"),
                 "blocked": False,
                 "operation_id": latest["operation_id"],
                 "release": latest["release"],
@@ -1600,6 +1906,7 @@ def review_recovery(
             "confirmation": confirmation,
             "operation_id": operation_id,
             "targets": [item["path"] for item in journal["targets"]],
+            "operation_type": journal.get("operation_type", "procedure_apply"),
             "state": journal["state"],
         }
 

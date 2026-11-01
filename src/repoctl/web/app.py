@@ -1240,6 +1240,8 @@ def create_web_app(
         release_preparation = active_release_preparation()
         preview = None
         preview_error = None
+        overlay_initialization = None
+        overlay_initialization_error = None
         if selected_entry is not None and bundle is not None:
             try:
                 plan = preview_reconciliation(selected_entry, bundle)
@@ -1257,6 +1259,20 @@ def create_web_app(
                         remaining_diff_chars -= min(len(diff), limit)
             except (ProcedureGovernanceError, OSError) as exc:
                 preview_error = bounded_error(exc)
+            if preview and not preview["overlay"]["valid"]:
+                try:
+                    from ..procedure_governance import preview_overlay_initialization
+                    from ..procedure_transactions import overlay_initialization_plan_digest
+
+                    overlay_plan = preview_overlay_initialization(selected_entry, bundle)
+                    overlay_initialization = overlay_plan.as_dict()
+                    overlay_initialization["plan_sha256"] = overlay_initialization_plan_digest(
+                        selected_entry,
+                        bundle,
+                        overlay_plan,
+                    )
+                except (ProcedureGovernanceError, ProcedureTransactionError, OSError) as exc:
+                    overlay_initialization_error = bounded_error(exc)
 
         apply_review = session.get("procedure_apply_review")
         if (
@@ -1267,6 +1283,15 @@ def create_web_app(
             or apply_review.get("plan_sha256") != preview.get("plan_sha256")
         ):
             apply_review = None
+        overlay_review = session.get("procedure_overlay_review")
+        if (
+            not isinstance(overlay_review, dict)
+            or overlay_review.get("repository_key") != selected_key
+            or overlay_review.get("expires_at", 0) < int(time.time())
+            or not overlay_initialization
+            or overlay_review.get("plan_sha256") != overlay_initialization.get("plan_sha256")
+        ):
+            overlay_review = None
         recovery_review = session.get("procedure_recovery_review")
         selected_transaction = next(
             (row["transaction"] for row in repository_statuses if row["entry"].key == selected_key),
@@ -1289,6 +1314,9 @@ def create_web_app(
                 selected_entry=selected_entry,
                 preview=preview,
                 preview_error=preview_error,
+                overlay_initialization=overlay_initialization,
+                overlay_initialization_error=overlay_initialization_error,
+                overlay_review=overlay_review,
                 apply_review=apply_review,
                 recovery_review=recovery_review,
                 selected_transaction=selected_transaction,
@@ -1345,6 +1373,101 @@ def create_web_app(
                     status_code=409,
                 ) from exc
         return selected
+
+    @app.post("/procedure-updates/overlay-review")
+    def procedure_overlay_review():
+        from ..procedure_governance import ProcedureGovernanceError, load_bundle, preview_overlay_initialization
+        from ..procedure_transactions import (
+            ProcedureTransactionError,
+            overlay_initialization_plan_digest,
+            review_overlay_initialization,
+        )
+
+        entry = procedure_action_preconditions(
+            frozenset({"plan_sha256"}),
+            require_bundle_integrity=True,
+        )
+        posted_digest = request.form.get("plan_sha256", "")
+        if len(posted_digest) != 64 or any(character not in "0123456789abcdef" for character in posted_digest):
+            raise WebUIError("invalid_overlay_plan", "Overlay plan digest is required.")
+        active_repository, generation = registry.snapshot()
+        try:
+            bundle = load_bundle()
+            plan = preview_overlay_initialization(entry, bundle)
+            digest = overlay_initialization_plan_digest(entry, bundle, plan)
+            if not secrets.compare_digest(digest, posted_digest):
+                raise ProcedureTransactionError("Overlay preview changed; reload and review it again.")
+            result = review_overlay_initialization(
+                entry,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+                reviewed_plan_sha256=digest,
+                bundle=bundle,
+            )
+            session["procedure_overlay_review"] = {
+                "repository_key": entry.key,
+                "active_repository_key": active_repository.key,
+                "registry_generation": generation,
+                "plan_sha256": digest,
+                "token": result["confirmation"]["token"],
+                "expires_at": int(datetime.fromisoformat(result["confirmation"]["expires_at"]).timestamp()),
+                "plan": result["plan"],
+            }
+            flash("Review the exact additive overlay candidate before confirming its one-file transaction.", "info")
+        except (ProcedureGovernanceError, ProcedureTransactionError, OSError) as exc:
+            session.pop("procedure_overlay_review", None)
+            flash(f"Overlay review refused: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
+
+    @app.post("/procedure-updates/overlay-initialize")
+    def procedure_overlay_initialize():
+        from ..procedure_transactions import ProcedureTransactionError, initialize_overlay_confirmed
+
+        entry = procedure_action_preconditions(
+            frozenset({"confirmation_token"}),
+            require_bundle_integrity=True,
+        )
+        confirmation = session.get("procedure_overlay_review")
+        token = request.form.get("confirmation_token", "")
+        if (
+            not isinstance(confirmation, dict)
+            or confirmation.get("repository_key") != entry.key
+            or confirmation.get("active_repository_key") != request.form.get("active_repository_key")
+            or confirmation.get("registry_generation") != g.repository_registry_generation
+            or not isinstance(confirmation.get("token"), str)
+            or not token.isascii()
+            or len(token) > 162
+            or not secrets.compare_digest(confirmation["token"], token)
+        ):
+            raise WebUIError(
+                "stale_overlay_confirmation",
+                "Overlay confirmation is missing, stale, or belongs to another review.",
+            )
+        session.pop("procedure_overlay_review", None)
+        active_repository, generation = registry.snapshot()
+        try:
+            result = initialize_overlay_confirmed(
+                entry,
+                token,
+                effective_state_root,
+                active_key=active_repository.key,
+                registry_generation=generation,
+            )
+            flash(
+                f"Overlay contract verified for {result['overlay_path']}; original rules were preserved. "
+                f"Shared procedure status remains {result['procedure_status']}. Review and separately confirm "
+                "the ordinary generated-procedure Apply. Coder verification remains non-VERIFIED until then.",
+                "success",
+            )
+            if result["cleanup_pending"]:
+                flash(
+                    f"Overlay transaction recovery-image cleanup needs operator review: {result['cleanup_error']}",
+                    "warning",
+                )
+        except (ProcedureTransactionError, OSError) as exc:
+            flash(f"Overlay initialization did not report success: {str(exc)[:1200]}", "error")
+        return redirect(url_for("procedure_updates_page", repository=entry.key))
 
     @app.post("/procedure-updates/apply-review")
     def procedure_apply_review():

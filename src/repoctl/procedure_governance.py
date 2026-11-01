@@ -22,6 +22,7 @@ _REQUIRED_SKILLS = {
     "skills/repo-control-blocker-bug-escalation/SKILL.md",
     "skills/repo-control-validation-closeout/SKILL.md",
 }
+_MAX_INITIAL_OVERLAY_BYTES = 1024 * 1024
 
 
 class ProcedureGovernanceError(ValueError):
@@ -90,6 +91,43 @@ class ReconciliationPlan:
             "removals": list(self.removals),
             "blockers": list(self.blockers),
             "materialization_available": self.can_materialize,
+        }
+
+
+@dataclass(frozen=True)
+class OverlayInitializationPlan:
+    repository_path: Path
+    repository_id: str
+    release: str
+    manifest_sha256: str
+    path: str
+    before_bytes: bytes
+    after_bytes: bytes
+    resulting_contract_valid: bool
+    diff: str
+
+    @property
+    def before_sha256(self) -> str:
+        return _sha256(self.before_bytes)
+
+    @property
+    def after_sha256(self) -> str:
+        return _sha256(self.after_bytes)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "repository_path": str(self.repository_path),
+            "repository_id": self.repository_id,
+            "release": self.release,
+            "manifest_sha256": self.manifest_sha256,
+            "path": self.path,
+            "before_sha256": self.before_sha256,
+            "before_bytes": len(self.before_bytes),
+            "after_sha256": self.after_sha256,
+            "after_bytes": len(self.after_bytes),
+            "preserves_original_bytes": self.after_bytes.endswith(self.before_bytes),
+            "resulting_contract_valid": self.resulting_contract_valid,
+            "diff": self.diff,
         }
 
 
@@ -317,6 +355,104 @@ def _overlay_status(root: Path, entry: RepositoryEntry, bundle: ProcedureBundle)
             "reason": "overlay must declare the current marker and a Repository-specific rules section",
         }
     return {"path": relative, "valid": True, "reason": None}
+
+
+def preview_overlay_initialization(
+    entry: RepositoryEntry,
+    bundle: ProcedureBundle | None = None,
+) -> OverlayInitializationPlan:
+    entry = _require_managed_entry(entry)
+    active_bundle = bundle or load_bundle()
+    root = Path(entry.path).resolve()
+    relative = _repository_overlay_path(entry)
+    path, path_error = _target_path(root, relative)
+    if path_error:
+        raise ProcedureGovernanceError(f"Cannot prepare project overlay: {path_error}.")
+    if not path.is_file():
+        raise ProcedureGovernanceError(
+            "Initial overlay preparation requires an existing mapped project-rules file; "
+            "missing overlays require a separately reviewed registry mapping."
+        )
+    before_bytes = path.read_bytes()
+    if len(before_bytes) > _MAX_INITIAL_OVERLAY_BYTES:
+        raise ProcedureGovernanceError("Existing project-rules file exceeds the 1 MiB preparation limit.")
+    try:
+        before_text = before_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProcedureGovernanceError("Existing project-rules file is not valid UTF-8.") from exc
+    if before_bytes.startswith(b"\xef\xbb\xbf"):
+        raise ProcedureGovernanceError(
+            "Existing project-rules file begins with a UTF-8 BOM; automatic preparation will not relocate it."
+        )
+    status = _overlay_status(root, entry, active_bundle)
+    if status["valid"]:
+        raise ProcedureGovernanceError("The mapped project overlay already satisfies the current contract.")
+    if active_bundle.overlay_marker in "\n".join(before_text.splitlines()[:12]):
+        raise ProcedureGovernanceError(
+            "The existing project-rules file already contains the overlay marker but remains invalid; "
+            "automatic preparation will not reinterpret it."
+        )
+    required_heading = "## Repository-specific rules"
+    references: list[str] = []
+    for role, document_path in sorted(entry.documents.items()):
+        if role == "coding_agent_rules":
+            continue
+        reference_path, reference_error = _target_path(root, document_path)
+        if reference_error:
+            raise ProcedureGovernanceError(
+                f"Mapped project document {role!r} cannot be safely referenced: {reference_error}."
+            )
+        if not reference_path.is_file():
+            raise ProcedureGovernanceError(
+                f"Mapped project document {role!r} is missing: {document_path}."
+            )
+        references.append(f"- {role}: `{document_path}`")
+    reference_block = "\n".join(references) if references else "- No other project documents are mapped."
+    header = (
+        "# Repo Control Project Overlay\n\n"
+        f"{active_bundle.overlay_marker}\n\n"
+        "This additive contract header does not replace the project-specific rules preserved below. "
+        "The generated generic Coder bootstrap and workflow core are materialized separately; "
+        "they do not supersede Product Owner authority or these project rules.\n\n"
+        "## Repository-specific rules\n\n"
+        "The existing project rules follow byte-for-byte. Consult the mapped project sources:\n\n"
+        f"{reference_block}\n\n"
+        "---\n\n"
+    ).encode("utf-8")
+    after_bytes = header + before_bytes
+    try:
+        after_text = after_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProcedureGovernanceError("Prepared project overlay is not valid UTF-8.") from exc
+    if len(after_bytes) > _MAX_INITIAL_OVERLAY_BYTES:
+        raise ProcedureGovernanceError("Prepared project overlay exceeds the 1 MiB preparation limit.")
+    if not after_bytes.endswith(before_bytes):
+        raise ProcedureGovernanceError("Prepared project overlay did not preserve the original bytes.")
+    resulting_contract_valid = (
+        active_bundle.overlay_marker in "\n".join(after_text.splitlines()[:12])
+        and required_heading in after_text
+    )
+    if not resulting_contract_valid:
+        raise ProcedureGovernanceError("Prepared project overlay does not satisfy the required structural contract.")
+    diff = "".join(
+        difflib.unified_diff(
+            before_text.splitlines(keepends=True),
+            after_bytes.decode("utf-8").splitlines(keepends=True),
+            fromfile=f"a/{relative}",
+            tofile=f"b/{relative}",
+        )
+    )
+    return OverlayInitializationPlan(
+        repository_path=root,
+        repository_id=entry.repository_id,
+        release=active_bundle.release,
+        manifest_sha256=active_bundle.manifest_sha256,
+        path=relative,
+        before_bytes=before_bytes,
+        after_bytes=after_bytes,
+        resulting_contract_valid=resulting_contract_valid,
+        diff=diff,
+    )
 
 
 def _read_lock(root: Path, bundle: ProcedureBundle) -> tuple[dict[str, Any] | None, str | None]:

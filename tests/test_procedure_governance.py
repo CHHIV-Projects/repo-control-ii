@@ -22,22 +22,29 @@ from repoctl.procedure_governance import (
     inspect_procedure,
     load_bundle,
     materialize_preview,
+    preview_overlay_initialization,
     preview_reconciliation,
 )
 from repoctl.procedure_transactions import (
     FIXED_TARGETS,
     ProcedureTransactionError,
     apply_confirmed,
+    initialize_overlay_confirmed,
     inspect_transaction,
+    overlay_initialization_plan_digest,
     procedure_plan_digest,
     recover_confirmed,
     review_apply,
+    review_overlay_initialization,
     review_recovery,
 )
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.repository_registry import RepositoryEntry
 from repoctl.workflow.architect_dispatches import get_dispatch, submit_dispatch
 from repoctl.scanner.core import run_scan
+from repoctl.workflow.coder_interface import submit_coder_context_verification
+from repoctl.workflow.lifecycle import record_milestone_event
+from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
 
 
 def _git_repo(path: Path) -> Path:
@@ -125,6 +132,23 @@ def _crash_apply_after_lock_replacement(entry: RepositoryEntry, state_root: str,
         )
 
 
+def _crash_overlay_after_write(entry: RepositoryEntry, state_root: str, token: str) -> None:
+    original = procedure_transactions._write_target
+
+    def write_then_exit(*args, **kwargs):
+        original(*args, **kwargs)
+        os._exit(79)
+
+    with mock.patch("repoctl.procedure_transactions._write_target", side_effect=write_then_exit):
+        initialize_overlay_confirmed(
+            entry,
+            token,
+            state_root,
+            active_key=entry.key,
+            registry_generation=0,
+        )
+
+
 def _concurrent_apply_worker(
     entry: RepositoryEntry,
     state_root: str,
@@ -142,6 +166,27 @@ def _concurrent_apply_worker(
             registry_generation=0,
         )
         results.put(("applied", result["operation_id"]))
+    except ProcedureTransactionError as exc:
+        results.put(("refused", str(exc)))
+
+
+def _concurrent_overlay_worker(
+    entry: RepositoryEntry,
+    state_root: str,
+    token: str,
+    barrier,
+    results,
+) -> None:
+    barrier.wait(10)
+    try:
+        result = initialize_overlay_confirmed(
+            entry,
+            token,
+            state_root,
+            active_key=entry.key,
+            registry_generation=0,
+        )
+        results.put(("initialized", result["operation_id"]))
     except ProcedureTransactionError as exc:
         results.put(("refused", str(exc)))
 
@@ -259,6 +304,321 @@ class ProcedureGovernanceTests(unittest.TestCase):
             registry_generation=0,
             reviewed_plan_sha256=procedure_plan_digest(self.entry, self.bundle, plan),
             bundle=self.bundle,
+        )
+
+    def _overlay_confirmation(self, state_root: Path) -> dict:
+        plan = preview_overlay_initialization(self.entry, self.bundle)
+        return review_overlay_initialization(
+            self.entry,
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            reviewed_plan_sha256=overlay_initialization_plan_digest(self.entry, self.bundle, plan),
+            bundle=self.bundle,
+        )
+
+    def _install_large_nonconforming_v8_overlay(self) -> bytes:
+        documents = {
+            "context": "docs/context/project_context_v8.md",
+            "architecture": "docs/context/project_architecture_v8.md",
+            "workflow": "docs/context/project_workflow_v8.md",
+            "coding_agent_rules": "docs/context/coding_agent_rules_v8.md",
+            "parking_lot": "docs/context/canonical_parking_lot_v8.md",
+        }
+        for role, relative in documents.items():
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if role != "coding_agent_rules":
+                path.write_text(f"# Existing {role}\n\nAuthoritative fixture source.\n", encoding="utf-8")
+        original = b"# Existing project rules\n\n" + (b"Do not alter established project behavior.\n" * 1700)
+        overlay_path = self.repo / documents["coding_agent_rules"]
+        overlay_path.write_bytes(original)
+        self.entry = replace(self.entry, documents=documents)
+        self._write_registry([self.entry])
+        return original
+
+    def test_initial_overlay_review_preserves_large_rules_and_enables_separate_apply(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        overlay_path = self.repo / self.entry.documents["coding_agent_rules"]
+        before_status = inspect_procedure(self.entry, self.bundle)
+        self.assertEqual(before_status["status"], "OVERLAY_INVALID")
+        self.assertFalse((self.repo / ".github/copilot-instructions.md").exists())
+
+        plan = preview_overlay_initialization(self.entry, self.bundle)
+        displayed = plan.as_dict()
+        self.assertEqual(displayed["before_bytes"], len(original))
+        self.assertTrue(displayed["preserves_original_bytes"])
+        self.assertTrue(displayed["resulting_contract_valid"])
+        self.assertEqual(plan.after_bytes, plan.after_bytes[: len(plan.after_bytes) - len(original)] + original)
+        self.assertIn(self.bundle.overlay_marker, plan.diff)
+        self.assertIn("## Repository-specific rules", plan.diff)
+        self.assertEqual(overlay_path.read_bytes(), original)
+        self.assertFalse((self.repo / ".github/copilot-instructions.md").exists())
+
+        state_root = self.root / "state"
+        confirmation = review_overlay_initialization(
+            self.entry,
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            reviewed_plan_sha256=overlay_initialization_plan_digest(self.entry, self.bundle, plan),
+            bundle=self.bundle,
+        )
+        self.assertEqual(overlay_path.read_bytes(), original)
+        result = initialize_overlay_confirmed(
+            self.entry,
+            confirmation["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            bundle=self.bundle,
+        )
+        initialized = overlay_path.read_bytes()
+        self.assertTrue(initialized.endswith(original))
+        self.assertTrue(result["overlay_valid"])
+        self.assertFalse(result["procedure_current"])
+        self.assertEqual(result["procedure_status"], "MISSING")
+        self.assertFalse((self.repo / ".github/copilot-instructions.md").exists())
+        self.assertEqual(inspect_transaction(self.entry, state_root)["operation_type"], "overlay_initialize")
+        self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "MISSING")
+        with self.assertRaisesRegex(ProcedureTransactionError, "already used"):
+            initialize_overlay_confirmed(
+                self.entry,
+                confirmation["confirmation"]["token"],
+                state_root,
+                active_key=self.entry.key,
+                registry_generation=0,
+                bundle=self.bundle,
+            )
+
+        apply_confirmation = self._apply_confirmation(state_root)
+        apply_result = apply_confirmed(
+            self.entry,
+            apply_confirmation["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            bundle=self.bundle,
+        )
+        self.assertEqual(apply_result["status"], "CURRENT")
+        self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "CURRENT")
+        self.assertEqual(overlay_path.read_bytes(), initialized)
+        prompt = self.repo / "docs/milestones/M009.001_fixture_prompt.md"
+        prompt.write_text("# Fixture milestone\n", encoding="utf-8")
+        candidate = discover_milestones(self.repo)["candidates"][0]
+        save_milestone_selection(self.repo, state_root, candidate["milestone_id"])
+        record_milestone_event(
+            self.repo,
+            state_root,
+            "docs/milestones",
+            candidate,
+            event_type="prompt_approved",
+            summary="Fixture milestone approved",
+            actor_role="product_owner",
+            po_approved=True,
+        )
+        record_milestone_event(
+            self.repo,
+            state_root,
+            "docs/milestones",
+            candidate,
+            event_type="implementation_started",
+            summary="Fixture implementation started",
+            actor_role="coder",
+        )
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test User"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-m", "fixture baseline"], check=True)
+        with mock.patch(
+            "repoctl.workflow.coder_interface.require_event_runtime_compatibility",
+            return_value={
+                "status": "COMPATIBLE",
+                "runtime_instance_id": "b" * 32,
+                "producer_contract_id": "repoctl-workflow-event-writer:v1",
+                "event_type": "context_verification_recorded",
+                "required_event_capabilities": {
+                    "context_verification_record_schema_version": 2,
+                },
+                "ledger_schema_version": 1,
+                "event_schema_version": 1,
+                "context_verification_record_schema_version": 2,
+            },
+        ):
+            verification = submit_coder_context_verification(
+                "NEW",
+                git_boundary_acknowledged=True,
+                expected_repository_key=self.entry.key,
+                expected_repository_id=self.entry.repository_id,
+                expected_repository_root=self.repo,
+                expected_milestone_id=candidate["milestone_id"],
+                repository_path=self.repo,
+                state_root=state_root,
+                milestone_root="docs/milestones",
+            )
+        self.assertEqual(verification["result"], "VERIFIED")
+        self.assertEqual(verification["procedure_status"], "CURRENT")
+        self.assertEqual(verification["provider_delivery"], "unverified")
+
+    def test_overlay_initialization_rejects_stale_bytes_and_invalid_candidates(self) -> None:
+        self._install_large_nonconforming_v8_overlay()
+        overlay_path = self.repo / self.entry.documents["coding_agent_rules"]
+        state_root = self.root / "state"
+        confirmation = self._overlay_confirmation(state_root)
+        overlay_path.write_bytes(overlay_path.read_bytes() + b"Product Owner edit\n")
+        changed = overlay_path.read_bytes()
+        with self.assertRaisesRegex(ProcedureTransactionError, "no longer matches reviewed state"):
+            initialize_overlay_confirmed(
+                self.entry,
+                confirmation["confirmation"]["token"],
+                state_root,
+                active_key=self.entry.key,
+                registry_generation=0,
+                bundle=self.bundle,
+            )
+        self.assertEqual(overlay_path.read_bytes(), changed)
+
+        overlay_path.write_bytes(b"<!-- repo-control-project-overlay:v1 -->\n# Still missing required section\n")
+        with self.assertRaisesRegex(ProcedureGovernanceError, "already contains the overlay marker"):
+            preview_overlay_initialization(self.entry, self.bundle)
+        self.assertEqual(
+            overlay_path.read_bytes(),
+            b"<!-- repo-control-project-overlay:v1 -->\n# Still missing required section\n",
+        )
+
+        overlay_path.write_bytes(b"\xff")
+        with self.assertRaisesRegex(ProcedureGovernanceError, "not valid UTF-8"):
+            preview_overlay_initialization(self.entry, self.bundle)
+        self.assertEqual(overlay_path.read_bytes(), b"\xff")
+
+    def test_overlay_initialization_rejects_registry_mapping_changes(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        state_root = self.root / "state"
+        confirmation = self._overlay_confirmation(state_root)
+        alternate_path = self.repo / "docs/context/alternate_rules.md"
+        alternate_path.write_text("# Alternate rules\n", encoding="utf-8")
+        changed_entry = replace(
+            self.entry,
+            documents={
+                **self.entry.documents,
+                "coding_agent_rules": "docs/context/alternate_rules.md",
+            },
+        )
+        self._write_registry([changed_entry])
+        with self.assertRaisesRegex(ProcedureGovernanceError, "mappings changed"):
+            initialize_overlay_confirmed(
+                self.entry,
+                confirmation["confirmation"]["token"],
+                state_root,
+                active_key=self.entry.key,
+                registry_generation=0,
+                bundle=self.bundle,
+            )
+        self.assertEqual(
+            (self.repo / self.entry.documents["coding_agent_rules"]).read_bytes(),
+            original,
+        )
+        self.assertEqual(alternate_path.read_bytes(), b"# Alternate rules\n")
+
+    def test_overlay_initialization_refuses_symlinked_mapped_file(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        overlay_path = self.repo / self.entry.documents["coding_agent_rules"]
+        outside = self.root / "outside_rules.md"
+        outside.write_bytes(original)
+        overlay_path.unlink()
+        overlay_path.symlink_to(outside)
+        with self.assertRaisesRegex(ProcedureGovernanceError, "symlink"):
+            preview_overlay_initialization(self.entry, self.bundle)
+        self.assertEqual(outside.read_bytes(), original)
+        self.assertTrue(overlay_path.is_symlink())
+
+    def test_two_processes_cannot_consume_the_same_overlay_confirmation(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        state_root = self.root / "state"
+        confirmation = self._overlay_confirmation(state_root)
+        context = multiprocessing.get_context("fork")
+        barrier = context.Barrier(2)
+        results = context.Queue()
+        processes = [
+            context.Process(
+                target=_concurrent_overlay_worker,
+                args=(self.entry, str(state_root), confirmation["confirmation"]["token"], barrier, results),
+            )
+            for _ in range(2)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(30)
+            self.assertFalse(process.is_alive())
+            self.assertEqual(process.exitcode, 0)
+        outcomes = [results.get(timeout=5)[0] for _ in processes]
+        self.assertCountEqual(outcomes, ["initialized", "refused"])
+        self.assertTrue(
+            (self.repo / self.entry.documents["coding_agent_rules"]).read_bytes().endswith(original)
+        )
+        transaction = inspect_transaction(self.entry, state_root)
+        self.assertEqual(transaction["operation_type"], "overlay_initialize")
+        self.assertEqual(transaction["state"], "VERIFIED")
+        self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "MISSING")
+
+    def test_overlay_initialization_rolls_back_after_injected_post_write_failure(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        state_root = self.root / "state"
+        confirmation = self._overlay_confirmation(state_root)
+        with mock.patch(
+            "repoctl.procedure_transactions._overlay_status",
+            side_effect=ProcedureGovernanceError("injected post-write verification failure"),
+        ):
+            with self.assertRaisesRegex(ProcedureTransactionError, "original project rules were restored"):
+                initialize_overlay_confirmed(
+                    self.entry,
+                    confirmation["confirmation"]["token"],
+                    state_root,
+                    active_key=self.entry.key,
+                    registry_generation=0,
+                    bundle=self.bundle,
+                )
+        self.assertEqual(
+            (self.repo / self.entry.documents["coding_agent_rules"]).read_bytes(),
+            original,
+        )
+        self.assertEqual(inspect_transaction(self.entry, state_root)["state"], "RECOVERED")
+
+    def test_interrupted_overlay_initialization_supports_exact_confirmed_recovery(self) -> None:
+        original = self._install_large_nonconforming_v8_overlay()
+        state_root = self.root / "state"
+        confirmation = self._overlay_confirmation(state_root)
+        process = multiprocessing.get_context("fork").Process(
+            target=_crash_overlay_after_write,
+            args=(self.entry, str(state_root), confirmation["confirmation"]["token"]),
+        )
+        process.start()
+        process.join(10)
+        self.assertEqual(process.exitcode, 79)
+        transaction = inspect_transaction(self.entry, state_root)
+        self.assertEqual(transaction["state"], "APPLYING")
+        self.assertEqual(transaction["operation_type"], "overlay_initialize")
+        self.assertTrue(transaction["recoverable"])
+        recovery_review = review_recovery(
+            self.entry,
+            transaction["operation_id"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+        )
+        recovered = recover_confirmed(
+            self.entry,
+            transaction["operation_id"],
+            recovery_review["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+        )
+        self.assertEqual(recovered["state"], "RECOVERED")
+        self.assertEqual(
+            (self.repo / self.entry.documents["coding_agent_rules"]).read_bytes(),
+            original,
         )
 
     def test_confirmed_apply_writes_exact_target_set_and_verifies_current(self) -> None:
