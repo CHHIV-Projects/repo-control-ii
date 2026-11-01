@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Forward-looking record of deferred, conditional, exploratory, or not-yet-prioritized work  
-**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); this document contains unresolved work only
+**Project phase:** Git Control complete; accepted and CLOSED through M009.010, including M009.008 context-verification audit, M009.009 Intelligence freshness/provenance, and M009.010 runtime compatibility and procedure-release safeguards; this document contains unresolved work only
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`  
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`  
-**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-007, GIT-001, UI-001, INTEL-001, and DOC-001 remain unresolved below. Managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved; accepted current behavior and completed milestone history are documented in their owning project and milestone artifacts.
+**Current status:** WORKFLOW-002, WORKFLOW-003, WORKFLOW-004, WORKFLOW-007, GIT-001, UI-001, INTEL-001, INTEL-003, and DOC-001 remain unresolved below. Managed-repository CLI resolution and fresh/resumed Coder-context convergence have been resolved; accepted current behavior and completed milestone history are documented in their owning project and milestone artifacts.
 
 ---
 
@@ -766,6 +766,48 @@ Must preserve optional feedback, recorded use identity, and the distinction betw
 ### Notes
 
 Do not manufacture ratings for past uses. PO rating remains optional rather than expected when the PO did not consume the evidence.
+
+---
+
+## INTEL-003 — Evidence-Efficient Repository Navigation and Cross-Agent Method Evaluation
+
+### Status
+
+Awaiting Reconnaissance — deferred; no tool-selection policy, benchmark outcome, or new navigation architecture is approved by this entry.
+
+### Summary
+
+Determine the most accurate and context-efficient way for AI Coders to investigate managed repositories, independent of model/provider and without assuming Repo Control's structural graph is the preferred solution. The original rationale for Repository Intelligence was to avoid expensive broad source-file retrieval into model context, not to maximize graph-query counts. Establish evidence-based guidance so different Coders use effective tools consistently without ceremonial scans, unnecessary graph queries, or repeated Product Owner reminders.
+
+Compare targeted textual/file search (including `rg` and bounded source windows); native agent/IDE and language-server symbol navigation; syntax/AST search; indexed or embedding-based semantic code search where actually available; Repo Control's current bounded graph for callers, imports, dependencies, impact, and tests; and useful hybrid sequences. Check actual availability and limitations in Codex/Copilot rather than assuming tool equivalence.
+
+### Why It Is Parked
+
+Existing implementation and adoption data do not yet demonstrate net savings. Lifecycle graph builds are maintenance receipts, not evidence of Coder use. The M008.002 fixed-reference controlled function-location comparison returned 310 `o200k_base` evidence tokens for source-first versus 670 for Intelligence-first (116.1% *more* evidence); both arms took two interactions and read one source window. This limited mechanical test does not measure whole agent sessions or complex impact investigations and cannot establish overall graph ROI. M009.009 recorded a materially used graph lookup; M009.010 classified Intelligence as NOT USED for a focused task. Current repositories may not yet supply enough complex structural questions. Product Owner wishes to preserve the capability while assessing alternative navigation strategies. Detailed governing-document review and future Photo Organizer onboarding take precedence; no graph replacement or new engine is justified yet.
+
+### Trigger for Reconsideration
+
+Promote when the Product Owner chooses an evidence-efficiency evaluation; when multiple nontrivial cross-module investigations are available; when Photo Organizer is appropriately onboarded and explicitly authorized as an additional benchmark subject; or when normal-use records show persistent missed opportunities or inadequate value. Do not manufacture tool use to satisfy an adoption metric.
+
+### Likely Scope
+
+- Inventory each actual Coder/provider's available navigation tools and evidence boundaries (Codex, Copilot, Repo Control), including tool discovery and coverage limitations.
+- Define representative, correctly answerable questions across exact-symbol lookup, unknown-functionality discovery, callers/references, dependency and change impact, affected tests, and dynamic/runtime behavior. Stratify by investigation complexity and repository size; verify a ground-truth answer independently.
+- Compare competent *source-first*, native-agent navigation, graph-first, and selected hybrid approaches under identical repository snapshots, task questions, correctness/completeness requirements, and stopping criteria. Include failures, follow-up source verification, and repeated tool outputs actually delivered to model context; never compare a large unbounded source dump to a tiny graph response as the only baseline.
+- Reuse existing M008.002 isolated, fixed-reference `o200k_base` benchmark tooling. Report per-arm delivered evidence tokens/bytes, number of calls and source windows, elapsed tool time, correctness, missed relationships, and provenance. Treat evidence tokens separately from full model prompt/completion tokens, tool framing, cached/hidden context, and billing; report missing measurements as unknown rather than estimating them as exact.
+- First run low-cost offline/mechanical comparisons, then consider only a small controlled number of comparable fresh AI Coder sessions when assessing genuine model-token or human-time savings. Record the evaluation's own token/time cost separately; do not run an A/B experiment in every routine milestone.
+- Evaluate graph build/refresh/maintenance overhead, freshness failures and coverage gaps, not just response size. Distinguish repository file scanning performed locally by search/index programs from source text actually returned to an LLM.
+- Propose an adaptive, progressive navigation standard: choose the least costly suitable method, return bounded locations/snippets/relations, expand only if needed, and verify authoritative source and tests. Determine when a graph-first query is justified versus when simple source search or native agent navigation wins.
+- Evaluate whether measured guidance can be distributed via canonical workflow/Agent Skills to reduce provider-specific variability. Future policy must be Product Owner-approved, auditable where possible, and must not grant new Git/lifecycle authority or force ceremonial graph usage.
+- Decide from evidence whether to retain the graph broadly, restrict it to proven specialized use cases, alter automatic build cadence, improve selected operations, or eventually retire/replace parts. No decision is predetermined.
+
+### Dependencies
+
+M004.002 accepted graph scope and limitations; M008.002 versioned benchmark/token measurement contract and negative single-task result; M009.009 freshness/provenance and usage-classification baseline; M009.010 operational compatibility safeguards; existing INTEL-001 consumer-rating idea (separate and not mandatory). Any Photo Organizer evaluation requires separate managed-repository onboarding and explicit authorization; do not switch repository selection or access/modify another worktree from this entry.
+
+### Notes
+
+Success is correct, complete repository understanding with lower *total model-context consumption* and reasonable time/maintenance cost—not the number of graph queries, graph builds, or subjective favorable ratings. Preserve graph-use telemetry, benchmark methodology/version, negative results, and honest unknowns. This parked item is a decision/research candidate, not implementation authority.
 
 ---
 

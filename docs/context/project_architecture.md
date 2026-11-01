@@ -4,10 +4,10 @@
 
 **Project:** Repo Control II  
 **Document role:** Durable system architecture, authority boundaries, integration model, and architectural invariants  
-**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); see milestone artifacts and Repo Control for individual lifecycle authority
+**Project phase:** Git Control complete; accepted and CLOSED through M009.010, including M009.008 context-verification audit, M009.009 Intelligence freshness/provenance, and M009.010 runtime compatibility and procedure-release safeguards; see milestone artifacts and Repo Control for individual lifecycle authority
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
-**Current architecture baseline:** Repo Control II is a Linux-hosted, loopback-only browser Git Control service with guarded Product Owner Git actions, a managed multi-repository registry, tracked milestone sidecars and a six-state lifecycle, read-only Architect MCP evidence with separately PO-approved dispatch transport, and local Coder context/Skills with strict role and Git boundaries. It also provides bounded Repository Intelligence and a versioned shared procedure; accepted M008 capabilities add scanner-surviving dispatch-ledger durability and PO-confirmed, single-repository transactional procedure Apply/Recover.
+**Current architecture baseline:** Repo Control II is a Linux-hosted, loopback-only browser Git Control service with guarded Product Owner Git actions, a managed multi-repository registry, tracked milestone sidecars and a six-state lifecycle, read-only Architect MCP evidence with separately PO-approved dispatch transport, and local Coder context/Skills with strict role and Git boundaries. It also provides bounded Repository Intelligence and a versioned shared procedure; accepted M008 capabilities add scanner-surviving dispatch-ledger durability and PO-confirmed, single-repository transactional procedure Apply/Recover. M009.008–M009.010 add bounded context-verification audit semantics, semantic graph freshness/provenance, and a narrow runtime compatibility check plus authorized release preparation.
 **Current architectural emphasis:** Preserve read-only Architect evidence semantics while routing typed proposal submissions through pending Repo Control dispatches, explicit Product Owner approval, and local Coder CLI consumption; preserve deterministic Git authority, strict role separation, exact-image recovery boundaries, and candid disclosure of non-cooperating-writer limits.
 
 ---
@@ -207,12 +207,15 @@ The Coder should:
 
 Generic Coder bootstrap, workflow-core, and Skill sources live in the
 versioned [`shared/procedure`](../../shared/procedure/) bundle. The bundle
-renders a host-recognized `.github/copilot-instructions.md`, repository-local
+renders the host entrypoint `.github/copilot-instructions.md`, repository-local
 copy of the concise workflow core, physical Skill copies, and a small SHA-256
-lock. The accepted M008.004 reconciliation baseline is release `1.1.0`;
-managed repositories retain their independently recorded installed release.
-Project/runtime/data/test constraints remain in the registry-mapped
-local Coder overlay; generic materialization never overwrites that overlay.
+lock. M009.009 prepared canonical release `1.3.0`; M009.010 accepted the
+runtime/release-preparation safeguards without changing that release. Each
+managed repository retains its independently recorded installed release, so
+version and integrity must be inspected rather than inferred. The registry-
+mapped `docs/context/coding_agent_rules.md` is the Repo Control II-specific
+overlay, not the generic bootstrap; generic materialization never overwrites
+that overlay.
 
 `coder-procedure-status` reports deterministic version, hash, overlay, and
 path drift. `coder-procedure-preview` produces proposed file diffs without
@@ -247,6 +250,17 @@ no live repository update or recovery is implied.
 Overlay validation checks its declared marker and required section
 structurally; human review remains responsible for semantic conflicts between
 local rules and generic authority.
+
+M009.010 added explicit release preparation for a separately approved
+milestone: an active prompt marker binds a higher candidate version and
+allowlisted canonical sources to the current manifest digest. Read-only
+preview validates the complete candidate using the ordinary strict loader;
+publish rechecks authorization and integrity before atomically replacing only
+the manifest. This is not a hash-mismatch bypass, generated-file Apply, or
+service deployment. Product Owner-controlled rollout remains separate.
+M009.010's accepted recovery checks remain separately available when canonical
+comparison cannot be established: recovery uses verified transaction images
+and explicit Product Owner confirmation, while Apply remains blocked.
 
 ## 4.4 Human-Readable Artifacts Remain Primary
 
@@ -772,6 +786,7 @@ bug_discovered
 bug_classified
 bug_fixed
 test_result_recorded
+context_verification_recorded
 implementation_resumed
 closeout_submitted
 review_requested
@@ -785,6 +800,15 @@ git_disposition_recorded
 Each event records an ISO-8601 timestamp, event type, summary, optional actor, and optional structured metadata (such as blocking status or condition keys).
 
 This event model preserves a full audit trail of questions, answers, bug classifications, test outcomes, and binding decisions without requiring an opaque database or losing transparency.
+
+M009.010's runtime compatibility gate is registered for the newer
+`context_verification_recorded` payload (verification-record schema version 2)
+and checks the running service's advertised capabilities before that record is
+appended. Existing version-1 records remain readable. This is not a blanket
+runtime gate for every event type: unchanged established event contracts were
+not newly gated. Future event or payload-schema changes require explicit
+reader-capability requirements; unknown historical events are not discarded,
+coerced, or rewritten.
 
 ## Single-User Browser Action Compression
 
@@ -1074,7 +1098,7 @@ Responsibilities:
 - closeout requirements;
 - reminders about Git mutation boundaries, whose authority remains in governing rules and deterministic Repo Control controls.
 
-M005.002 and M005.003 were accepted and closed with three repository-local explicit SOP helpers: `repo-control-validation-closeout`, `repo-control-blocker-bug-escalation`, and `repo-control-implementation`. The compact `coding_agent_rules.md` is the always-loaded authority and safe-start bootstrap. Explicit invocation/routing is normal; implicit activation is advisory only. Skills derive procedure and cannot grant scope, Git, lifecycle or Product Owner authority. `coding_agent_rules.md` and milestone authority remain canonical. Native repository-local Agent Skills are in use; no custom skill runtime, loader, manager, catalog, or permission framework is integrated.
+M005.002 and M005.003 were accepted and closed with three repository-local explicit SOP helpers: `repo-control-validation-closeout`, `repo-control-blocker-bug-escalation`, and `repo-control-implementation`. The versioned shared procedure renders the generic Coder bootstrap at the host entrypoint; `docs/context/coding_agent_rules.md` is the repository-specific overlay. Explicit Skill invocation/routing is normal; implicit activation is advisory only. Skills derive procedure and cannot grant scope, Git, lifecycle or Product Owner authority. The bootstrap, overlay, active prompt, and Repo Control authority have distinct roles. Native repository-local Agent Skills are in use; no custom skill runtime, loader, manager, catalog, or permission framework is integrated.
 
 `repo-control-preflight` is deferred: mandatory `coder-context`/authorization and read-only Git preflight are already explicitly required, and a skill must not become their sole carrier.
 
@@ -1124,7 +1148,7 @@ The fixed external runtime is `~/.local/share/repoctl-tools/graphify-0.9.91/venv
 
 Independent defaults are 48 KiB, 60 nodes, 120 relationships, depth 2 and a 5-second request budget; hard maxima are 64 KiB, 120 nodes, 240 relationships, depth 4 and 10 seconds. Native pipes, graph bytes, source scope and process resources have additional bounds. Failures, ambiguity, stale evidence and omissions are explicit; native `isError=false` is never used as a success criterion.
 
-Bounded SQLite measurements retain use metadata, not query text/source bodies. Refresh receipts are separate from structural query uses and comparative benchmark records. Optional ratings and source-inspection feedback, sticky MISLEADING flags, latency/size statistics, operation breakdowns, refresh counts/history and comparative task metrics appear at `/intelligence`. Mechanical benchmark replay is not proof of human/model productivity. See [operator instructions](../../README.md#repository-intelligence-m004002-provisional) for installation, access, measurement and limitations.
+Bounded SQLite measurements retain use metadata, not query text/source bodies. Refresh receipts are separate from structural query uses and comparative benchmark records. M009.009 dispositions distinguish materially relied-on queried structure (`USED`), evidence not materially useful or needed (`NOT USED`), and genuinely unsupported or inaccessible evidence (`NOT AVAILABLE`); `STALE` alone does not mean `NOT AVAILABLE`. Optional ratings and source-inspection feedback, sticky MISLEADING flags, latency/size statistics, operation breakdowns, refresh counts/history and comparative task metrics appear at `/intelligence`. Mechanical benchmark replay is not proof of human/model productivity. See [operator instructions](../../README.md#repository-intelligence-m004002-provisional) for installation, access, measurement and limitations.
 
 ---
 
@@ -1318,7 +1342,7 @@ M004.001 and M004.002 are accepted and CLOSED. The M004.002 provider-backed inte
 
 ## 23.3 Agent Skills
 
-The accepted Agent Procedure baseline consists of the compact always-loaded `coding_agent_rules.md` authority/bootstrap and three explicit repository-local SOP helpers: `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`. The Product Owner may use a minimal handoff notification; the Coder retrieves authoritative context and loads applicable procedures. Skills do not confer authority.
+The accepted Agent Procedure baseline consists of the generated generic host bootstrap, the Repo Control II-specific `docs/context/coding_agent_rules.md` overlay, and three explicit repository-local SOP helpers: `repo-control-implementation`, `repo-control-blocker-bug-escalation`, and `repo-control-validation-closeout`. The Product Owner may use a minimal handoff notification; the Coder retrieves authoritative context and loads applicable procedures. Skills do not confer authority.
 
 ## 23.4 Ponytail
 
@@ -1458,14 +1482,15 @@ The completed architectural baseline and remaining capability areas are:
 
 4. Workflow Orchestration architecture              ACCEPTED
 
-5. Workflow Orchestration through M003.012           ACCEPTED / CLOSED
+5. Workflow Orchestration through M003.013           ACCEPTED / CLOSED
 
 6. Agent Procedure / Skills                         M005.000–M005.004 ACCEPTED / CLOSED
 7. Repository Intelligence                          M004.001–M004.002 ACCEPTED / CLOSED (bounded integration; limits/monitoring retained)
 8. Managed context / history / Coder convergence    M006.000, M007.000–M007.007 ACCEPTED / CLOSED
 9. M008 lifecycle/dispatch/Intelligence/procedure controls M008.000–M008.004 ACCEPTED / CLOSED
-10. Deeper Architect / Coder integration            DEFERRED
-11. Model Gateway                                  LATER
+10. M009.008–M009.010 context-verification, Intelligence freshness, and runtime/release safeguards ACCEPTED / CLOSED
+11. Deeper Architect / Coder integration            DEFERRED
+12. Model Gateway                                  LATER
 ```
 
 This is not a prescribed future implementation sequence. Any extension requires separately approved scope and must preserve the completed transport/authority boundaries.
@@ -1553,7 +1578,7 @@ Graphify 0.9.91 behind a replaceable provider and a shared bounded Architect/Cod
 
 ## 29.6 Agent Skills Packaging (Explicit SOP Helpers)
 
-M005.002 and M005.003 were accepted and closed with three minimal instruction-only repository-local Skills: `.agents/skills/repo-control-validation-closeout/SKILL.md` for validation/closeout, `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md` for genuine blockers/bugs, and `.agents/skills/repo-control-implementation/SKILL.md` for reusable milestone procedure. The compact `coding_agent_rules.md` remains the always-loaded authority/bootstrap; explicit invocation/routing is normal and implicit activation advisory only.
+M005.002 and M005.003 were accepted and closed with three minimal instruction-only repository-local Skills: `.agents/skills/repo-control-validation-closeout/SKILL.md` for validation/closeout, `.agents/skills/repo-control-blocker-bug-escalation/SKILL.md` for genuine blockers/bugs, and `.agents/skills/repo-control-implementation/SKILL.md` for reusable milestone procedure. The generic Coder bootstrap is rendered at the host entrypoint from the canonical shared procedure; `docs/context/coding_agent_rules.md` is the Repo Control II-specific overlay. Explicit invocation/routing is normal and implicit activation advisory only.
 
 Governing documents, active prompts, approved binding lock-ins, Repo Control lifecycle and Product Owner authority remain canonical. Skills cannot authorize scope, Git, lifecycle or Product Owner actions. Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog or permission framework is integrated. The bootstrap retains context retrieval, lifecycle authorization, repository identity, read-only preflight and no-Git authority; `repo-control-preflight` remains deferred because it would overlap mandatory startup procedure.
 
@@ -1642,8 +1667,11 @@ compressed Product Owner actions with distinct ordered events and atomic sidecar
 strict Product Owner / Architect / Coder role separation
 deterministic-evidence principle and human-readable milestone artifacts
 explicit iterative milestone-loop requirement
+bounded context-verification audit with agent-reported trigger/identity and unverified provider-delivery limitations (M009.008)
+semantic Repository Intelligence freshness separated from Git provenance, with explicit use classification and separately reported refresh activity (M009.009)
+running-service capability check before the newer context-verification record is written, plus explicitly authorized canonical release preparation with strict candidate validation and PO-controlled publication/rollout boundaries (M009.010)
 ```
 
-M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.007, and M008.000–M008.004 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the compact always-loaded authority/bootstrap and three explicit repository-local Skills. M007.006 accepted fresh/resumed Coder-context convergence across Repo Control II and Vocab, including visibility of approved applicable instructions after the normal handoff. M008 added lifecycle recovery/closure guards, separately measured Intelligence estimates and fixed-reference comparison, durable dispatch-ledger preservation, and the guarded transactional procedure update path; each retains its milestone-specific validation and limits. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. The active milestone and lifecycle are authoritative in Repo Control, not inferred from this architecture document. Documentation maintenance does not by itself change this architecture or authorize product behavior changes.
+M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.007, M008.000–M008.004, and M009.008–M009.010 are accepted and CLOSED. M003.012 acceptance explicitly permits limited live coverage; it does not establish every live polling/stale-form/start scenario. M004.002's bounded Graphify integration is accepted with documented source-scope, output, and template/browser/runtime limitations; usefulness monitoring may continue. M005's accepted Agent Procedure baseline comprises the canonical generated host bootstrap, the Repo Control II-specific `coding_agent_rules.md` overlay, and three explicit repository-local Skills. M007.006 accepted fresh/resumed Coder-context convergence across Repo Control II and Vocab, including visibility of approved applicable instructions after the normal handoff. M008 added lifecycle recovery/closure guards, separately measured Intelligence estimates and fixed-reference comparison, durable dispatch-ledger preservation, and the guarded transactional procedure update path; each retains its milestone-specific validation and limits. M009.008–M009.010 added bounded context-verification audit semantics, semantic graph freshness/provenance and usage classification, and the narrow runtime capability/release-preparation safeguards; M009.010's local test/fixture validation does not itself claim live deployment/restart or managed-repository Apply acceptance. No custom Agent Skills runtime, loader, manager, catalog, or permission framework is integrated. The active milestone and lifecycle are authoritative in Repo Control, not inferred from this architecture document. Documentation maintenance does not by itself change this architecture or authorize product behavior changes.
 
 The accepted M008.004 transaction is single-repository and exact-image recoverable, not a simultaneous six-file transaction and not a guarantee against arbitrary external filesystem mutation. Its final-check-to-rename parent-directory race is explicitly deferred under WORKFLOW-007; no mitigation is claimed here.

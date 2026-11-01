@@ -4,7 +4,7 @@
 
 **Project:** Repo Control II  
 **Document role:** Standing project workflow and collaboration model  
-**Project phase:** Git Control complete; accepted and CLOSED through M008.004 (including M008.000–M008.003.001); see milestone artifacts and Repo Control for individual lifecycle authority
+**Project phase:** Git Control complete; accepted and CLOSED through M009.010, including M009.008 context-verification audit, M009.009 Intelligence freshness/provenance, and M009.010 runtime compatibility and procedure-release safeguards; see milestone artifacts and Repo Control for individual lifecycle authority
 **Authoritative repository:** `/home/chuck/projects/repo-control-ii` on `henderson-server1`
 **Remote repository:** `git@github-repo-control-ii:CHHIV-Projects/repo-control-ii.git`
 **Current workflow baseline:** Product Owner-directed, milestone-based development with ChatGPT as Architect/Planner querying Repo Control via the Secure MCP Tunnel, coding agents as implementers adhering strictly to read-only Git boundaries, Repo Control II as the workflow/Git control plane, and Product Owner ownership of Git mutations and consequential workflow approvals
@@ -54,6 +54,23 @@ atomic, but the six-file set is not simultaneously visible. The tested
 parent-directory rename race is a deferred path-confinement risk under
 WORKFLOW-007; no complete external-writer protection is claimed. PO browser/UI
 acceptance is not live-repository Apply/Recover acceptance.
+
+M009.009 prepared canonical shared-procedure release 1.3.0; managed
+repositories remain independently versioned and require separate Product
+Owner-controlled reconciliation. M009.010 added an explicit release-
+preparation marker bound to the approved base manifest and allowlisted
+canonical sources, followed by strict read-only candidate validation/preview
+and revalidated publication. This preparation flow is not an integrity
+bypass, generated-file Apply, or deployment authorization.
+
+M009.010 also added a bounded runtime capability handshake before the newer
+`context_verification_recorded` verification-record schema is appended. The
+check is against the running service's advertised capabilities; version-1
+records remain readable. The currently registered requirement covers this
+verification record, not every established workflow event. An unavailable,
+unknown, or incompatible runtime blocks that gated write; it does not change
+lifecycle authority. Product Owner-controlled deployment/restart and
+post-deployment workflow readability checks remain separate.
 
 ---
 
@@ -946,6 +963,20 @@ From a managed worktree, use `/home/chuck/projects/repo-control-ii/.venv/bin/pyt
 - **Validation Evidence:** `repoctl coder-test "<summary>" --source "<cmd>" --result "<outcome>"` records test execution outcomes, labeled as reported evidence.
 - **Closeout Submission:** `repoctl coder-closeout [--summary "<summary>"]` verifies the matching closeout artifact exists and transitions the milestone from `IN_PROGRESS` to `REVIEW`.
 
+M009.008 added bounded `coder-verify` audit records for NEW, HANDOFF,
+AUTHORITY TRANSITION, and RECOVERY contexts; WARM contexts do not create
+duplicate verification records. The record distinguishes Repo Control-observed
+snapshot evidence from agent-reported trigger/identity and unverified
+provider-native delivery, and missing records do not prove that no context
+started.
+
+M009.010 requires a compatible running service before appending the newer
+context-verification record schema. This runtime gate is scoped to the
+registered event/payload requirement; it does not imply that
+`coder-question`, `coder-test`, `coder-closeout`, or Product Owner lifecycle
+events acquired the same new gate. Existing event schemas and lifecycle
+authorization remain in force.
+
 **Enforced Invariants:**
 - All Coder CLI commands hardcode `actor_role="coder"` and `po_approved=False`.
 - The Coder CLI provides no generic `coder-event` command.
@@ -1406,7 +1437,7 @@ Future optimization should reduce repeated standing content, preserve authoritat
 
 # 58. Agent Skills and Minimal Coder Handoff
 
-The Coder bootstrap is the always-loaded authority/safe-start layer. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The notification is not authorization or task scope by itself: the Coder retrieves authoritative `coder-context`, verifies repository/branch/lifecycle/authorization, applies the standing pre-work feedback rule, and loads applicable Skills without requiring the Product Owner to name them.
+The versioned shared procedure renders the generic Coder bootstrap at the host entrypoint; `docs/context/coding_agent_rules.md` is the Repo Control II-specific overlay. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The notification is not authorization or task scope by itself: the Coder retrieves authoritative `coder-context`, verifies repository/branch/lifecycle/authorization, applies the standing pre-work feedback rule, and loads applicable Skills without requiring the Product Owner to name them.
 
 The accepted repository-local explicit SOP helpers are:
 
@@ -1418,7 +1449,7 @@ The accepted repository-local explicit SOP helpers are:
 
 Invoke implementation procedure after safe preflight for reconnaissance, implementation, documentation or tool evaluation; invoke blocker/bug escalation only for a genuine material question, blocker, conflict or defect; invoke validation/closeout for validation, evidence, closeout, review submission or a bounded correction.
 
-The compact `coding_agent_rules.md` is the always-loaded authority and safe-start bootstrap. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The Coder fetches authoritative context, verifies lifecycle authorization and preflight, applies the standing pre-work feedback rule, and loads applicable Skills without asking for repeated procedural boilerplate. Explicit loading/routing is normal; implicit activation is advisory only. For corrections, verify correction-mode authorization and bound the change. For approved instructions, verify applicability and priority.
+The generated host bootstrap carries generic safe-start procedure; `coding_agent_rules.md` supplies project-specific context and constraints. The normal Product Owner notification may be only `Prompt ready.`, `Correction ready.`, or `Instruction ready.` The Coder fetches authoritative context, verifies lifecycle authorization and preflight, applies the standing pre-work feedback rule, and loads applicable Skills without asking for repeated procedural boilerplate. Explicit loading/routing is normal; implicit activation is advisory only. For corrections, verify correction-mode authorization and bound the change. For approved instructions, verify applicability and priority.
 
 `coding_agent_rules.md`, other governing documents, active prompt and approved binding lock-ins remain authoritative. Skills are derived procedure and cannot authorize scope, Git, lifecycle or Product Owner actions. If a Skill does not load, follow the bootstrap and canonical documents directly; stop if safe procedure is unclear. Repo Control lifecycle checks and bounded submissions remain deterministic authorities. Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, hooks or permission framework is integrated.
 
@@ -1542,7 +1573,7 @@ The operational transport architecture now distinguishes Architect from Coder wo
 
 Read-only Architect evidence, bounded dispatch transport, local Coder CLI, phase-aware workflow controls, and compressed Product Owner actions are accepted capabilities, not future backlog.
 
-The Agent Procedure baseline is accepted: the compact always-loaded Coder bootstrap and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M006.000 and M007.000–M007.007 are also accepted and closed; M007.006 validated fresh/resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff. M008.000–M008.004 are accepted and closed, adding closed-milestone reopening and dispatch-aware closure, Intelligence measurement, fresh-session bootstrap/status-preview, persistent dispatch-ledger protection across scans, and guarded PO-controlled transactional Apply/Recover. Current milestone selection and lifecycle authorization come from Repo Control, not this standing workflow summary. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
+The Agent Procedure baseline is accepted: the generated generic host bootstrap, Repo Control II-specific `coding_agent_rules.md` overlay, and three explicit repository-local Skills support minimal Product Owner handoffs without transferring Git, lifecycle or Product Owner authority. M005.004 was accepted and closed, completing the M005 Agent Procedure arc. M006.000 and M007.000–M007.007 are also accepted and closed; M007.006 validated fresh/resumed Coder context resolution across Repo Control II and Vocab, including approved applicable instruction visibility after the normal handoff. M008.000–M008.004 are accepted and closed, adding closed-milestone reopening and dispatch-aware closure, Intelligence measurement, fresh-session bootstrap/status-preview, persistent dispatch-ledger protection across scans, and guarded PO-controlled transactional Apply/Recover. M009.008–M009.010 are accepted and closed, adding bounded verification audit, semantic Intelligence freshness/provenance and use classification, and runtime compatibility/release-preparation safeguards. These records describe the accepted baseline, not a current-milestone selection. Packet-context optimization remains deferred under WORKFLOW-002 and does not prescribe future implementation. WORKFLOW-001 was absorbed by M003.010/M003.012 and removed from the active parking lot.
 
 Bounded local Coder write access is implemented in M003.009; future Coder MCP / remote Coder transport remains deferred as WORKFLOW-003, and multi-agent coordination remains deferred.
 
@@ -1630,9 +1661,10 @@ manual review packets retained as operational fallback
 M004.002 bounded repository-intelligence integration accepted and CLOSED; limitations retained and usefulness monitoring may continue
 M005.002–M005.004 Agent Procedure / three explicit Skill helpers and governing-context reconciliation accepted and CLOSED
 M008.000–M008.004 closed-milestone safeguards, Intelligence measurement, fresh-session bootstrap, dispatch-ledger persistence, and single-repository transactional procedure Apply/Recover accepted and CLOSED
+M009.008–M009.010 context-verification audit, semantic Intelligence freshness/provenance, runtime compatibility, and bounded procedure release preparation accepted and CLOSED
 Native repository-local Agent Skills are in use; no custom runtime, loader, manager, catalog, or permission framework is integrated
 local Coder CLI workflow interface and bounded event submission implemented (M003.009)
 remote Coder MCP transport deferred (WORKFLOW-003)
 ```
 
-M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.007, and M008.000–M008.004 are accepted and CLOSED. M003.012 acceptance is explicitly PASS WITH LIMITED LIVE COVERAGE; remaining extended polling, stale-form, and Approve & Start live scenarios were not closure gates. Preserve that evidence limit rather than claiming every production scenario was exercised. M008's accepted baseline includes durable per-repository dispatch-ledger protection, the guarded single-repository PO Apply/Recover path, exact-image recovery, and independently verified all-six-path `CURRENT`; it does not include bulk rollout, Coder Apply authority, simultaneous six-file visibility, or immunity to arbitrary external path mutation. Future work requires separately approved scope.
+M003 capabilities through M003.013, M004.001–M004.002, M005.000–M005.004, M006.000, M007.000–M007.007, M008.000–M008.004, and M009.008–M009.010 are accepted and CLOSED. M003.012 acceptance is explicitly PASS WITH LIMITED LIVE COVERAGE; remaining extended polling, stale-form, and Approve & Start live scenarios were not closure gates. Preserve that evidence limit rather than claiming every production scenario was exercised. M008's accepted baseline includes durable per-repository dispatch-ledger protection, the guarded single-repository PO Apply/Recover path, exact-image recovery, and independently verified all-six-path `CURRENT`; it does not include bulk rollout, Coder Apply authority, simultaneous six-file visibility, or immunity to arbitrary external path mutation. M009.008 distinguishes agent-reported triggers/identity and provider delivery from observed snapshots; M009.009 separates semantic freshness from Git provenance and graph-query use from refresh receipts; M009.010 gates only the registered newer verification-record write on runtime capability and adds a separately authorized candidate-release flow. The M009.010 local tests/fixtures do not themselves claim live deployment/restart or managed-repository Apply acceptance. Future work requires separately approved scope.
