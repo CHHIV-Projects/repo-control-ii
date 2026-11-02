@@ -210,16 +210,18 @@ versioned [`shared/procedure`](../../shared/procedure/) bundle. The bundle
 renders the host entrypoint `.github/copilot-instructions.md`, repository-local
 copy of the concise workflow core, physical Skill copies, and a small SHA-256
 lock. M009.009 prepared canonical release `1.3.0`; M009.010 accepted the
-runtime/release-preparation safeguards without changing that release. M009.015
-extends engine validation and transactions for a future optional root
-`AGENTS.md`, rendered from the same bootstrap source as the existing host
-entrypoint. The published `1.3.0` manifest and its five-artifact behavior
-remain unchanged; the optional sixth artifact is valid only in a numeric
-release newer than `1.3.0`. Existing root `AGENTS.md` files without matching
-procedure-lock provenance are protected collisions, including when their
-bytes happen to match the generated output. Each managed repository retains
-its independently recorded installed release, so version and integrity must
-be inspected rather than inferred. The registry-mapped
+runtime/release-preparation safeguards. M009.015 extended manifest validation,
+rendering, preview, status, transactional Apply, and Recover for the optional
+root `AGENTS.md`, rendered from the same bootstrap source as the Copilot host
+entrypoint. M009.014 published canonical release `1.4.0` with six generated
+artifacts plus the release lock. The published `1.3.0` manifest and its
+five-artifact installations remain unchanged; older installations stay
+pinned until separately reviewed and explicitly applied by the Product Owner.
+Existing root `AGENTS.md` files without matching procedure-lock provenance
+are protected collisions, including when their bytes happen to match the
+generated output. Each managed repository retains its independently recorded
+installed release, so version and integrity must be inspected rather than
+inferred. The registry-mapped
 `docs/context/coding_agent_rules.md` is the Repo Control II-specific overlay,
 not the generic bootstrap; generic materialization never overwrites that
 overlay.

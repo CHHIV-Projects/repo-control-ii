@@ -17,13 +17,15 @@ workflow core, and accepted Skills in
 [`shared/procedure`](../../shared/procedure/). Each managed repository has
 physical/generated copies of the host entrypoint, workflow core, and Skills,
 plus `.repo-control/shared-procedure.lock.toml` recording the release and
-hashes materialized there. A future numeric release newer than `1.3.0` may
-also generate root `AGENTS.md` from the same canonical bootstrap source as
-`.github/copilot-instructions.md`. The published `1.3.0` manifest and its
-five-artifact installations remain unchanged. An existing `AGENTS.md` without
-matching procedure-lock provenance is a protected collision and must not be
-overwritten, even if its contents match the generated bootstrap. Each
-repository is therefore pinned to its own installed release.
+hashes materialized there. Canonical release `1.4.0` adds root `AGENTS.md`
+from the same bootstrap source as `.github/copilot-instructions.md`, for six
+generated artifacts plus the release lock. The published `1.3.0` manifest
+and its five-artifact installations remain unchanged; each older installation
+stays pinned until separately reviewed and explicitly applied by the Product
+Owner. An existing `AGENTS.md` without matching procedure-lock provenance is
+a protected collision and must not be overwritten, even if its contents
+match the generated bootstrap. Each repository is therefore pinned to its
+own installed release.
 
 Publishing a newer canonical release does not automatically update other
 managed repositories. A repository whose installed release is older may
@@ -146,8 +148,10 @@ marker in the active prompt; strict candidate preview and revalidated
 publication remain required. Publication does not Apply the release to managed
 repositories. See the [runtime compatibility and procedure release
 guide](../guides/runtime-compatibility-and-procedure-release.md) for the
-operator sequence. This implementation does not publish 1.4.0 or resume
-M009.014 by itself.
+operator sequence. M009.014 subsequently published canonical release 1.4.0;
+the Product Owner applied it to Repo Control II. This does not update other
+managed repositories, and their installation status must still be inspected
+and reconciled separately under Product Owner authority.
 
 M009.010 also added a bounded runtime capability handshake before the newer
 `context_verification_recorded` verification-record schema is appended. The

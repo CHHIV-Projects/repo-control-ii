@@ -18,6 +18,7 @@ from unittest import mock
 from repoctl.cli import main
 from repoctl import procedure_transactions
 from repoctl.procedure_governance import (
+    BUNDLE_ROOT,
     ProcedureGovernanceError,
     inspect_procedure,
     load_bundle,
@@ -45,6 +46,7 @@ from repoctl.scanner.core import run_scan
 from repoctl.workflow.coder_interface import submit_coder_context_verification
 from repoctl.workflow.lifecycle import record_milestone_event
 from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
+from tests.procedure_fixtures import copy_five_artifact_v130_bundle
 
 
 def _git_repo(path: Path) -> Path:
@@ -138,13 +140,10 @@ def _crash_apply_during_preparation(entry: RepositoryEntry, state_root: str, tok
 
 def _crash_apply_after_lock_replacement(entry: RepositoryEntry, state_root: str, token: str) -> None:
     original = procedure_transactions._write_target
-    calls = 0
 
     def write_then_exit(*args, **kwargs):
-        nonlocal calls
         original(*args, **kwargs)
-        calls += 1
-        if calls == len(FIXED_TARGETS) + 1:
+        if args[1] == ".repo-control/shared-procedure.lock.toml":
             os._exit(75)
 
     with mock.patch("repoctl.procedure_transactions._write_target", side_effect=write_then_exit):
@@ -284,6 +283,10 @@ class ProcedureGovernanceTests(unittest.TestCase):
             documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
         )
         self.bundle = load_bundle()
+        self.legacy_bundle = copy_five_artifact_v130_bundle(
+            BUNDLE_ROOT,
+            self.root / "procedure-1.3.0",
+        )
         self._future_bundle_count = 0
         self.registry_path = self.root / "repositories.toml"
         self._write_registry([self.entry])
@@ -344,7 +347,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
     ):
         root = self.root / f"procedure-{self._future_bundle_count}"
         self._future_bundle_count += 1
-        shutil.copytree(self.bundle.root, root)
+        shutil.copytree(self.legacy_bundle.root, root)
         manifest_path = root / "manifest.toml"
         manifest = manifest_path.read_text(encoding="utf-8").replace(
             'release = "1.3.0"',
@@ -391,16 +394,24 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self._write_registry([self.entry])
         return original
 
-    def test_published_130_installation_ignores_and_preserves_user_agents_file(self) -> None:
-        self.assertEqual(self.bundle.release, "1.3.0")
-        self.assertNotIn("AGENTS.md", {artifact.target for artifact in self.bundle.artifacts})
-        self._materialize()
+    def test_five_artifact_v130_installation_ignores_and_preserves_user_agents_file(self) -> None:
+        self.assertEqual(self.legacy_bundle.release, "1.3.0")
+        self.assertNotIn("AGENTS.md", {artifact.target for artifact in self.legacy_bundle.artifacts})
+        plan = preview_reconciliation(self.entry, self.legacy_bundle)
+        self.assertTrue(plan.can_materialize, plan.blockers)
+        for relative, content in plan.files:
+            target = self.repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        lock_path = self.repo / self.legacy_bundle.lock_path
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_bytes(plan.lock_bytes)
         agents = self.repo / "AGENTS.md"
         original = b"User-owned Codex instructions\n"
         agents.write_bytes(original)
 
-        status = inspect_procedure(self.entry, self.bundle)
-        plan = preview_reconciliation(self.entry, self.bundle)
+        status = inspect_procedure(self.entry, self.legacy_bundle)
+        plan = preview_reconciliation(self.entry, self.legacy_bundle)
 
         self.assertEqual(status["status"], "CURRENT")
         self.assertTrue(plan.can_materialize, plan.blockers)
@@ -408,7 +419,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self.assertEqual(agents.read_bytes(), original)
 
     def test_six_artifact_manifest_is_future_only_and_renders_shared_bootstrap(self) -> None:
-        self.assertEqual(len(self.bundle.artifacts), len(FIXED_TARGETS))
+        self.assertEqual(len(self.legacy_bundle.artifacts), len(FIXED_TARGETS))
         with self.assertRaisesRegex(ProcedureGovernanceError, "newer than 1.3.0"):
             self._future_six_artifact_bundle(release="1.3.0")
         with self.assertRaisesRegex(ProcedureGovernanceError, "materialized more than once"):
@@ -875,7 +886,10 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self.assertEqual(result["state"], "VERIFIED")
         self.assertEqual(result["status"], "CURRENT")
         self.assertFalse(result["no_op"])
-        self.assertEqual(set(result["target_hashes"]), {*FIXED_TARGETS, self.bundle.lock_path})
+        self.assertEqual(
+            set(result["target_hashes"]),
+            {artifact.target for artifact in self.bundle.artifacts} | {self.bundle.lock_path},
+        )
         self.assertEqual(overlay.read_bytes(), original_overlay)
         self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "CURRENT")
         self.assertEqual(
@@ -922,8 +936,9 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
     def test_apply_adopts_exact_existing_target_and_preserves_its_mode(self) -> None:
         self._materialize()
-        adopted = self.repo / FIXED_TARGETS[0]
-        for relative in (*FIXED_TARGETS[1:], self.bundle.lock_path):
+        targets = tuple(artifact.target for artifact in self.bundle.artifacts)
+        adopted = self.repo / targets[0]
+        for relative in (*targets[1:], self.bundle.lock_path):
             (self.repo / relative).unlink()
         os.chmod(adopted, 0o640)
         adopted_bytes = adopted.read_bytes()
@@ -1829,7 +1844,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
     def test_manifest_sources_are_hashed_and_installed_skills_match_their_lock(self) -> None:
         self.assertEqual(self.bundle.schema_version, 1)
-        self.assertEqual(self.bundle.release, "1.3.0")
+        self.assertEqual(self.bundle.release, "1.4.0")
         for source, expected in self.bundle.source_hashes.items():
             data = (self.bundle.root / source).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
@@ -1907,7 +1922,10 @@ class ProcedureGovernanceTests(unittest.TestCase):
         data = plan.as_dict()
         self.assertTrue(data["overlay_untouched"])
         self.assertEqual(data["removals"], [])
-        self.assertEqual(sum(change["action"] == "create" for change in data["changes"]), 6)
+        self.assertEqual(
+            sum(change["action"] == "create" for change in data["changes"]),
+            len(self.bundle.artifacts) + 1,
+        )
         bootstrap = next(item for item in data["changes"] if item["path"] == ".github/copilot-instructions.md")
         self.assertIn("+This file is generated", bootstrap["diff"])
         self.assertFalse((self.repo / ".github/copilot-instructions.md").exists())

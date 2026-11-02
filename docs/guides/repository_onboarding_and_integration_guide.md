@@ -32,7 +32,7 @@ Use this path when there is no existing project corpus that must be migrated.
 | 4. Create canonical structure | PO + Architect | Agree on the active milestone root `docs/milestones/` and governing-document content before product milestones begin. |
 | 5. Create governing documents | Architect + Coder; PO approves | Create `docs/context/project_context.md`, `docs/context/project_architecture.md`, `docs/context/project_workflow.md`, `docs/context/coding_agent_rules.md`, and `docs/context/canonical_parking_lot.md`. Keep each role distinct; do not fill them with unverified template claims. |
 | 6. Configure central registry | PO / service operator | Add a stable repository key to the service's central registry. Set its absolute worktree path, `milestone_root = "docs/milestones"`, and repository-relative mappings for the five governing-document roles. Follow the deployed service's configuration and restart/reload procedure. |
-| 7. Review shared procedure | PO/Architect review; Coder supplies preview | Use the central versioned `shared/procedure/` bundle as the source of `.github/copilot-instructions.md`, `.repo-control/workflow_core.md`, the three local `.agents/skills/*/SKILL.md` copies, and `.repo-control/shared-procedure.lock.toml`. Review `coder-procedure-status` and the exact `coder-procedure-preview` before any update. Preserve local overlays; do not use symlinks or silently overwrite conflicts. For later release drift only, the PO may use the Procedure Updates browser's separate Review Apply / Confirm Apply flow for one registered repository, then verify `CURRENT` and use ordinary Git Review. |
+| 7. Review shared procedure | PO/Architect review; Coder supplies preview | Use the central versioned `shared/procedure/` bundle as the source of `.github/copilot-instructions.md`, root `AGENTS.md`, `.repo-control/workflow_core.md`, the three local `.agents/skills/*/SKILL.md` copies, and `.repo-control/shared-procedure.lock.toml`. Release 1.4.0 has six generated artifacts plus the lock; a 1.3.0 installation retains its five-artifact set until separately approved Apply. Review `coder-procedure-status` and the exact `coder-procedure-preview` before any update. Preserve local overlays; do not use symlinks or silently overwrite conflicts. For later release drift only, the PO may use the Procedure Updates browser's separate Review Apply / Confirm Apply flow for one registered repository, then verify `CURRENT` and use ordinary Git Review. |
 | 8. Verify repository identity end to end | PO + Architect + Coder | In a fresh or resumed Coder session, retrieve current context/status and verify repository path, selected prompt, lifecycle, applicable approved dispatches, and authorization without relying on prior chat history. Also verify that browser and Architect resolve the intended repository key/path and milestone root. |
 | 9. Build Repository Intelligence when useful | PO; Coder consumes | When code exists and structural evidence would help, deliberately approve a build/refresh. Confirm `CURRENT` before relying on it. The Coder uses targeted queries and rates material uses; graph evidence is not runtime proof. |
 | 10. Verify operations | PO + Architect + Coder | Review a real or isolated onboarding milestone through selection, authorized start, question/waiting behavior if exercised, closeout review, and Git Review. Keep test events in an appropriate test repository/milestone; do not fabricate product history. |
@@ -57,7 +57,10 @@ and do not act as Coder. A fresh-session copy-ready instruction and operator
 checklist are in the [Repo Control User Guide](repo_control_user_guide.md).
 `Prompt ready.`, `Instruction ready.`, and `Correction ready.` are handoff
 notices, never authorization. Unsupported or untested hosts must be described
-as such.
+as such. Release 1.4.0 supplies the root Codex `AGENTS.md` entrypoint from the
+same canonical bootstrap as the Copilot entrypoint. File presence and fixture
+tests do not prove provider-native delivery: confirm behavior only in a
+genuinely new Codex/Copilot session and report unobserved delivery as pending.
 
 ### New-repository completion checklist
 
@@ -65,8 +68,8 @@ as such.
 - [ ] Git remote and noninteractive service-account authentication work.
 - [ ] `docs/milestones/` is the configured active prompt root.
 - [ ] All five canonical documents exist and their registry mappings are correct.
-- [ ] The host bootstrap, three local Skills, and release/hash lock match the
-  canonical shared procedure bundle.
+- [ ] The Codex and Copilot host entrypoints, workflow core, three local
+  Skills, and release/hash lock match the canonical shared procedure bundle.
 - [ ] The local project overlay remains intact and cannot override generic
   authority or Repo Control state.
 - [ ] Browser, Architect, and Coder agree on repository identity and selection.
@@ -118,6 +121,53 @@ Before normalizing, inspect:
 Do not delete or rename records as a cleanup shortcut. Classify first, preserve
 evidence, and obtain PO direction for material conflicts or irreversible
 cutover decisions.
+
+### Read-only canonicalization preflight
+
+Before proposing migration, record the repository key/root, configured
+milestone root and five document-role mappings, lifecycle/selection, Git
+branch and dirty paths, and current procedure release/lock. Inventory every
+current governing document, incoming link, candidate active milestone,
+historical prompt/closeout/sidecar, duplicate, and relevant instruction file.
+Classify each item as current authority, stale-but-useful, duplicate/mislabeled,
+or historical-only; never infer authority from a filename or historical
+milestone identifier.
+
+The canonical document roles are:
+
+| Role | Canonical path | Required responsibility |
+|---|---|---|
+| Project context | `docs/context/project_context.md` | Current product goals, outcomes, constraints, and project baseline. |
+| Architecture | `docs/context/project_architecture.md` | Current system design, integrations, boundaries, and invariants. |
+| Workflow | `docs/context/project_workflow.md` | Project-specific operating rules, roles, lifecycle, review, and Git authority. |
+| Coder overlay | `docs/context/coding_agent_rules.md` | Focused repository/runtime/data/test constraints; it cannot replace generic procedure or override Repo Control authority. |
+| Parking lot | `docs/context/canonical_parking_lot.md` | Deferred and unresolved future work, not current implementation scope. |
+
+For each noncanonical current document, prepare a reviewable source-to-target
+plan that maps substantive sections to these roles, identifies conflicts and
+duplication, records semantic coverage, lists incoming links and registry-role
+changes, and states which original bytes remain unchanged or require a
+reviewable diff. Keep historical IDs and provenance intact; when archival
+migration is approved, use a traceable index under `docs/history/` and keep
+those files outside active milestone discovery. History lookup remains limited
+to the configured milestone root and supported `docs/history/` archive.
+
+The report must identify target collisions, missing files, stale registry
+mappings, broken links, duplicate archives, symlinks/path traversal, and dirty
+Git state, plus a bounded rollback/recovery plan. A read-only assessment does
+not move, rewrite, rename, archive, or authorize changing any file or registry
+entry. Stop for Product Owner direction when authority, semantic preservation,
+target ownership, or a safe interrupted-migration recovery cannot be resolved.
+After a separately authorized migration, recheck all five roles and links,
+history discovery and active-root isolation, overlay preservation, procedure
+status/lock, and Git diff before Product Owner review.
+
+This assessment remains a reviewable checklist/report rather than an
+auto-classifying migration tool. Reuse registry path/role validation,
+milestone discovery, bounded historical-document access, and procedure
+status/preview for their respective deterministic checks; semantic authority
+classification and source-to-target decisions require Architect/PO review.
+Do not let a utility infer ownership or rewrite project documents.
 
 ## Current integration checks
 

@@ -61,6 +61,15 @@ contract; their schema has not changed here.
 
 ## Authorized shared-procedure release preparation
 
+The current canonical release is `1.4.0`, manifest SHA-256
+`96d893c69adad187594568e43c66e5b879042a0e51316883ef7c5ec840442091`. It
+adds root `AGENTS.md` as the sixth generated artifact from the existing
+bootstrap source. The M009.014 v2 authorization has been consumed and retired;
+M009.014 no longer authorizes further release preparation.
+Existing `1.3.0` installations remain five-artifact installations until a
+separate Product Owner-controlled Apply. Do not copy the historical M009.014
+marker or repeat `--add-codex-entrypoint` against the now-six-artifact base.
+
 A release can be prepared only when the active, Product Owner-approved
 milestone prompt contains exactly one explicit marker, the milestone is live
 and authorized `IN_PROGRESS`, the base manifest still matches the approved
@@ -72,7 +81,7 @@ Version 1 authorizes source changes only. Its bounded JSON marker is:
 {
   "schema_version": 1,
   "base_manifest_sha256": "<64 lowercase hex characters>",
-  "candidate_release": "1.4.0",
+  "candidate_release": "1.5.0",
   "authorized_sources": ["workflow_core.md"]
 }
 -->
@@ -84,7 +93,9 @@ published base; when that manifest changes, the old marker no longer authorizes
 publication.
 
 Version 2 additionally authorizes one fixed artifact-map addition, and no
-other manifest changes:
+other manifest changes. The example below records the historical M009.014
+transition from release `1.3.0` to `1.4.0`; its placeholders are illustrative,
+not current authorization:
 
 ```markdown
 <!-- repoctl-procedure-release-preparation:v2
@@ -114,11 +125,14 @@ other manifest changes:
 -->
 ```
 
-The v2 marker is valid only for the exact published five-artifact 1.3.0
+The v2 marker was valid only for the exact published five-artifact 1.3.0
 mapping, a numerically higher candidate, and the bound active repository and
-milestone. `authorized_sources` still controls which canonical source bytes
-may change; it must include `bootstrap.md` for the fixed Codex artifact
-addition. V1 markers retain source-only meaning and can never add artifacts.
+milestone. That one-time addition is already published in 1.4.0 and must not
+be repeated. A future release that changes only canonical source bytes uses a
+fresh v1 marker bound to the then-current 1.4.0 manifest; v1 markers retain
+source-only meaning and can never add artifacts. `authorized_sources`
+controlled which canonical source bytes could change and had to include
+`bootstrap.md` for the fixed Codex artifact addition.
 Unknown marker fields, alternate targets/renderers/sources, identity
 mismatches, stale manifest digests, and unauthorized source changes fail
 closed.
@@ -130,7 +144,7 @@ closed.
    exact base manifest digest and rejects unknown paths or a non-increasing
    version. Insert the rendered marker verbatim into the Product Owner-approved
    prompt; do not hand-copy or invent a digest.
-   To authorize the fixed Codex artifact addition, run the same command with
+   For historical reference only, the M009.014 v2 marker was generated with
    every approved source and `--add-codex-entrypoint`:
 
    ```bash
@@ -144,12 +158,12 @@ closed.
      --add-codex-entrypoint
    ```
 
-   The command uses the selected active repository and milestone identity and
-   emits the current live manifest digest. It does not edit the prompt or
-   authorize release work. The Product Owner must review the exact output and
-   incorporate it into the controlled, approved milestone prompt. If the
-   repository, milestone, manifest, candidate version, or source allowlist
-   changes, regenerate and reapprove the marker.
+   At that time, the command used the selected active repository and milestone
+   identity and emitted the live 1.3.0 base-manifest digest. It did not edit
+   the prompt or authorize release work. The Product Owner reviewed and
+   incorporated the exact output into the approved M009.014 prompt. For any
+   future artifact-map addition, first establish a newly supported mapping and
+   explicit authorization; do not reuse this marker or command as permission.
 2. Verify active repository, milestone, lifecycle, authorization, marker, and
    release status with `coder-context` / `coder-status`. A
    `RELEASE_PREPARATION` verification result confirms only the bounded

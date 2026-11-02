@@ -41,6 +41,7 @@ from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
 from repoctl.workflow.lifecycle import load_milestone_workflow, record_milestone_event
 from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
+from tests.procedure_fixtures import copy_five_artifact_v130_bundle
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -343,7 +344,7 @@ class WebTests(unittest.TestCase):
                 self.assertIn("UPDATE", html)
                 self.assertIn(bundle.manifest_sha256, html)
                 self.assertIn("1.0.2", html)
-                self.assertIn("1.3.0", html)
+                self.assertIn("1.4.0", html)
                 self.assertIn("coding_agent_rules.md", html)
                 self.assertIn("Review Apply", html)
                 self.assertNotIn("Confirm Apply", html)
@@ -593,7 +594,7 @@ class WebTests(unittest.TestCase):
             _git(repo, "commit", "-m", "add project overlay")
 
             bundle_root = root / "future-procedure"
-            shutil.copytree(BUNDLE_ROOT, bundle_root)
+            copy_five_artifact_v130_bundle(BUNDLE_ROOT, bundle_root)
             manifest_path = bundle_root / "manifest.toml"
             manifest = manifest_path.read_text(encoding="utf-8").replace(
                 'release = "1.3.0"',
