@@ -108,6 +108,8 @@ def collect_verification_sources(
         repository.path,
         candidate,
         workflow,
+        repository_key=repository.key,
+        repository_id=repository.repository_id,
     )
     try:
         from ..procedure_governance import ProcedureGovernanceError, inspect_procedure, load_bundle

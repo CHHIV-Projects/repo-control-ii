@@ -172,6 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Canonical source path to allowlist; repeat for each source",
     )
+    release_marker_parser.add_argument(
+        "--add-codex-entrypoint",
+        action="store_true",
+        help="Authorize only the bootstrap.md to AGENTS.md artifact addition against the active repository and milestone",
+    )
 
     for command, help_text in (
         (
@@ -786,13 +791,34 @@ def main(argv: list[str] | None = None) -> int:
             render_release_preparation_marker,
         )
         from .procedure_governance import ProcedureGovernanceError
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            resolve_coder_release_preparation_context,
+        )
 
         try:
+            marker_options = {}
+            if args.add_codex_entrypoint:
+                entry, candidate, _ = resolve_coder_release_preparation_context()
+                marker_options = {
+                    "add_codex_entrypoint": True,
+                    "repository_key": entry.key,
+                    "repository_id": entry.repository_id,
+                    "repository_root": entry.path,
+                    "milestone_id": candidate["milestone_id"],
+                }
             marker = render_release_preparation_marker(
                 args.candidate_release,
                 args.source,
+                **marker_options,
             )
-        except (ProcedureReleaseError, ProcedureGovernanceError, OSError, UnicodeError) as exc:
+        except (
+            CoderInterfaceError,
+            ProcedureReleaseError,
+            ProcedureGovernanceError,
+            OSError,
+            UnicodeError,
+        ) as exc:
             print(f"coder procedure release marker failed: {exc}", file=sys.stderr)
             return 2
         print(marker)
@@ -883,6 +909,8 @@ def main(argv: list[str] | None = None) -> int:
                             release_entry.path,
                             candidate,
                             workflow,
+                            repository_key=release_entry.key,
+                            repository_id=release_entry.repository_id,
                         )
                     except CoderInterfaceError as context_error:
                         release_preparation = {
@@ -920,6 +948,8 @@ def main(argv: list[str] | None = None) -> int:
                             entry.path,
                             candidate,
                             workflow,
+                            repository_key=entry.key,
+                            repository_id=entry.repository_id,
                         )
                     text = format_procedure_status_text(result)
         except (CoderInterfaceError, ProcedureGovernanceError, OSError, UnicodeError) as exc:

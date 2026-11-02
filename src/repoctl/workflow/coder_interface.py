@@ -146,6 +146,8 @@ def get_coder_status(
         entry.path,
         candidate,
         workflow,
+        repository_key=entry.key,
+        repository_id=entry.repository_id,
     )
     local_runtime_capabilities = {
         "producer_contract_id": PRODUCER_CONTRACT_ID,
@@ -787,7 +789,13 @@ def submit_coder_closeout(
     )
     from ..procedure_release import inspect_procedure_release_preparation
 
-    release_preparation = inspect_procedure_release_preparation(entry.path, candidate, workflow)
+    release_preparation = inspect_procedure_release_preparation(
+        entry.path,
+        candidate,
+        workflow,
+        repository_key=entry.key,
+        repository_id=entry.repository_id,
+    )
     if release_preparation.get("authorized"):
         raise CoderInterfaceError(
             "Closeout is unavailable while an authorized shared-procedure release is being prepared. "

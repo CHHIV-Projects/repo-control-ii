@@ -21,16 +21,41 @@ from .workflow.authority import get_authorization_status, is_correction_mode
 
 
 _MARKER_RE = re.compile(
-    r"<!--\s*repoctl-procedure-release-preparation:v1\s*\n(.*?)\n\s*-->",
+    r"<!--\s*repoctl-procedure-release-preparation:v([12])\s*\n(.*?)\n\s*-->",
     re.DOTALL,
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_MILESTONE_ID_RE = re.compile(r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})\Z")
 _MAX_PROMPT_BYTES = 100_000
 _MAX_MANIFEST_BYTES = 100_000
 _MAX_SOURCE_BYTES = 1_000_000
 _MAX_BUNDLE_BYTES = 5_000_000
 _MAX_SOURCE_COUNT = 32
+_CODEX_ARTIFACT_ADDITION = {
+    "source": "bootstrap.md",
+    "target": "AGENTS.md",
+    "renderer": "bootstrap",
+}
+_PUBLISHED_FIVE_ARTIFACTS = {
+    (".github/copilot-instructions.md", "bootstrap.md", "bootstrap"),
+    (".repo-control/workflow_core.md", "workflow_core.md", "copy"),
+    (
+        ".agents/skills/repo-control-implementation/SKILL.md",
+        "skills/repo-control-implementation/SKILL.md",
+        "copy",
+    ),
+    (
+        ".agents/skills/repo-control-blocker-bug-escalation/SKILL.md",
+        "skills/repo-control-blocker-bug-escalation/SKILL.md",
+        "copy",
+    ),
+    (
+        ".agents/skills/repo-control-validation-closeout/SKILL.md",
+        "skills/repo-control-validation-closeout/SKILL.md",
+        "copy",
+    ),
+}
 
 
 class ProcedureReleaseError(ValueError):
@@ -41,7 +66,15 @@ def render_release_preparation_marker(
     candidate_release: str,
     authorized_sources: list[str],
     bundle_root: str | Path = BUNDLE_ROOT,
+    *,
+    add_codex_entrypoint: bool = False,
+    repository_key: str | None = None,
+    repository_id: str | None = None,
+    repository_root: str | Path | None = None,
+    milestone_id: str | None = None,
 ) -> str:
+    if type(add_codex_entrypoint) is not bool:
+        raise ProcedureReleaseError("Codex artifact authorization must be an explicit boolean.")
     bundle = load_bundle(bundle_root)
     candidate_version = _version_tuple(candidate_release)
     base_version = _version_tuple(bundle.release)
@@ -63,14 +96,63 @@ def render_release_preparation_marker(
     )
     if not set(normalized_sources).issubset(bundle.source_hashes):
         raise ProcedureReleaseError("Every authorized source must be listed in the current canonical bundle.")
-    marker = {
-        "schema_version": 1,
+    marker_version = 1
+    marker: dict[str, Any] = {
+        "schema_version": marker_version,
         "base_manifest_sha256": bundle.manifest_sha256,
         "candidate_release": candidate_release,
         "authorized_sources": normalized_sources,
     }
+    marker_name = "v1"
+    if add_codex_entrypoint:
+        if (
+            bundle.release != "1.3.0"
+            or len(bundle.artifacts) != 5
+            or {
+                (item.target, item.source, item.renderer)
+                for item in bundle.artifacts
+            }
+            != _PUBLISHED_FIVE_ARTIFACTS
+        ):
+            raise ProcedureReleaseError(
+                "The Codex entrypoint addition requires the published five-artifact 1.3.0 base."
+            )
+        if "bootstrap.md" not in normalized_sources:
+            raise ProcedureReleaseError(
+                "The Codex entrypoint addition requires bootstrap.md in the authorized source list."
+            )
+        if (
+            not isinstance(repository_key, str)
+            or not repository_key.strip()
+            or not isinstance(repository_id, str)
+            or not repository_id.strip()
+            or repository_root is None
+            or not isinstance(milestone_id, str)
+            or not _MILESTONE_ID_RE.fullmatch(milestone_id)
+        ):
+            raise ProcedureReleaseError(
+                "The Codex entrypoint addition requires the active repository and milestone identity."
+            )
+        resolved_repository_root = Path(repository_root).resolve(strict=True)
+        if resolved_repository_root != bundle.root.parent.parent.resolve():
+            raise ProcedureReleaseError(
+                "The Codex entrypoint addition is limited to the repository that owns the canonical bundle."
+            )
+        marker_version = 2
+        marker_name = "v2"
+        marker = {
+            "schema_version": marker_version,
+            "base_manifest_sha256": bundle.manifest_sha256,
+            "candidate_release": candidate_release,
+            "authorized_sources": normalized_sources,
+            "authorized_artifact_additions": [_CODEX_ARTIFACT_ADDITION],
+            "repository_key": repository_key,
+            "repository_id": repository_id,
+            "repository_root": str(resolved_repository_root),
+            "milestone_id": milestone_id,
+        }
     return (
-        "<!-- repoctl-procedure-release-preparation:v1\n"
+        f"<!-- repoctl-procedure-release-preparation:{marker_name}\n"
         + json.dumps(marker, ensure_ascii=False, indent=2)
         + "\n-->"
     )
@@ -192,21 +274,32 @@ def _prompt_marker(
         raise ProcedureReleaseError("Active milestone prompt contains multiple release-preparation markers.")
     if not matches:
         return None
+    marker_version = int(matches[0].group(1))
     try:
-        marker = json.loads(matches[0].group(1))
+        marker = json.loads(matches[0].group(2))
     except json.JSONDecodeError as exc:
         raise ProcedureReleaseError("Release-preparation marker is malformed JSON.") from exc
-    required = {
+    common_fields = {
         "schema_version",
         "base_manifest_sha256",
         "candidate_release",
         "authorized_sources",
     }
+    if marker_version == 1:
+        required = common_fields
+    else:
+        required = common_fields | {
+            "authorized_artifact_additions",
+            "repository_key",
+            "repository_id",
+            "repository_root",
+            "milestone_id",
+        }
     if not isinstance(marker, dict) or set(marker) != required:
         raise ProcedureReleaseError("Release-preparation marker has an unsupported shape.")
     if (
         type(marker["schema_version"]) is not int
-        or marker["schema_version"] != 1
+        or marker["schema_version"] != marker_version
         or not isinstance(marker["base_manifest_sha256"], str)
         or not _SHA256_RE.fullmatch(marker["base_manifest_sha256"])
         or _version_tuple(marker["candidate_release"]) is None
@@ -221,13 +314,65 @@ def _prompt_marker(
         _relative_path(path, "authorized source path")
         for path in marker["authorized_sources"]
     ]
+    if marker_version == 2:
+        if (
+            not isinstance(marker["authorized_artifact_additions"], list)
+            or marker["authorized_artifact_additions"] != [_CODEX_ARTIFACT_ADDITION]
+            or "bootstrap.md" not in marker["authorized_sources"]
+            or not isinstance(marker["repository_key"], str)
+            or not marker["repository_key"].strip()
+            or not isinstance(marker["repository_id"], str)
+            or not marker["repository_id"].strip()
+            or not isinstance(marker["repository_root"], str)
+            or not Path(marker["repository_root"]).is_absolute()
+            or not isinstance(marker["milestone_id"], str)
+            or not _MILESTONE_ID_RE.fullmatch(marker["milestone_id"])
+        ):
+            raise ProcedureReleaseError("Codex artifact release authorization values are invalid.")
     return marker
+
+
+def _authorized_artifact_additions(
+    marker: dict[str, Any],
+    manifest_raw: dict[str, Any],
+) -> list[dict[str, str]]:
+    if marker["schema_version"] == 1:
+        return []
+    artifacts = manifest_raw.get("artifacts")
+    release = manifest_raw.get("release")
+    if (
+        release != "1.3.0"
+        or not isinstance(artifacts, list)
+        or len(artifacts) != len(_PUBLISHED_FIVE_ARTIFACTS)
+    ):
+        raise ProcedureReleaseError(
+            "The authorized Codex artifact addition requires the published five-artifact 1.3.0 base."
+        )
+    try:
+        configured = {
+            (
+                artifact["target"],
+                artifact["source"],
+                artifact["renderer"],
+            )
+            for artifact in artifacts
+            if isinstance(artifact, dict)
+            and set(artifact) == {"source", "target", "renderer"}
+        }
+    except (KeyError, TypeError) as exc:
+        raise ProcedureReleaseError("Published artifact mapping is malformed.") from exc
+    if configured != _PUBLISHED_FIVE_ARTIFACTS:
+        raise ProcedureReleaseError(
+            "The authorized Codex artifact addition does not match the published five-artifact mapping."
+        )
+    return [_CODEX_ARTIFACT_ADDITION]
 
 
 def _validated_candidate(
     root: Path,
     manifest_raw: dict[str, Any],
     candidate_release: str,
+    artifact_additions: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, dict[str, bytes]]:
     sources = manifest_raw.get("sources")
     if not isinstance(sources, list) or not 1 <= len(sources) <= _MAX_SOURCE_COUNT:
@@ -259,7 +404,16 @@ def _validated_candidate(
             raise ProcedureReleaseError(f"Candidate source changed during validation: {relative}")
         source_bytes[relative] = content
         hashes[relative] = _digest(content)
-    rendered = _render_manifest(manifest_raw, candidate_release, hashes)
+    candidate_raw = manifest_raw
+    if artifact_additions:
+        base_artifacts = manifest_raw.get("artifacts")
+        if not isinstance(base_artifacts, list):
+            raise ProcedureReleaseError("Canonical manifest artifact table is invalid.")
+        candidate_raw = {
+            **manifest_raw,
+            "artifacts": [*base_artifacts, *artifact_additions],
+        }
+    rendered = _render_manifest(candidate_raw, candidate_release, hashes)
     with tempfile.TemporaryDirectory(prefix="repoctl-procedure-candidate-") as directory:
         temp_root = Path(directory)
         (temp_root / "manifest.toml").write_bytes(rendered)
@@ -278,6 +432,9 @@ def inspect_procedure_release_preparation(
     candidate: dict[str, Any],
     workflow: dict[str, Any],
     bundle_root: str | Path = BUNDLE_ROOT,
+    *,
+    repository_key: str | None = None,
+    repository_id: str | None = None,
 ) -> dict[str, Any]:
     root = Path(bundle_root).resolve()
     repo_root = Path(repository_root).resolve(strict=True)
@@ -291,7 +448,7 @@ def inspect_procedure_release_preparation(
         }
     try:
         marker = _prompt_marker(repo_root, candidate)
-    except (OSError, ProcedureReleaseError) as marker_error:
+    except (OSError, RuntimeError, ProcedureReleaseError) as marker_error:
         try:
             load_bundle(root)
         except (OSError, ProcedureGovernanceError) as integrity_error:
@@ -329,6 +486,26 @@ def inspect_procedure_release_preparation(
             "authorized": False,
             "reason": "Canonical release preparation is limited to the repository that owns this shared bundle.",
         }
+    if marker["schema_version"] == 2:
+        try:
+            marker_root = Path(marker["repository_root"]).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            return {
+                "status": "NOT_AUTHORIZED",
+                "authorized": False,
+                "reason": f"Release-preparation repository binding is unavailable: {exc}",
+            }
+        if (
+            repository_key != marker["repository_key"]
+            or repository_id != marker["repository_id"]
+            or marker_root != repo_root
+            or candidate.get("milestone_id") != marker["milestone_id"]
+        ):
+            return {
+                "status": "NOT_AUTHORIZED",
+                "authorized": False,
+                "reason": "Release-preparation authorization does not match the active repository and milestone.",
+            }
 
     manifest_digest = _digest(manifest_bytes)
     if marker["base_manifest_sha256"] != manifest_digest:
@@ -401,6 +578,14 @@ def inspect_procedure_release_preparation(
             "authorized": False,
             "reason": "Release-preparation authorization names a source absent from the base manifest.",
         }
+    try:
+        artifact_additions = _authorized_artifact_additions(marker, manifest_raw)
+    except ProcedureReleaseError as exc:
+        return {
+            "status": "INTEGRITY_UNAVAILABLE",
+            "authorized": False,
+            "reason": str(exc),
+        }
 
     mismatches: list[str] = []
     total_source_bytes = 0
@@ -445,7 +630,12 @@ def inspect_procedure_release_preparation(
             "changed_sources": sorted(mismatches),
         }
     try:
-        _validated_candidate(root, manifest_raw, candidate_release)
+        _validated_candidate(
+            root,
+            manifest_raw,
+            candidate_release,
+            artifact_additions,
+        )
     except (OSError, ProcedureGovernanceError, ProcedureReleaseError) as exc:
         if mismatches:
             return {
@@ -455,6 +645,7 @@ def inspect_procedure_release_preparation(
                 "candidate_release": candidate_release,
                 "base_manifest_sha256": manifest_digest,
                 "authorized_sources": sorted(authorized_sources),
+                "authorized_artifact_additions": artifact_additions,
                 "changed_sources": sorted(mismatches),
                 "candidate_validation_status": "INVALID",
                 "candidate_validation_error": str(exc)[:1200],
@@ -472,10 +663,16 @@ def inspect_procedure_release_preparation(
         "candidate_release": candidate_release,
         "base_manifest_sha256": manifest_digest,
         "authorized_sources": sorted(authorized_sources),
+        "authorized_artifact_additions": artifact_additions,
         "changed_sources": sorted(mismatches),
         "candidate_validation_status": "BUNDLE_VALID_PREVIEW_REQUIRED",
         "candidate_manifest_sha256": _digest(
-            _validated_candidate(root, manifest_raw, candidate_release)[0]
+        _validated_candidate(
+            root,
+            manifest_raw,
+            candidate_release,
+            artifact_additions,
+        )[0]
         ),
     }
 
@@ -492,6 +689,8 @@ def preview_authorized_procedure_release(
         candidate,
         workflow,
         root,
+        repository_key=entry.key,
+        repository_id=entry.repository_id,
     )
     if not preparation.get("authorized"):
         raise ProcedureReleaseError(
@@ -502,6 +701,7 @@ def preview_authorized_procedure_release(
         root,
         manifest_raw,
         preparation["candidate_release"],
+        preparation.get("authorized_artifact_additions"),
     )
     if _digest(candidate_manifest) != preparation["candidate_manifest_sha256"]:
         raise ProcedureReleaseError("Candidate sources changed during preview; nothing was published.")
@@ -533,14 +733,16 @@ def publish_authorized_procedure_release(
     root = Path(bundle_root).resolve()
     manifest_path = root / "manifest.toml"
     original, manifest_raw = _manifest(root)
-    if _digest(original) != preview["release_preparation"]["base_manifest_sha256"]:
+    preparation = preview["release_preparation"]
+    if _digest(original) != preparation["base_manifest_sha256"]:
         raise ProcedureReleaseError("Canonical manifest changed after candidate preview; nothing was published.")
     candidate_manifest, _ = _validated_candidate(
         root,
         manifest_raw,
-        preview["release_preparation"]["candidate_release"],
+        preparation["candidate_release"],
+        preparation.get("authorized_artifact_additions"),
     )
-    if _digest(candidate_manifest) != preview["release_preparation"]["candidate_manifest_sha256"]:
+    if _digest(candidate_manifest) != preparation["candidate_manifest_sha256"]:
         raise ProcedureReleaseError("Candidate sources changed after preview; nothing was published.")
     descriptor, temporary_name = tempfile.mkstemp(prefix=".manifest.", suffix=".tmp", dir=root)
     temporary_path = Path(temporary_name)
@@ -551,6 +753,25 @@ def publish_authorized_procedure_release(
             stream.write(candidate_manifest)
             stream.flush()
             os.fsync(stream.fileno())
+        latest = inspect_procedure_release_preparation(
+            entry.path,
+            candidate,
+            workflow,
+            root,
+            repository_key=entry.key,
+            repository_id=entry.repository_id,
+        )
+        if (
+            not latest.get("authorized")
+            or latest.get("base_manifest_sha256") != preparation["base_manifest_sha256"]
+            or latest.get("candidate_manifest_sha256") != preparation["candidate_manifest_sha256"]
+            or latest.get("authorized_sources") != preparation["authorized_sources"]
+            or latest.get("authorized_artifact_additions")
+            != preparation.get("authorized_artifact_additions", [])
+        ):
+            raise ProcedureReleaseError(
+                "Release authorization or candidate changed after preview; nothing was published."
+            )
         current, _ = _manifest(root)
         if _digest(current) != _digest(original):
             raise ProcedureReleaseError("Canonical manifest changed before publish; nothing was published.")

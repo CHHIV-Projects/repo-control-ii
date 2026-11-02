@@ -1009,7 +1009,7 @@ inventory is 18 tools:
 | `architect_submit_instruction_draft` | `POST /api/architect/v1/dispatches/instruction` | Create a pending instruction for the selected non-closed milestone |
 | `architect_submit_response_draft` | `POST /api/architect/v1/dispatches/response` | Create a pending response, optionally related to an event in the active milestone |
 
-Dispatch state is repository-scoped operational JSON outside the repository, atomically replaced and bounded to 50 retained records with a 64 KiB body limit. Architect submission cannot approve, reject, write repository files, invoke Git, or record lifecycle events. Only the Product Owner-facing browser route can approve or reject.
+Dispatch state is repository-scoped operational JSON outside the repository, atomically replaced and bounded to 500 retained records, a 40 MiB serialized-ledger ceiling, and a 64 KiB body limit. List readback remains bounded to at most five results, or one explicit dispatch ID; increasing retention does not increase default response size. Architect submission cannot approve, reject, write repository files, invoke Git, or record lifecycle events. Only the Product Owner-facing browser route can approve or reject.
 
 PROMPT approval atomically creates only the derived canonical prompt path under the configured milestone root. It does not select the milestone, approve its lifecycle prompt, start work, or mutate Git. Approved INSTRUCTION/RESPONSE content is surfaced in `repoctl coder-context` only for its approved active milestone.
 

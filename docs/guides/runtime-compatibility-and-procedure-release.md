@@ -65,7 +65,7 @@ A release can be prepared only when the active, Product Owner-approved
 milestone prompt contains exactly one explicit marker, the milestone is live
 and authorized `IN_PROGRESS`, the base manifest still matches the approved
 digest, and every changed canonical source is on the prompt's allowlist.
-The marker is bounded JSON in the approved prompt:
+Version 1 authorizes source changes only. Its bounded JSON marker is:
 
 ```markdown
 <!-- repoctl-procedure-release-preparation:v1
@@ -83,6 +83,46 @@ numeric `major.minor.patch` version. The manifest digest binds this task to the
 published base; when that manifest changes, the old marker no longer authorizes
 publication.
 
+Version 2 additionally authorizes one fixed artifact-map addition, and no
+other manifest changes:
+
+```markdown
+<!-- repoctl-procedure-release-preparation:v2
+{
+  "schema_version": 2,
+  "base_manifest_sha256": "<64 lowercase hex characters>",
+  "candidate_release": "1.4.0",
+  "authorized_sources": [
+    "bootstrap.md",
+    "skills/repo-control-blocker-bug-escalation/SKILL.md",
+    "skills/repo-control-implementation/SKILL.md",
+    "skills/repo-control-validation-closeout/SKILL.md",
+    "workflow_core.md"
+  ],
+  "authorized_artifact_additions": [
+    {
+      "source": "bootstrap.md",
+      "target": "AGENTS.md",
+      "renderer": "bootstrap"
+    }
+  ],
+  "repository_key": "<active managed repository key>",
+  "repository_id": "<active managed repository ID>",
+  "repository_root": "<absolute active managed repository path>",
+  "milestone_id": "<active milestone ID>"
+}
+-->
+```
+
+The v2 marker is valid only for the exact published five-artifact 1.3.0
+mapping, a numerically higher candidate, and the bound active repository and
+milestone. `authorized_sources` still controls which canonical source bytes
+may change; it must include `bootstrap.md` for the fixed Codex artifact
+addition. V1 markers retain source-only meaning and can never add artifacts.
+Unknown marker fields, alternate targets/renderers/sources, identity
+mismatches, stale manifest digests, and unauthorized source changes fail
+closed.
+
 1. Before editing canonical sources, generate a marker from a valid current
    bundle, for example
    `repoctl coder-procedure-release-marker --candidate-release 1.4.0 --source workflow_core.md`.
@@ -90,26 +130,52 @@ publication.
    exact base manifest digest and rejects unknown paths or a non-increasing
    version. Insert the rendered marker verbatim into the Product Owner-approved
    prompt; do not hand-copy or invent a digest.
+   To authorize the fixed Codex artifact addition, run the same command with
+   every approved source and `--add-codex-entrypoint`:
+
+   ```bash
+   repoctl coder-procedure-release-marker \
+     --candidate-release 1.4.0 \
+     --source bootstrap.md \
+     --source workflow_core.md \
+     --source skills/repo-control-blocker-bug-escalation/SKILL.md \
+     --source skills/repo-control-implementation/SKILL.md \
+     --source skills/repo-control-validation-closeout/SKILL.md \
+     --add-codex-entrypoint
+   ```
+
+   The command uses the selected active repository and milestone identity and
+   emits the current live manifest digest. It does not edit the prompt or
+   authorize release work. The Product Owner must review the exact output and
+   incorporate it into the controlled, approved milestone prompt. If the
+   repository, milestone, manifest, candidate version, or source allowlist
+   changes, regenerate and reapprove the marker.
 2. Verify active repository, milestone, lifecycle, authorization, marker, and
    release status with `coder-context` / `coder-status`. A
-   `RELEASE_IN_PREPARATION` verification result confirms only the bounded
+   `RELEASE_PREPARATION` verification result confirms only the bounded
    release-preparation scope and live authority; it is not ordinary instruction
    verification or permission for generic milestone work. Edit only the
    allowlisted canonical sources. Do not treat generated instructions as
    authority.
 3. Run `coder-procedure-release-preview`. It recomputes every source hash,
-   constructs a candidate manifest, validates the complete candidate bundle
+   constructs the candidate manifest (including `AGENTS.md` only when
+   explicitly authorized by v2), validates the complete candidate bundle
    using the ordinary strict loader, and creates a read-only per-repository
-   reconciliation preview. No managed repository files are changed.
+   reconciliation preview of every generated artifact. Confirm the preview
+   contains only the authorized changes. No managed repository files are
+   changed.
 4. Only after a successful candidate validation and preview, run
    `coder-procedure-release-publish`. It rechecks active authorization, the
-   original manifest digest, source allowlist, complete bundle integrity, and
-   candidate manifest immediately before atomically replacing the manifest.
-   It does not Apply generated files or perform Git operations.
+   bound repository/milestone identity where applicable, original manifest
+   digest, source allowlist, exact artifact addition, complete bundle
+   integrity, and candidate manifest immediately before atomically replacing
+   the manifest. Publication changes only the canonical manifest. It does not
+   Apply generated files, switch repositories, restart services, or perform
+   Git operations. Managed-repository rollout remains a separate,
+   individually confirmed Product Owner Apply.
 5. Confirm `coder-procedure-status` reports a manifest-matching canonical
-   release. Product Owner Apply remains a separate, individually confirmed
-   operation through Procedure Updates; the Coder does not apply or recover a
-   managed repository.
+   release. Any managed-repository Apply or Recover remains a separate
+   Product Owner-controlled operation.
 
 `INTEGRITY_UNAVAILABLE` means the marker is absent/invalid for the observed
 integrity failure, the base manifest changed, a source changed outside the

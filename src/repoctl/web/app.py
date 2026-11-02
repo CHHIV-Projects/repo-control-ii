@@ -445,7 +445,13 @@ def create_web_app(
                 "authorized": False,
                 "reason": str(exc),
             }
-        return inspect_procedure_release_preparation(entry.path, candidate, workflow)
+        return inspect_procedure_release_preparation(
+            entry.path,
+            candidate,
+            workflow,
+            repository_key=entry.key,
+            repository_id=entry.repository_id,
+        )
 
     def require_current_repository_selection() -> None:
         active_repository, generation = registry.snapshot()

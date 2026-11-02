@@ -137,6 +137,18 @@ canonical sources, followed by strict read-only candidate validation/preview
 and revalidated publication. This preparation flow is not an integrity
 bypass, generated-file Apply, or deployment authorization.
 
+The M009.016 implementation preserves the v1 source-only marker contract and
+adds a v2 authorization for exactly one artifact-map addition:
+`bootstrap.md` rendered as root `AGENTS.md`. V2 binds the live base-manifest
+digest, candidate release, exact source allowlist, repository identity/root,
+milestone, and artifact mapping. The Product Owner approves the rendered
+marker in the active prompt; strict candidate preview and revalidated
+publication remain required. Publication does not Apply the release to managed
+repositories. See the [runtime compatibility and procedure release
+guide](../guides/runtime-compatibility-and-procedure-release.md) for the
+operator sequence. This implementation does not publish 1.4.0 or resume
+M009.014 by itself.
+
 M009.010 also added a bounded runtime capability handshake before the newer
 `context_verification_recorded` verification-record schema is appended. The
 check is against the running service's advertised capabilities; version-1

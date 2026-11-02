@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,7 +21,9 @@ from repoctl.web.app import create_web_app
 from repoctl.workflow.architect_dispatches import (
     MAX_BODY_BYTES,
     MAX_DISPATCHES_PER_REPOSITORY,
+    MAX_LEDGER_BYTES,
     ArchitectDispatchError,
+    _write_ledger,
     get_dispatch,
     list_dispatches,
     list_owner_dispatches,
@@ -217,11 +220,26 @@ class TestArchitectDispatches(unittest.TestCase):
             )
 
     def test_retention_limit_rejects_new_dispatch_without_discarding_pending_records(self):
-        submitted = [
-            self._submit("INSTRUCTION", body=f"Proposal {index}")
-            for index in range(MAX_DISPATCHES_PER_REPOSITORY)
-        ]
-        with self.assertRaises(ArchitectDispatchError):
+        submitted = []
+        for index in range(50):
+            submitted.append(self._submit("INSTRUCTION", body=f"Existing proposal {index}"))
+        legacy_ids = [record["dispatch_id"] for record in submitted]
+        legacy_bytes = (
+            self.state_root / self.repository_id / "architect_dispatches.json"
+        ).read_bytes()
+        self.assertEqual(len(list_owner_dispatches(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+        )), 50)
+        self.assertEqual(
+            (self.state_root / self.repository_id / "architect_dispatches.json").read_bytes(),
+            legacy_bytes,
+        )
+
+        for index in range(50, MAX_DISPATCHES_PER_REPOSITORY):
+            submitted.append(self._submit("INSTRUCTION", body=f"Proposal {index}"))
+        with self.assertRaisesRegex(ArchitectDispatchError, "limit reached \\(500\\)"):
             self._submit("INSTRUCTION", body="Must not evict pending work")
         records = list_dispatches(
             self.repository,
@@ -231,10 +249,73 @@ class TestArchitectDispatches(unittest.TestCase):
         )
         self.assertEqual(len(records), 5)
         self.assertTrue(all(record["status"] == "PENDING" for record in records))
-        self.assertEqual(
-            len(list_owner_dispatches(self.repository, self.state_root, self.repository_id)),
-            len(submitted),
+        owner_records = list_owner_dispatches(
+            self.repository,
+            self.state_root,
+            self.repository_id,
         )
+        self.assertEqual(len(owner_records), 500)
+        self.assertEqual(
+            [record["dispatch_id"] for record in owner_records[-50:]],
+            list(reversed(legacy_ids)),
+        )
+        self.assertEqual(
+            {record["dispatch_id"]: record["body"] for record in owner_records},
+            {record["dispatch_id"]: record["body"] for record in submitted},
+        )
+        with self.assertRaisesRegex(ArchitectDispatchError, "between 1 and 5"):
+            list_dispatches(
+                self.repository,
+                self.state_root,
+                self.repository_id,
+                limit=6,
+            )
+
+    def test_maximum_dispatch_ledger_accepts_500_large_records_with_bounded_storage(self):
+        ledger_path = (
+            self.state_root / self.repository_id / "architect_dispatches.json"
+        )
+        body = "x" * MAX_BODY_BYTES
+        records = [
+            {
+                "dispatch_id": f"{index:032x}",
+                "repository_id": self.repository_id,
+                "milestone_id": self.active_milestone_id,
+                "type": "INSTRUCTION",
+                "status": "APPROVED",
+                "source": "architect_mcp",
+                "created_at": "2026-11-02T00:00:00+00:00",
+                "updated_at": "2026-11-02T00:00:00+00:00",
+                "approved_at": "2026-11-02T00:00:00+00:00",
+                "approved_milestone_id": self.active_milestone_id,
+                "body": body,
+            }
+            for index in range(1, MAX_DISPATCHES_PER_REPOSITORY)
+        ]
+        payload = {
+            "schema_version": 1,
+            "repository_id": self.repository_id,
+            "dispatches": records,
+        }
+
+        started = time.perf_counter()
+        _write_ledger(ledger_path, payload)
+        submitted = self._submit("INSTRUCTION", body=body)
+        stored_bytes = ledger_path.stat().st_size
+        loaded = list_owner_dispatches(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(stored_bytes, MAX_LEDGER_BYTES)
+        self.assertEqual(stored_bytes, ledger_path.stat().st_size)
+        self.assertEqual(len(loaded), MAX_DISPATCHES_PER_REPOSITORY)
+        self.assertEqual(loaded[0]["dispatch_id"], submitted["dispatch_id"])
+        self.assertEqual(loaded[-1]["dispatch_id"], records[0]["dispatch_id"])
+        self.assertEqual(loaded[0]["body"], body)
+        self.assertLess(elapsed, 10.0)
 
     def test_prompt_approval_materializes_canonical_file_once_without_lifecycle_change(self):
         selected = save_milestone_selection(
