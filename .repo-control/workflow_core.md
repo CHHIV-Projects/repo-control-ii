@@ -45,9 +45,14 @@ At Coder NEW, HANDOFF, AUTHORITY TRANSITION, and RECOVERY triggers, run the
 fresh `coder-verify` check with the expected repository key, ID, absolute root,
 and milestone ID. Verify its live prompt hash, lifecycle/authorization/open
 conditions, shared procedure/overlay, and Git-boundary result before
-consequential work. Only `VERIFIED` with matching authority permits
-implementation; otherwise stop. This appends an audit-only event: it neither
-grants authority nor changes lifecycle. Trigger and Git-boundary
+consequential work. `VERIFIED` with matching authority permits ordinary
+implementation within the active scope. `RELEASE_PREPARATION` is a distinct
+bounded authorization that permits only shared-procedure release operations
+explicitly authorized by the active prompt's valid release marker and live
+Repo Control result; it does not permit ordinary milestone work and is not
+equivalent to `VERIFIED`. `BLOCKED`, `PARTIAL_UNVERIFIED`, identity mismatch,
+or unavailable/incoherent state means stop. This appends an audit-only event:
+it neither grants authority nor changes lifecycle. Trigger and Git-boundary
 acknowledgement are agent claims, session identity is unverified, local
 snapshot values are Repo Control observed, and provider hook delivery remains
 unverified.

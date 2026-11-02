@@ -1,5 +1,5 @@
 schema_version = 1
-release = "1.3.0"
+release = "1.4.0"
 overlay_schema_version = 1
 overlay_marker = "<!-- repo-control-project-overlay:v1 -->"
 lock_path = ".repo-control/shared-procedure.lock.toml"
@@ -7,23 +7,23 @@ host_entrypoint = ".github/copilot-instructions.md"
 
 [[sources]]
 path = "bootstrap.md"
-sha256 = "5801e0bc36556a6e060a107ca0e6241a4e80691ab91f4a561609d0d936b0aa67"
+sha256 = "786b20d6b5c79080251627ebc8bbe1b93bca417963fa6502cd39d9575168d0d3"
 
 [[sources]]
 path = "workflow_core.md"
-sha256 = "e9d3c3dcb8aca3d8b322507c2e71fdd9f5a6a683cb17b54305232afe8727cb09"
+sha256 = "6518874a0054af3cbbfd8a1adeda066d41812cae00f2bec573bdf5f810bc6ac9"
 
 [[sources]]
 path = "skills/repo-control-implementation/SKILL.md"
-sha256 = "67f62b8a128741e7a27a8ee0c12aeae0ba73900f9afc6553d91ce6e2f9fc31e7"
+sha256 = "6833ec5d87cc61b928fadaa6b7daf8f90e047ef4f660ff40a8f576f73c08a12c"
 
 [[sources]]
 path = "skills/repo-control-blocker-bug-escalation/SKILL.md"
-sha256 = "682504a6a9a98ea39cf1f12dd5d4a9d8c57fdb75f2dce46d666a118b87d197ec"
+sha256 = "62897fd027f19101a00a026ad9aff76f933ca23ca1c0b374ca8659eeb7fbde60"
 
 [[sources]]
 path = "skills/repo-control-validation-closeout/SKILL.md"
-sha256 = "19d4ce867babe20ce067c72df377ddf348e8e354ce4216879a5139ad90abadf0"
+sha256 = "9c2d79af8eb9e5e1da87ddb10b2023cb0af47f3c9c49d48b35e3332fc736b1eb"
 
 [[artifacts]]
 source = "bootstrap.md"
@@ -49,3 +49,8 @@ renderer = "copy"
 source = "skills/repo-control-validation-closeout/SKILL.md"
 target = ".agents/skills/repo-control-validation-closeout/SKILL.md"
 renderer = "copy"
+
+[[artifacts]]
+source = "bootstrap.md"
+target = "AGENTS.md"
+renderer = "bootstrap"

@@ -3,7 +3,7 @@
 <!-- This template is rendered into a managed repository's host entrypoint. -->
 
 This file is generated from Repo Control shared procedure release
-`1.3.0`. Follow current Repo Control state and the active prompt; this
+`1.4.0`. Follow current Repo Control state and the active prompt; this
 bootstrap and the repository-specific overlay are procedures, not authority.
 
 ## Start from current state
@@ -71,12 +71,16 @@ The command resolves current Repo Control state, checks those expected
 repository and milestone bindings, and records the bounded observed snapshot.
 Before consequential work, verify its repository identity, selected prompt
 path/hash, lifecycle/authorization/open conditions, current shared procedure
-and overlay, and Git boundary. Proceed only for `VERIFIED` and matching
-authority. `BLOCKED`, `PARTIAL_UNVERIFIED`, identity mismatch, or unavailable
-incoherent state means stop. The record does not authorize work or change
-lifecycle; trigger and Git-boundary acknowledgement are agent-reported,
-session identity is unverified, and provider-native hook delivery is
-unverified.
+and overlay, and Git boundary. `VERIFIED` with matching authority permits
+ordinary implementation within the active scope. `RELEASE_PREPARATION` is a
+distinct bounded authorization: it permits only shared-procedure release
+operations explicitly authorized by the active prompt's valid release marker
+and live Repo Control result; it does not permit ordinary milestone work and
+must not be treated as `VERIFIED`. `BLOCKED`, `PARTIAL_UNVERIFIED`, identity
+mismatch, or unavailable/incoherent state means stop. The record does not
+authorize work or change lifecycle; trigger and Git-boundary acknowledgement
+are agent-reported, session identity is unverified, and provider-native hook
+delivery is unverified.
 
 For HANDOFF, also reconcile current prompt, approved decisions/dispatches,
 questions and blockers, test/closeout evidence, and read-only Git HEAD/status.

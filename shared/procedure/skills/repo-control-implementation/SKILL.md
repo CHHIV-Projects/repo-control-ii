@@ -16,8 +16,12 @@ HANDOFF, AUTHORITY TRANSITION, and RECOVERY contexts with the expected
 repository key/ID/root and milestone; do not repeat it for ordinary WARM
 messages or intact-context model switches. Continue only when the recorded
 result is `VERIFIED` and the live prompt, authorization, procedure/overlay,
-and Git boundary match the intended task. A blocked, partial, mismatched, or
-unavailable result is a stop, not permission to infer authority.
+and Git boundary match the intended task for ordinary milestone
+implementation. `RELEASE_PREPARATION` is not `VERIFIED`; it permits only
+shared-procedure release operations explicitly authorized by the active
+prompt's valid release marker and live Repo Control result. Do not use it to
+continue ordinary milestone implementation. A blocked, partial, mismatched,
+or unavailable result is a stop, not permission to infer authority.
 
 For HANDOFF, reconcile canonical prompt/decisions/questions/blockers and
 relevant test/closeout evidence with read-only HEAD, status, and dirty paths.
