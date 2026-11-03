@@ -764,7 +764,7 @@ def _discover_historical_candidates(
                 ) from exc
             try:
                 try:
-                    with os.scandir(os.dup(directory_fd)) as iterator:
+                    with os.scandir(directory_fd) as iterator:
                         entries = []
                         for entry in iterator:
                             if visited_entries >= MAX_HISTORY_DIRECTORY_ENTRIES:
@@ -778,62 +778,61 @@ def _discover_historical_candidates(
                         "A historical directory cannot be safely inspected.",
                         503,
                     ) from exc
-            finally:
-                if directory_fd is not None:
-                    os.close(directory_fd)
-            if limited and visited_entries >= MAX_HISTORY_DIRECTORY_ENTRIES:
-                candidates.sort(key=lambda item: item["path"])
-                return candidates, True, skipped_count
-            entries.sort(key=lambda entry: os.fsencode(entry.name))
-            child_directories: list[str] = []
-            for entry in entries:
-                try:
-                    if entry.is_symlink():
-                        skipped_count += 1
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        child_directories.append(
-                            PurePosixPath(relative_directory, entry.name).as_posix()
-                        )
-                        continue
-                    file_stat = entry.stat(follow_symlinks=False)
-                    if not stat.S_ISREG(file_stat.st_mode):
-                        skipped_count += 1
-                        continue
-                    relative_path = PurePosixPath(relative_directory, entry.name).as_posix()
-                    if Path(entry.name).suffix.lower() not in _DOCUMENT_EXTENSIONS:
-                        continue
-                    info = _historical_path_info(repository, relative_path, selected_milestone_id)
-                except ArchitectContractError as exc:
-                    if exc.code in {"historical_path_not_allowed", "unsupported_historical_document_type"}:
-                        continue
-                    raise
-                except OSError:
-                    skipped_count += 1
-                    continue
-                if info["is_current"]:
-                    continue
-                candidates.append(
-                    {
-                        **info,
-                        "source_type": "historical_evidence",
-                        "repository_key": repository.key,
-                        "repository_id": repository.repository_id,
-                        "file_size_bytes": file_stat.st_size,
-                        "authority_classification": "historical_evidence",
-                        "authority_note": (
-                            "Historical planning evidence only; not current governing or lifecycle authority."
-                        ),
-                        "is_current_authority": False,
-                        "working_tree_source": "current_working_tree",
-                    }
-                )
-                if len(candidates) > MAX_HISTORY_CANDIDATES:
-                    candidates.pop()
-                    limited = True
+                if limited and visited_entries >= MAX_HISTORY_DIRECTORY_ENTRIES:
                     candidates.sort(key=lambda item: item["path"])
-                    return candidates, limited, skipped_count
-            pending.extend(reversed(sorted(child_directories)))
+                    return candidates, True, skipped_count
+                entries.sort(key=lambda entry: os.fsencode(entry.name))
+                child_directories: list[str] = []
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            skipped_count += 1
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            child_directories.append(
+                                PurePosixPath(relative_directory, entry.name).as_posix()
+                            )
+                            continue
+                        file_stat = entry.stat(follow_symlinks=False)
+                        if not stat.S_ISREG(file_stat.st_mode):
+                            skipped_count += 1
+                            continue
+                        relative_path = PurePosixPath(relative_directory, entry.name).as_posix()
+                        if Path(entry.name).suffix.lower() not in _DOCUMENT_EXTENSIONS:
+                            continue
+                        info = _historical_path_info(repository, relative_path, selected_milestone_id)
+                    except ArchitectContractError as exc:
+                        if exc.code in {"historical_path_not_allowed", "unsupported_historical_document_type"}:
+                            continue
+                        raise
+                    except OSError:
+                        skipped_count += 1
+                        continue
+                    if info["is_current"]:
+                        continue
+                    candidates.append(
+                        {
+                            **info,
+                            "source_type": "historical_evidence",
+                            "repository_key": repository.key,
+                            "repository_id": repository.repository_id,
+                            "file_size_bytes": file_stat.st_size,
+                            "authority_classification": "historical_evidence",
+                            "authority_note": (
+                                "Historical planning evidence only; not current governing or lifecycle authority."
+                            ),
+                            "is_current_authority": False,
+                            "working_tree_source": "current_working_tree",
+                        }
+                    )
+                    if len(candidates) > MAX_HISTORY_CANDIDATES:
+                        candidates.pop()
+                        limited = True
+                        candidates.sort(key=lambda item: item["path"])
+                        return candidates, limited, skipped_count
+                pending.extend(reversed(sorted(child_directories)))
+            finally:
+                os.close(directory_fd)
     candidates.sort(key=lambda item: item["path"])
     return candidates, limited, skipped_count
 

@@ -154,6 +154,137 @@ class ArchitectContractTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _open_descriptor_count(self) -> int:
+        descriptor_root = Path("/proc/self/fd")
+        if not descriptor_root.is_dir():
+            self.skipTest("open-file descriptor measurements require /proc/self/fd")
+        return len(os.listdir(descriptor_root))
+
+    def test_repeated_nested_historical_search_and_read_keep_descriptors_stable(self) -> None:
+        self._historical_fixtures()
+        history_milestones = self.first / "docs/history/application/milestones"
+        history_milestones.mkdir(parents=True)
+        history_files = {
+            "docs/history/application/milestones/M001.001_oldest_prompt.md": (
+                "# Oldest milestone\n\napplication_history_marker\n"
+            ),
+            "docs/history/application/milestones/M001.002_intermediate_workflow.md": (
+                "# Intermediate milestone\n\napplication_history_marker\n"
+            ),
+            "docs/history/application/milestones/M001.003_newest_closeout.md": (
+                "# Newest milestone\n\napplication_history_marker\n"
+            ),
+        }
+        for relative_path, content in history_files.items():
+            path = self.first / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        deployment_path = "docs/history/deployments/procedure_release.md"
+        deployment = self.first / deployment_path
+        deployment.parent.mkdir(parents=True)
+        deployment.write_text(
+            "# Eligible deployment evidence\n\napplication_history_marker deployment_evidence\n",
+            encoding="utf-8",
+        )
+
+        search_path = "/api/architect/v1/history/search"
+        search_args = {
+            "query": "application_history_marker",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "10",
+        }
+        initial = self.client.get(search_path, query_string=search_args)
+        self.assertEqual(initial.status_code, 200, initial.get_json())
+        initial_results = initial.get_json()["data"]["results"]
+        paths = {item["path"] for item in initial_results}
+        self.assertTrue(set(history_files).issubset(paths))
+        deployment_result = next(item for item in initial_results if item["path"] == deployment_path)
+        self.assertEqual(deployment_result["artifact_type"], "historical_document")
+        self.assertEqual(deployment_result["category"], "archive")
+
+        read_path = "/api/architect/v1/history/document"
+        operation_count = 25
+        tolerance = 2
+        baseline = self._open_descriptor_count()
+        for index in range(operation_count):
+            search = self.client.get(search_path, query_string=search_args)
+            self.assertEqual(search.status_code, 200, search.get_json())
+            results = search.get_json()["data"]["results"]
+            result_path = sorted(history_files)[index % len(history_files)]
+            self.assertIn(result_path, {item["path"] for item in results})
+            read = self.client.get(
+                read_path,
+                query_string={
+                    "path": result_path if index % 2 == 0 else deployment_path,
+                    "expected_repository_key": "first",
+                    "expected_generation": "0",
+                },
+            )
+            self.assertEqual(read.status_code, 200, read.get_json())
+            self.assertEqual(read.get_json()["data"]["source_type"], "historical_evidence")
+
+        after = self._open_descriptor_count()
+        self.assertLessEqual(
+            abs(after - baseline),
+            tolerance,
+            f"{operation_count} nested search/read cycles changed open FDs from {baseline} to {after}",
+        )
+
+    def test_historical_scan_failure_closes_open_descriptors(self) -> None:
+        self._historical_fixtures()
+        query = {
+            "query": "legacy_signal",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+        }
+        operation_count = 10
+        tolerance = 2
+        baseline = self._open_descriptor_count()
+        original_scandir = os.scandir
+
+        def fail_descriptor_scan(path):
+            if isinstance(path, int):
+                raise OSError("injected scan failure")
+            return original_scandir(path)
+
+        with patch("repoctl.web.architect_contract.os.scandir", side_effect=fail_descriptor_scan):
+            for _ in range(operation_count):
+                response = self.client.get("/api/architect/v1/history/search", query_string=query)
+                self.assertEqual(response.status_code, 503, response.get_json())
+                self.assertEqual(
+                    response.get_json()["error"]["code"],
+                    "historical_discovery_failed",
+                )
+        after = self._open_descriptor_count()
+        self.assertLessEqual(
+            abs(after - baseline),
+            tolerance,
+            f"{operation_count} failed scans changed open FDs from {baseline} to {after}",
+        )
+
+    def test_historical_entry_limit_short_circuit_closes_open_descriptors(self) -> None:
+        self._historical_fixtures()
+        query = {
+            "query": "legacy_signal",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+        }
+        operation_count = 10
+        tolerance = 2
+        baseline = self._open_descriptor_count()
+        with patch("repoctl.web.architect_contract.MAX_HISTORY_DIRECTORY_ENTRIES", 1):
+            for _ in range(operation_count):
+                response = self.client.get("/api/architect/v1/history/search", query_string=query)
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertTrue(response.get_json()["data"]["limited"])
+        after = self._open_descriptor_count()
+        self.assertLessEqual(
+            abs(after - baseline),
+            tolerance,
+            f"{operation_count} limited scans changed open FDs from {baseline} to {after}",
+        )
+
     def test_historical_search_is_bounded_deterministic_and_excludes_active_milestone(self) -> None:
         self._historical_fixtures()
         path = "/api/architect/v1/history/search"
