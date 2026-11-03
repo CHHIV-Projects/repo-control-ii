@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import errno
+import hashlib
+import hmac
+import json
 import os
 import re
 import stat
@@ -38,6 +43,7 @@ MAX_HISTORY_SEARCH_FILES = 300
 MAX_HISTORY_SEARCH_BYTES = 16_000_000
 MAX_HISTORY_RESULTS = 20
 DEFAULT_HISTORY_RESULTS = 10
+MAX_HISTORY_CURSOR_LENGTH = 2_048
 MAX_HISTORY_QUERY_LENGTH = 256
 MAX_HISTORY_DIRECTORIES = 2_000
 MAX_HISTORY_DIRECTORY_ENTRIES = 50_000
@@ -395,6 +401,8 @@ def _read_repository_document(
     relative_path: str,
     *,
     allow_historical: bool = False,
+    max_bytes: int = MAX_REPOSITORY_DOCUMENT_BYTES,
+    expected_snapshot: tuple[int, int, int, int, int] | None = None,
 ) -> dict[str, Any]:
     relative_path = _repository_document_path(relative_path, allow_historical=allow_historical)
     parts = PurePosixPath(relative_path).parts
@@ -448,8 +456,21 @@ def _read_repository_document(
                 f"The requested file exceeds the {MAX_REPOSITORY_DOCUMENT_FILE_BYTES}-byte source limit.",
                 413,
             )
+        before_snapshot = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        if expected_snapshot is not None and before_snapshot != expected_snapshot:
+            raise ArchitectContractError(
+                "repository_document_changed",
+                "The document changed since the historical search inventory was created.",
+                409,
+            )
 
-        read_limit = min(before.st_size, MAX_REPOSITORY_DOCUMENT_BYTES)
+        read_limit = min(before.st_size, max_bytes)
         raw = bytearray()
         while len(raw) < read_limit:
             chunk = os.read(source_fd, min(64 * 1024, read_limit - len(raw)))
@@ -478,7 +499,7 @@ def _read_repository_document(
                 409,
             )
 
-        truncated = before.st_size > MAX_REPOSITORY_DOCUMENT_BYTES
+        truncated = before.st_size > max_bytes
         visible = bytes(raw)
         try:
             content = visible.decode("utf-8")
@@ -823,6 +844,13 @@ def _discover_historical_candidates(
                             ),
                             "is_current_authority": False,
                             "working_tree_source": "current_working_tree",
+                            "_snapshot": (
+                                file_stat.st_dev,
+                                file_stat.st_ino,
+                                file_stat.st_size,
+                                file_stat.st_mtime_ns,
+                                file_stat.st_ctime_ns,
+                            ),
                         }
                     )
                     if len(candidates) > MAX_HISTORY_CANDIDATES:
@@ -848,18 +876,141 @@ def _history_query_tokens(query: str) -> list[str]:
     return tokens
 
 
-def _search_historical_candidates(
+def _history_request_fingerprint(
     repository: RepositoryEntry,
-    candidates: list[dict[str, Any]],
+    selected_milestone_id: str | None,
     *,
     query: str | None,
     milestone_id: str | None,
     artifact_type: str | None,
     category: str | None,
     limit: int,
+) -> str:
+    request = {
+        "repository_key": repository.key,
+        "repository_id": repository.repository_id,
+        "repository_root": str(repository.path),
+        "selected_milestone_id": selected_milestone_id,
+        "query": query,
+        "milestone_id": milestone_id,
+        "artifact_type": artifact_type,
+        "category": category,
+        "limit": limit,
+    }
+    encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _history_inventory_fingerprint(candidates: list[dict[str, Any]]) -> str:
+    inventory = [
+        [item["path"], *item["_snapshot"]]
+        for item in candidates
+    ]
+    encoded = json.dumps(inventory, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _encode_history_cursor(
+    *,
+    cursor_secret: str,
+    request_fingerprint: str,
+    inventory_fingerprint: str,
+    offset: int,
+    match_count: int,
+) -> str:
+    payload = {
+        "v": 1,
+        "request": request_fingerprint,
+        "inventory": inventory_fingerprint,
+        "offset": offset,
+        "matches": match_count,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload["signature"] = hmac.new(
+        cursor_secret.encode("utf-8"),
+        encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_history_cursor(cursor: str | None, *, cursor_secret: str) -> dict[str, Any] | None:
+    if cursor is None:
+        return None
+    if not isinstance(cursor, str) or not 1 <= len(cursor) <= MAX_HISTORY_CURSOR_LENGTH:
+        raise ArchitectContractError(
+            "invalid_history_cursor",
+            f"Historical search cursor must be between 1 and {MAX_HISTORY_CURSOR_LENGTH} characters.",
+            400,
+        )
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+        payload = json.loads(raw)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArchitectContractError(
+            "invalid_history_cursor",
+            "Historical search cursor is malformed.",
+            400,
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"v", "request", "inventory", "offset", "matches", "signature"}
+        or not isinstance(payload.get("v"), int)
+        or isinstance(payload.get("v"), bool)
+        or payload["v"] != 1
+        or not isinstance(payload.get("request"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload["request"])
+        or not isinstance(payload.get("inventory"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload["inventory"])
+        or not isinstance(payload.get("offset"), int)
+        or isinstance(payload["offset"], bool)
+        or payload["offset"] < 0
+        or not isinstance(payload.get("matches"), int)
+        or isinstance(payload["matches"], bool)
+        or payload["matches"] < 0
+        or not isinstance(payload.get("signature"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload["signature"])
+    ):
+        raise ArchitectContractError(
+            "invalid_history_cursor",
+            "Historical search cursor has an unsupported shape.",
+            400,
+        )
+    unsigned = {key: value for key, value in payload.items() if key != "signature"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    expected_signature = hmac.new(cursor_secret.encode("utf-8"), encoded, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(payload["signature"], expected_signature):
+        raise ArchitectContractError(
+            "invalid_history_cursor",
+            "Historical search cursor signature is invalid or expired; restart the search.",
+            400,
+        )
+    return payload
+
+
+def _search_historical_candidates(
+    repository: RepositoryEntry,
+    candidates: list[dict[str, Any]],
+    *,
+    selected_milestone_id: str | None,
+    query: str | None,
+    milestone_id: str | None,
+    artifact_type: str | None,
+    category: str | None,
+    limit: int,
+    cursor: str | None,
+    cursor_secret: str,
     scan_limited: bool,
     skipped_count: int,
 ) -> dict[str, Any]:
+    if scan_limited:
+        raise ArchitectContractError(
+            "historical_discovery_incomplete",
+            "Historical discovery reached a configured traversal bound; no complete search result is available.",
+            503,
+        )
     filtered = [
         item
         for item in candidates
@@ -868,18 +1019,69 @@ def _search_historical_candidates(
         and (category is None or item["category"] == category)
     ]
     tokens = _history_query_tokens(query) if query is not None else []
+    request_fingerprint = _history_request_fingerprint(
+        repository,
+        selected_milestone_id,
+        query=query,
+        milestone_id=milestone_id,
+        artifact_type=artifact_type,
+        category=category,
+        limit=limit,
+    )
+    inventory_fingerprint = _history_inventory_fingerprint(candidates)
+    cursor_data = _decode_history_cursor(cursor, cursor_secret=cursor_secret)
+    offset = 0
+    prior_match_count = 0
+    if cursor_data is not None:
+        if cursor_data["request"] != request_fingerprint:
+            raise ArchitectContractError(
+                "invalid_history_cursor",
+                "Historical search cursor does not match the query and filters.",
+                400,
+            )
+        if cursor_data["inventory"] != inventory_fingerprint:
+            raise ArchitectContractError(
+                "stale_history_cursor",
+                "The historical document set changed; restart the search without a cursor.",
+                409,
+            )
+        offset = cursor_data["offset"]
+        prior_match_count = cursor_data["matches"]
+        if offset > len(filtered):
+            raise ArchitectContractError(
+                "stale_history_cursor",
+                "Historical search cursor is outside the current result set; restart the search.",
+                409,
+            )
+
     matches: list[dict[str, Any]] = []
     files_scanned = 0
     bytes_scanned = 0
-    limited = scan_limited
+    limited = False
+    next_offset = offset
     if query is None:
-        matches = filtered
+        stop = min(offset + limit, len(filtered))
+        matches = [
+            {key: value for key, value in item.items() if not key.startswith("_")}
+            for item in filtered[offset:stop]
+        ]
+        next_offset = stop
     else:
-        for item in filtered:
+        for candidate_index in range(offset, len(filtered)):
+            item = filtered[candidate_index]
             if files_scanned >= MAX_HISTORY_SEARCH_FILES:
                 limited = True
                 break
-            expected_bytes = min(item["file_size_bytes"], MAX_REPOSITORY_DOCUMENT_BYTES)
+            expected_bytes = item["file_size_bytes"]
+            if expected_bytes > min(
+                MAX_REPOSITORY_DOCUMENT_FILE_BYTES,
+                MAX_HISTORY_SEARCH_BYTES,
+            ):
+                raise ArchitectContractError(
+                    "historical_search_incomplete",
+                    "A historical document exceeds the per-file search budget and cannot be searched completely.",
+                    413,
+                )
             if expected_bytes > MAX_HISTORY_SEARCH_BYTES - bytes_scanned:
                 limited = True
                 break
@@ -888,6 +1090,8 @@ def _search_historical_candidates(
                     repository,
                     item["path"],
                     allow_historical=True,
+                    max_bytes=MAX_REPOSITORY_DOCUMENT_FILE_BYTES,
+                    expected_snapshot=item["_snapshot"],
                 )
             except ArchitectContractError as exc:
                 if exc.code in {
@@ -895,42 +1099,48 @@ def _search_historical_candidates(
                     "invalid_document_encoding",
                     "unsafe_document_content",
                 }:
-                    skipped_count += 1
-                    limited = True
-                    continue
+                    raise ArchitectContractError(
+                        "historical_search_incomplete",
+                        "A historical document could not be safely searched; no complete result is available.",
+                        exc.status_code,
+                    ) from exc
                 raise
             files_scanned += 1
             bytes_scanned += document["bytes_returned"]
             content = document["content"].casefold()
             searchable = f"{item['path']} {item['title']} {item['milestone_id'] or ''} {content}".casefold()
             if not all(token in searchable for token in tokens):
+                next_offset = candidate_index + 1
                 continue
             occurrences = sum(searchable.count(token) for token in tokens)
             path_match = query.casefold() in item["path"].casefold()
-            milestone_match = item["milestone_id"] is not None and query.casefold() == item["milestone_id"].casefold()
             matches.append(
                 {
-                    **item,
+                    **{key: value for key, value in item.items() if not key.startswith("_")},
                     "match_metadata": {
                         "matched_terms": tokens,
                         "occurrence_count": occurrences,
                         "path_match": path_match,
                     },
-                    "_ranking": (
-                        -int(path_match),
-                        -int(milestone_match),
-                        -occurrences,
-                        item["path"],
-                    ),
                 }
             )
-            if document["truncated"]:
-                limited = True
-        matches.sort(key=lambda item: item["_ranking"])
-        for item in matches:
-            item.pop("_ranking", None)
-    total_count = len(matches)
-    results = matches[:limit]
+            next_offset = candidate_index + 1
+            if len(matches) >= limit:
+                break
+
+    has_more = next_offset < len(filtered)
+    total_count = prior_match_count + len(matches) if query is not None else len(filtered)
+    next_cursor = (
+        _encode_history_cursor(
+            cursor_secret=cursor_secret,
+            request_fingerprint=request_fingerprint,
+            inventory_fingerprint=inventory_fingerprint,
+            offset=next_offset,
+            match_count=total_count,
+        )
+        if has_more
+        else None
+    )
     response = {
         "query": query,
         "filters": {
@@ -938,27 +1148,25 @@ def _search_historical_candidates(
             "artifact_type": artifact_type,
             "category": category,
         },
-        "results": results,
-        "returned_count": len(results),
+        "ordering": "repository_relative_path_ascending",
+        "results": matches,
+        "returned_count": len(matches),
         "total_count": total_count,
-        "omitted_count": max(0, total_count - len(results)),
-        "total_count_complete": not limited,
+        "omitted_count": 0,
+        "total_count_complete": query is None or not has_more,
         "limited": limited,
-        "truncated": limited or total_count > len(results),
+        "truncated": has_more,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
         "candidates_considered": len(filtered),
         "files_scanned": files_scanned,
         "bytes_scanned": bytes_scanned,
         "skipped_count": skipped_count,
     }
-    while results and response_size_bytes(response) > MAX_HISTORY_RESPONSE_BYTES:
-        results.pop()
-        response["returned_count"] = len(results)
-        response["omitted_count"] = total_count - len(results)
-        response["truncated"] = True
     if response_size_bytes(response) > MAX_HISTORY_RESPONSE_BYTES:
         raise ArchitectContractError(
             "historical_response_too_large",
-            "The bounded historical search response exceeds its response limit.",
+            "A historical search page exceeds its response limit.",
             413,
         )
     return response
@@ -1035,6 +1243,8 @@ def _search_historical(
     artifact_type: str | None,
     category: str | None,
     limit: int | None,
+    cursor: str | None,
+    cursor_secret: str,
 ) -> dict[str, Any]:
     result_limit = _history_filters(query, milestone_id, artifact_type, category, limit)
     selection = _get_selection(repository, state_root)
@@ -1044,11 +1254,14 @@ def _search_historical(
     return _search_historical_candidates(
         repository,
         candidates,
+        selected_milestone_id=selected_id,
         query=query,
         milestone_id=milestone_id,
         artifact_type=artifact_type,
         category=category,
         limit=result_limit,
+        cursor=cursor,
+        cursor_secret=cursor_secret,
         scan_limited=limited,
         skipped_count=skipped_count,
     )
@@ -1347,6 +1560,8 @@ def build_architect_response(
     history_artifact_type: str | None = None,
     history_category: str | None = None,
     history_limit: int | None = None,
+    history_cursor: str | None = None,
+    history_cursor_secret: str,
     expected_repository_key: str | None = None,
     expected_generation: int | None = None,
     expected_milestone_id: str | None = None,
@@ -1409,6 +1624,8 @@ def build_architect_response(
             artifact_type=history_artifact_type,
             category=history_category,
             limit=history_limit,
+            cursor=history_cursor,
+            cursor_secret=history_cursor_secret,
         )
     elif resource == "history_document":
         envelope["data"] = _read_historical_document(repository, state_root, document_path)

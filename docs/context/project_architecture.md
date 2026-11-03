@@ -1007,23 +1007,45 @@ prompt/workflow/closeout artifacts under each managed repository's configured
 milestone root and supported text files under the fixed `docs/history/`
 convention. No additional registry root field is introduced; the configured
 milestone root plus this repository-relative archive convention is the
-historical-root policy. The selected milestone's artifacts are excluded from
-historical results. Search is repository-local and lexical, capped at 2,000
-candidate files, 2,000 directories, 300 text-file reads, 16,000,000 bytes
-scanned, 20 results, and a 128,000-byte response. Each artifact read is capped
-at 128,000 returned UTF-8 bytes and rejects source files above 5,000,000 bytes.
+historical-root policy. The selected milestone's artifacts are excluded from historical results.
+Discovery remains bounded at 2,000 candidate files, 2,000 directories, and
+50,000 directory entries. If discovery reaches one of those bounds, the API
+returns `historical_discovery_incomplete` (503) rather than presenting a
+partial candidate set as a complete search.
+
+Search is repository-local and lexical. Each query page reads at most 300
+files and 16,000,000 bytes; a file may contribute up to its 5,000,000-byte
+source limit to lexical matching. The public document read remains capped at
+128,000 returned UTF-8 bytes and rejects source files above 5,000,000 bytes.
 Broad inventory without a milestone ID or paired category/type filters is
 rejected. Results contain paths, types, sizes, milestone/category metadata and
-match counts, not full content or snippets. Ordering is deterministic: exact
-path match, exact milestone-ID match, descending lexical occurrence count,
-then path. One selected result can be read with the same no-follow file
-protections and UTF-8/truncation bounds as current-document reads. Results and
-retrieved content identify themselves as `historical_evidence`, sourced from
-the current working tree, and explicitly not current authority. Current PO
-decisions and approved dispatches, lifecycle and active prompt, and current
-governing documents remain above historical evidence in authority. This
-capability does not browse Git history, source code, arbitrary roots, or
-network resources.
+match counts, not full content or snippets. The default result page is 10 and
+the maximum is 20. Both query and inventory results are ordered by
+repository-relative path ascending. Responses include `has_more` and
+`next_cursor`; repeat the same query, filters, and page limit with that cursor
+to continue. Query-search `total_count` is the cumulative number of matches
+found so far until the final page sets `total_count_complete=true`. Inventory
+counts are complete when discovery succeeds. `omitted_count` is zero when
+continuation is available because later results have not been omitted from
+the traversal.
+
+The stateless, signed cursor binds the repository identity/root, selected
+milestone, query, filters, page limit, and a fingerprint of candidate paths
+and file metadata. A changed candidate inventory returns
+`stale_history_cursor` (409); a malformed cursor, invalid signature, or one
+used with different query parameters returns `invalid_history_cursor` (400).
+The service's in-memory signing key means outstanding cursors are invalidated
+by a service restart. Each page rediscovers the bounded candidate set and
+scans from its continuation offset. Oversized, invalid-encoding, or
+unsafe-content documents cause an explicit error rather than a false
+complete no-match. One selected result can be read with the same no-follow
+file protections and UTF-8/truncation bounds as current-document reads.
+Results and retrieved content identify themselves as `historical_evidence`,
+sourced from the current working tree, and explicitly not current authority.
+Current PO decisions and approved dispatches, lifecycle and active prompt,
+and current governing documents remain above historical evidence in
+authority. This capability does not browse Git history, source code,
+arbitrary roots, or network resources.
 
 ### 14.2 Bounded Dispatch Proposal Tools
 

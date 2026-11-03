@@ -24,6 +24,7 @@ DEFAULT_REPO_CONTROL_URL = "http://127.0.0.1:8765"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_DISPATCH_BODY_BYTES = 64 * 1024
 MAX_DISPATCH_READ_LIMIT = 5
+MAX_HISTORY_CURSOR_LENGTH = 2_048
 _DISPATCH_ID_PATTERN = r"^[0-9a-f]{32}$"
 _MILESTONE_ID_PATTERN = r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})$"
 
@@ -193,7 +194,9 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
         "name": "repo_history_search",
         "description": (
             "Discover bounded prior milestone and docs/history artifacts in the selected repository. "
-            "Results are historical planning evidence, never current authority."
+            "Results are historical planning evidence, never current authority. Continue a page by "
+            "repeating the same filters and passing the returned next_cursor as cursor. Results are "
+            "ordered by repository-relative path."
         ),
         "inputSchema": {
             "type": "object",
@@ -221,6 +224,12 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                 },
                 "category": {"type": "string", "enum": ["milestone", "archive"]},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                "cursor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_HISTORY_CURSOR_LENGTH,
+                    "description": "Opaque continuation returned as next_cursor by the previous page.",
+                },
                 "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
                 "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
             },
@@ -484,6 +493,13 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
             if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 20:
                 raise AdapterValidationError("limit must be an integer from 1 to 20")
             history_params["limit"] = str(value)
+        if "cursor" in arguments:
+            value = arguments["cursor"]
+            if not isinstance(value, str) or not 1 <= len(value) <= MAX_HISTORY_CURSOR_LENGTH:
+                raise AdapterValidationError(
+                    f"cursor must be a non-empty string <= {MAX_HISTORY_CURSOR_LENGTH} characters"
+                )
+            history_params["cursor"] = value
         return "/api/architect/v1/history/search", history_params
     elif tool_name == "repo_history_document":
         for key in ("path", "expected_repository_key", "expected_generation"):

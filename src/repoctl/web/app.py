@@ -75,6 +75,7 @@ from ..workflow.context_verification import VERIFICATION_RECORD_SCHEMA_VERSION
 from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
+    MAX_HISTORY_CURSOR_LENGTH,
     MAX_PACKET_BYTES,
     ArchitectContractError,
     build_architect_response,
@@ -794,7 +795,7 @@ def create_web_app(
         if resource == "repository_document":
             allowed_parameters.add("path")
         elif resource == "history_search":
-            allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit"})
+            allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit", "cursor"})
         elif resource == "history_document":
             allowed_parameters.add("path")
         else:
@@ -837,6 +838,11 @@ def create_web_app(
             )
             history_limit_text = (
                 architect_query_value("limit", maximum_length=3)
+                if resource == "history_search"
+                else None
+            )
+            history_cursor = (
+                architect_query_value("cursor", maximum_length=MAX_HISTORY_CURSOR_LENGTH)
                 if resource == "history_search"
                 else None
             )
@@ -892,6 +898,8 @@ def create_web_app(
                     history_artifact_type=history_artifact_type,
                     history_category=history_category,
                     history_limit=history_limit,
+                    history_cursor=history_cursor,
+                    history_cursor_secret=app.config["SECRET_KEY"],
                     expected_repository_key=expected_repository_key,
                     expected_generation=expected_generation,
                     expected_milestone_id=expected_milestone_id,

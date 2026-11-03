@@ -156,6 +156,7 @@ class TestArchitectMcpValidation(unittest.TestCase):
                 "artifact_type": "milestone_closeout",
                 "category": "milestone",
                 "limit": 5,
+                "cursor": "eyJ2IjoxfQ",
                 "expected_repository_key": "repo-control-ii",
                 "expected_generation": 2,
             },
@@ -169,10 +170,12 @@ class TestArchitectMcpValidation(unittest.TestCase):
                 "artifact_type": "milestone_closeout",
                 "category": "milestone",
                 "limit": "5",
+                "cursor": "eyJ2IjoxfQ",
                 "expected_repository_key": "repo-control-ii",
                 "expected_generation": "2",
             },
         )
+        self.assertIn("cursor", TOOL_MAP["repo_history_search"]["inputSchema"]["properties"])
         endpoint, query = validate_tool_call(
             "repo_history_document",
             {
@@ -206,6 +209,14 @@ class TestArchitectMcpValidation(unittest.TestCase):
                     "expected_repository_key": "first",
                     "expected_generation": 0,
                     "artifact_type": [],
+                },
+            ),
+            (
+                "repo_history_search",
+                {
+                    "expected_repository_key": "first",
+                    "expected_generation": 0,
+                    "cursor": 42,
                 },
             ),
             (

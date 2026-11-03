@@ -276,8 +276,11 @@ class ArchitectContractTests(unittest.TestCase):
         with patch("repoctl.web.architect_contract.MAX_HISTORY_DIRECTORY_ENTRIES", 1):
             for _ in range(operation_count):
                 response = self.client.get("/api/architect/v1/history/search", query_string=query)
-                self.assertEqual(response.status_code, 200, response.get_json())
-                self.assertTrue(response.get_json()["data"]["limited"])
+                self.assertEqual(response.status_code, 503, response.get_json())
+                self.assertEqual(
+                    response.get_json()["error"]["code"],
+                    "historical_discovery_incomplete",
+                )
         after = self._open_descriptor_count()
         self.assertLessEqual(
             abs(after - baseline),
@@ -299,11 +302,13 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.get_json())
         self.assertEqual(first.get_json(), second.get_json())
         data = first.get_json()["data"]
-        self.assertEqual(data["total_count"], 3)
+        self.assertEqual(data["total_count"], 2)
         self.assertEqual(data["returned_count"], 2)
-        self.assertEqual(data["omitted_count"], 1)
+        self.assertEqual(data["omitted_count"], 0)
         self.assertTrue(data["truncated"])
-        self.assertTrue(data["total_count_complete"])
+        self.assertTrue(data["has_more"])
+        self.assertIsInstance(data["next_cursor"], str)
+        self.assertFalse(data["total_count_complete"])
         self.assertEqual(
             [item["path"] for item in data["results"]],
             [
@@ -322,6 +327,21 @@ class ArchitectContractTests(unittest.TestCase):
             self.assertGreater(item["file_size_bytes"], 0)
             self.assertNotIn("content", item)
             self.assertIn("match_metadata", item)
+
+        next_page = self.client.get(
+            path,
+            query_string={**query, "cursor": data["next_cursor"]},
+        )
+        self.assertEqual(next_page.status_code, 200, next_page.get_json())
+        next_data = next_page.get_json()["data"]
+        self.assertEqual(
+            [item["path"] for item in next_data["results"]],
+            ["docs/milestones/M003.003_prior_searchable_decision_prompt.md"],
+        )
+        self.assertEqual(next_data["total_count"], 3)
+        self.assertFalse(next_data["has_more"])
+        self.assertIsNone(next_data["next_cursor"])
+        self.assertTrue(next_data["total_count_complete"])
 
         selected_milestone = self.client.get(
             path,
@@ -381,12 +401,16 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertTrue(bounded_scan.get_json()["data"]["limited"])
         self.assertFalse(bounded_scan.get_json()["data"]["total_count_complete"])
         self.assertEqual(bounded_scan.get_json()["data"]["files_scanned"], 1)
+        self.assertTrue(bounded_scan.get_json()["data"]["has_more"])
+        self.assertIsInstance(bounded_scan.get_json()["data"]["next_cursor"], str)
 
         with patch("repoctl.web.architect_contract.MAX_HISTORY_CANDIDATES", 2):
             bounded_candidates = self.client.get(path, query_string=query)
-        self.assertEqual(bounded_candidates.status_code, 200, bounded_candidates.get_json())
-        self.assertTrue(bounded_candidates.get_json()["data"]["limited"])
-        self.assertFalse(bounded_candidates.get_json()["data"]["total_count_complete"])
+        self.assertEqual(bounded_candidates.status_code, 503, bounded_candidates.get_json())
+        self.assertEqual(
+            bounded_candidates.get_json()["error"]["code"],
+            "historical_discovery_incomplete",
+        )
 
         broad_inventory = self.client.get(
             path,
@@ -427,6 +451,183 @@ class ArchitectContractTests(unittest.TestCase):
             repo_document.get_json()["error"]["code"],
             "historical_document_not_supported",
         )
+
+    def test_historical_search_continues_past_300_and_inventory_pages_without_gaps(self) -> None:
+        history_root = self.first / "docs/history/deployments"
+        history_root.mkdir(parents=True)
+        candidate_paths = []
+        for index in range(1_005):
+            relative_path = f"docs/history/deployments/archive_{index:04d}.md"
+            (self.first / relative_path).write_text("ordinary deployment notes\n", encoding="utf-8")
+            candidate_paths.append(relative_path)
+        target_path = "docs/history/deployments/zzzz_late_fstab_sanitized.md"
+        (self.first / target_path).write_text(
+            "# Deployment evidence\n\nfstab sanitized deployment evidence\n",
+            encoding="utf-8",
+        )
+        candidate_paths.append(target_path)
+
+        search_path = "/api/architect/v1/history/search"
+        search_args = {
+            "query": "fstab sanitized",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "10",
+        }
+        found = []
+        cursor = None
+        page_count = 0
+        while True:
+            page_args = dict(search_args)
+            if cursor is not None:
+                page_args["cursor"] = cursor
+            response = self.client.get(search_path, query_string=page_args)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            data = response.get_json()["data"]
+            self.assertEqual(data["candidates_considered"], 1_006)
+            self.assertLessEqual(data["files_scanned"], 300)
+            found.extend(item["path"] for item in data["results"])
+            page_count += 1
+            if not data["has_more"]:
+                self.assertTrue(data["total_count_complete"])
+                break
+            self.assertIsInstance(data["next_cursor"], str)
+            self.assertFalse(data["total_count_complete"])
+            cursor = data["next_cursor"]
+        self.assertEqual(page_count, 4)
+        self.assertEqual(found, [target_path])
+        self.assertEqual(data["total_count"], 1)
+
+        read = self.client.get(
+            "/api/architect/v1/history/document",
+            query_string={
+                "path": found[0],
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(read.status_code, 200, read.get_json())
+        self.assertIn("fstab sanitized", read.get_json()["data"]["content"])
+
+        inventory_args = {
+            "artifact_type": "historical_document",
+            "category": "archive",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "20",
+        }
+        inventory_paths = []
+        cursor = None
+        while True:
+            page_args = dict(inventory_args)
+            if cursor is not None:
+                page_args["cursor"] = cursor
+            response = self.client.get(search_path, query_string=page_args)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            data = response.get_json()["data"]
+            inventory_paths.extend(item["path"] for item in data["results"])
+            self.assertTrue(data["total_count_complete"])
+            if not data["has_more"]:
+                break
+            cursor = data["next_cursor"]
+        self.assertEqual(inventory_paths, sorted(candidate_paths))
+        self.assertEqual(len(inventory_paths), len(set(inventory_paths)))
+        self.assertEqual(len(inventory_paths), 1_006)
+
+    def test_historical_search_reads_beyond_document_return_limit(self) -> None:
+        history_root = self.first / "docs/history/deployments"
+        history_root.mkdir(parents=True)
+        target_path = "docs/history/deployments/long_document.md"
+        marker = "late_document_search_marker"
+        content = "x" * (128_000 + 32) + marker
+        (self.first / target_path).write_text(content, encoding="utf-8")
+
+        response = self.client.get(
+            "/api/architect/v1/history/search",
+            query_string={
+                "query": marker,
+                "expected_repository_key": "first",
+                "expected_generation": "0",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        data = response.get_json()["data"]
+        self.assertEqual([item["path"] for item in data["results"]], [target_path])
+        self.assertEqual(data["bytes_scanned"], len(content.encode("utf-8")))
+        self.assertTrue(data["total_count_complete"])
+
+    def test_historical_search_byte_budget_continuation_does_not_skip_candidates(self) -> None:
+        history_root = self.first / "docs/history/deployments"
+        history_root.mkdir(parents=True)
+        paths = []
+        for index in range(3):
+            relative_path = f"docs/history/deployments/budget_{index}.md"
+            (self.first / relative_path).write_text(
+                f"budget_marker document {index}\n",
+                encoding="utf-8",
+            )
+            paths.append(relative_path)
+
+        search_path = "/api/architect/v1/history/search"
+        args = {
+            "query": "budget_marker",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "10",
+        }
+        found = []
+        cursor = None
+        with patch("repoctl.web.architect_contract.MAX_HISTORY_SEARCH_BYTES", 30):
+            while True:
+                page_args = dict(args)
+                if cursor is not None:
+                    page_args["cursor"] = cursor
+                response = self.client.get(search_path, query_string=page_args)
+                self.assertEqual(response.status_code, 200, response.get_json())
+                data = response.get_json()["data"]
+                self.assertLessEqual(data["bytes_scanned"], 30)
+                found.extend(item["path"] for item in data["results"])
+                if not data["has_more"]:
+                    self.assertTrue(data["total_count_complete"])
+                    break
+                self.assertTrue(data["limited"])
+                cursor = data["next_cursor"]
+        self.assertEqual(found, sorted(paths))
+
+    def test_historical_search_cursor_rejects_mismatch_and_changed_inventory(self) -> None:
+        self._historical_fixtures()
+        search_path = "/api/architect/v1/history/search"
+        args = {
+            "query": "legacy_signal",
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "limit": "1",
+        }
+        first = self.client.get(search_path, query_string=args)
+        self.assertEqual(first.status_code, 200, first.get_json())
+        cursor = first.get_json()["data"]["next_cursor"]
+        self.assertIsInstance(cursor, str)
+
+        mismatched = self.client.get(search_path, query_string={**args, "query": "other", "cursor": cursor})
+        self.assertEqual(mismatched.status_code, 400)
+        self.assertEqual(mismatched.get_json()["error"]["code"], "invalid_history_cursor")
+
+        malformed = self.client.get(search_path, query_string={**args, "cursor": "not-a-cursor"})
+        self.assertEqual(malformed.status_code, 400)
+        self.assertEqual(malformed.get_json()["error"]["code"], "invalid_history_cursor")
+
+        tampered_cursor = cursor[:12] + ("A" if cursor[12] != "A" else "B") + cursor[13:]
+        tampered = self.client.get(search_path, query_string={**args, "cursor": tampered_cursor})
+        self.assertEqual(tampered.status_code, 400)
+        self.assertEqual(tampered.get_json()["error"]["code"], "invalid_history_cursor")
+
+        (self.first / "docs/history/context/project_context_v1.md").write_text(
+            "# Changed after page one\n\nlegacy_signal updated\n",
+            encoding="utf-8",
+        )
+        stale = self.client.get(search_path, query_string={**args, "cursor": cursor})
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"]["code"], "stale_history_cursor")
 
     def test_historical_document_read_policy_and_provenance(self) -> None:
         self._historical_fixtures()
