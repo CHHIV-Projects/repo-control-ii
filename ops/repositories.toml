@@ -30,8 +30,8 @@ path = "/home/chuck/projects/photo-organizer-dev"
 milestone_root = "docs/milestones"
 
 [repositories.photo-organizer.documents]
-context = "docs/context/project_context_v8.md"
-architecture = "docs/context/project_architecture_v8.md"
-workflow = "docs/context/project_workflow_v8.md"
-coding_agent_rules = "docs/context/coding_agent_rules_v8.md"
-parking_lot = "docs/context/canonical_parking_lot_v8.md"
+context = "docs/context/project_context.md"
+architecture = "docs/context/project_architecture.md"
+workflow = "docs/context/project_workflow.md"
+coding_agent_rules = "docs/context/coding_agent_rules.md"
+parking_lot = "docs/context/canonical_parking_lot.md"
