@@ -562,6 +562,34 @@ Important invariants:
 - browser clients must not bypass the allowlist;
 - repository identity must remain visible in the UI.
 
+M009.017 adds a remap-specific, Product Owner-operated CLI for coordinating
+the five registered governing-document roles with the six-artifact 1.4.0
+procedure overlay and lock. It is not a general cross-repository transaction
+engine and does not change ordinary Procedure Apply's incompatibility guard.
+The read-only `coder-procedure-remap-preview` binds the repository identity,
+old/new maps, registry image, mapped-document hashes, current generated
+artifacts, direct Markdown references between mapped documents, Git state,
+selected milestone, live service selection, operator prerequisites, restart
+implications, rollback steps, and procedure manifest. A separate
+`coder-procedure-remap-stage --confirm`
+rechecks that plan, stores exact before/after images outside managed
+worktrees, stages the generated entrypoints and lock first, and writes the
+central registry last.
+
+These are individually atomic file replacements, not one atomic transaction
+across repository roots or service restart. During staging, procedure status
+may be incompatible and the running service's stale-registry guard disables
+mutations. The Product Owner must restart the service, select the target
+repository, then separately run `coder-procedure-remap-activate --confirm`;
+activation verifies the new runtime instance, role map, milestone, mapped
+document hashes, and procedure `CURRENT`. The out-of-band
+`coder-procedure-remap-recover --confirm` restores exact before-images when
+all targets match either recorded image, after which restart and activation
+verify the rollback. Corrupt journals or unknown images remain blocked for
+operator intervention. Ordinary Coder sessions cannot perform the live
+remap, restart, recovery, or managed-repository migration. Synthetic fixture
+coverage does not constitute live operational acceptance or deployment.
+
 ---
 
 # 9. Git Control Architecture

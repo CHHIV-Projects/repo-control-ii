@@ -201,6 +201,8 @@ class WebTests(unittest.TestCase):
             health = client.get("/healthz").get_json()
             self.assertEqual(health["service"], "repo-control")
             self.assertEqual(health["active_repository"], "second")
+            self.assertIsInstance(health["active_repository_generation"], int)
+            self.assertFalse(health["central_registry_stale"])
             self.assertEqual(health["runtime_capabilities"]["capability_schema_version"], 1)
             self.assertTrue(health["runtime_capabilities"]["instance_id"])
             self.assertIn(

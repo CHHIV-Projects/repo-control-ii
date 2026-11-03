@@ -153,6 +153,79 @@ the Product Owner applied it to Repo Control II. This does not update other
 managed repositories, and their installation status must still be inspected
 and reconciled separately under Product Owner authority.
 
+### Product Owner-controlled governing-role remap
+
+The M009.017 remap capability is a separate operator procedure, not ordinary
+Coder implementation authority. Do not run it against a managed repository
+until the Product Owner has accepted and deployed this Repo Control II
+capability and separately authorized the target-repository migration. Prepare
+and review the old and destination documents in the target repository first;
+the remap never moves, edits, or retires those documents.
+
+With the registered target selected in the running service and its health
+showing `central_registry_stale: false`, preview all five exact role paths:
+
+```text
+python -m repoctl.cli coder-procedure-remap-preview \
+  --repository-key <key> \
+  --context <path> \
+  --architecture <path> \
+  --workflow <path> \
+  --coding-agent-rules <path> \
+  --parking-lot <path>
+```
+
+The Product Owner reviews the complete old/new map, direct Markdown
+references between mapped documents, repository and registry identity,
+mapped-document hashes, all six generated artifact hashes and lock effects,
+operator prerequisites, restart implications, rollback steps, current
+milestone, Git-path classification, and blockers. If any prerequisite or
+fingerprint differs, stop and preview again. Only after a separate deliberate
+Product Owner confirmation, submit the exact same paths and reviewed plan
+digest:
+
+```text
+python -m repoctl.cli coder-procedure-remap-stage \
+  --repository-key <key> \
+  --context <path> \
+  --architecture <path> \
+  --workflow <path> \
+  --coding-agent-rules <path> \
+  --parking-lot <path> \
+  --plan-sha256 <reviewed-sha256> \
+  --confirm
+```
+
+Staging writes the generated host entrypoints and procedure lock before the
+central registry, keeps all recovery images, and requires a service restart.
+This sequence is restart-safe but not filesystem/registry/restart atomic:
+status may be incompatible during the transition and the stale-registry guard
+blocks service mutations. After the Product Owner restarts the service and
+selects the target repository, verify status and separately activate:
+
+```text
+python -m repoctl.cli coder-procedure-remap-status --repository-key <key>
+python -m repoctl.cli coder-procedure-remap-activate \
+  --repository-key <key> --operation-id <id> --confirm
+```
+
+Activation succeeds only with a new runtime instance, the recorded role map
+and milestone, unchanged mapped-document hashes, and procedure `CURRENT`.
+If restart or verification fails, use the out-of-band operator CLI to restore
+exact before-images, then restart and verify the rollback:
+
+```text
+python -m repoctl.cli coder-procedure-remap-recover \
+  --repository-key <key> --operation-id <id> --confirm
+```
+
+Unknown images, changed document fingerprints, corrupt journals, or unsafe
+paths block recovery for operator investigation; never edit a lock or
+generated entrypoint manually to bypass that state. Preview/stage/status/
+activation/recovery apply only to the explicitly selected repository and
+central registry. No managed-repository operation, service restart, or
+Photo Organizer migration is authorized by this documentation alone.
+
 M009.010 also added a bounded runtime capability handshake before the newer
 `context_verification_recorded` verification-record schema is appended. The
 check is against the running service's advertised capabilities; version-1

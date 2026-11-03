@@ -1,7 +1,9 @@
 # Repository Onboarding and Integration Guide
 
-This guide describes two repeatable paths for bringing a repository under Repo
-Control: a **new repository** and an **established repository**. Onboarding is
+This guide distinguishes three onboarding scenarios: a **new repository
+without an installed procedure**, an **existing repository without an
+installed procedure**, and an **existing repository with an installed
+procedure that requires governing-document path migration**. Onboarding is
 complete only when the browser, Architect, and Coder resolve the same
 repository, milestone root, governing documents, and authorization state.
 
@@ -20,7 +22,7 @@ repository, milestone root, governing documents, and authorization state.
 The PO may also be the service operator. Keep these responsibilities explicit
 even if one person performs several roles.
 
-## A. New repository
+## A. New repository without an installed procedure
 
 Use this path when there is no existing project corpus that must be migrated.
 
@@ -80,7 +82,7 @@ genuinely new Codex/Copilot session and report unobserved delivery as pending.
 - [ ] Git Review and required milestone lifecycle actions operate as expected.
 - [ ] The PO explicitly closes onboarding before product implementation begins.
 
-## B. Established repository
+## B. Existing repository without an installed procedure
 
 Use this path when adopting an existing codebase, documentation set, or
 milestone corpus. Reconnaissance comes before normalization or file movement.
@@ -94,8 +96,8 @@ milestone corpus. Reconnaissance comes before normalization or file movement.
 | 5. Normalize the five governing documents | Architect + Coder; PO approves | Establish the five canonical roles under `docs/context/`. Reconcile only current authority; do not convert historical milestone narratives into current rules. |
 | 6. Preserve milestone history | Coder under authorized scope; Architect reviews | Keep original prompts, closeouts, and workflow sidecars intact where practical. Separate legacy/historical corpus outside recursive active discovery (for example, `docs/history/milestones/`) so it cannot be mistaken for current prompts. Do not rewrite historical evidence just to normalize names. |
 | 7. Prepare a milestone-root cutover | Architect plans; PO operates | Prepare and inspect the new-root prompt/closeout/sidecar copies first. Keep old-root recovery copies while the new root is selected and verified. Avoid simultaneously exposing legacy artifacts to active discovery. |
-| 8. Preview shared-procedure migration | Coder; Architect reviews; PO approves any writes | Inspect the current release/hash/overlay status and proposed generated-file diffs. Identify stale duplicated generic rules and local constraints to preserve. Keep invalid overlays and conflicting host files blocked; preview does not write. |
-| 9. Verify local artifacts | PO/operator; Coder verifies | During onboarding, verify the host bootstrap, exact Skill copies, lock hashes, and overlay preservation through the approved repository setup process. Do not treat later-release Apply as onboarding automation; it is a deliberate, one-repository PO action and ordinary Git Review remains required. Keep legacy instructions until their authority and use have been reconciled. |
+| 8. Review shared-procedure installation | Coder; Architect reviews; PO approves any writes | Inspect procedure status and overlay requirements, then review the generated-file preview. Identify stale duplicated generic rules and local constraints to preserve. Keep invalid overlays and conflicting host files blocked; preview does not write. |
+| 9. Verify local artifacts | PO/operator; Coder verifies | During onboarding, verify the host bootstrap, exact Skill copies, lock hashes, and overlay preservation through the approved repository setup process. A first installation is distinct from an update to an already installed release. Any procedure Apply is a deliberate, one-repository PO action and ordinary Git Review remains required. Keep legacy instructions until their authority and use have been reconciled. |
 | 10. Configure the central registry | PO / service operator | Set the repository key, absolute worktree path, `docs/milestones/` (or an explicitly approved canonical root), and repository-relative mappings for the five documents. The Coder does not edit central Repo Control configuration. |
 | 11. Perform the controlled cutover | PO / service operator | Change the registry's active milestone root, reload/restart through the normal operator procedure, then reselect the repository. Verify the browser discovers the intended new-root prompts and no legacy candidates pollute discovery. |
 | 12. Verify identity in all clients | PO + Architect + Coder | Confirm browser, Architect, and Coder agree on key, path, prompt/root, governing documents, and lifecycle. In a fresh or resumed Coder session, verify current `coder-context` and `coder-status`, including applicable approved `INSTRUCTION`/`RESPONSE` dispatches and authorization. Packets and prior chat history are fallback transport, not current authority. |
@@ -168,6 +170,117 @@ milestone discovery, bounded historical-document access, and procedure
 status/preview for their respective deterministic checks; semantic authority
 classification and source-to-target decisions require Architect/PO review.
 Do not let a utility infer ownership or rewrite project documents.
+
+## C. Existing repository with an installed procedure and governing-role path migration
+
+Use this scenario only when the existing registered repository already has a
+shared-procedure installation whose overlay path is bound into its lock and
+generated host entrypoints, and the five registry document-role paths must
+change. A registry-only remap can make the installed procedure
+`INCOMPATIBLE`; ordinary Procedure Apply does not repair that mismatch. Do not
+edit the registry first, manually edit the procedure lock or generated
+entrypoints, or use the Section B first-install path as a substitute.
+
+The M009.017 capability is a separate Product Owner-controlled staged
+operation. It is not available for a live migration until this Repo Control II
+milestone has been accepted and the capability has been deployed. Even then,
+the fixture tests establish only isolated behavior, not live operational
+acceptance. The actual governing documents and registry cutover remain
+separately authorized Product Owner/operator work; a Coder must not perform
+them.
+
+### Product Owner remap sequence
+
+1. **Preflight and prepare.** Confirm the exact repository key, ID, and root;
+   current registry generation and complete role map; selected repository
+   and milestone; installed procedure release, manifest, overlay, generated
+   entrypoints, and lock; and absence of pending recovery. Confirm target and
+   registry Git state, symlink/path safety, destination collisions, and
+   content ownership. The PO prepares and reviews any destination documents
+   in the managed repository separately. Do not move, overwrite, delete, or
+   rename existing `*_v8.md` sources; retain them and their history. Verify
+   both source and destination content before continuing. All five role paths
+   are specified, with unchanged roles allowed where appropriate.
+2. **Preview without writes.** With the exact target selected and the running
+   service reporting a current registry, request a strict preview:
+
+   ```bash
+   /home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-remap-preview \
+     --repository-key <key> \
+     --context <path> \
+     --architecture <path> \
+     --workflow <path> \
+     --coding-agent-rules <path> \
+     --parking-lot <path>
+   ```
+
+   Review the full old/new map, source/destination hashes and direct Markdown
+   references, registry before/after hashes, all six generated artifact
+   effects and lock hashes, Git-path classification, milestone, prerequisites,
+   restart implications, and rollback steps. A blocker or changed fingerprint
+   means stop and investigate; do not broaden the plan to make it pass.
+3. **Separate PO confirmation and staging.** Only after reviewing the exact
+   plan SHA-256, issue a separate PO confirmation using the same five paths
+   and the displayed digest:
+
+   ```bash
+   /home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-remap-stage \
+     --repository-key <key> \
+     --context <path> \
+     --architecture <path> \
+     --workflow <path> \
+     --coding-agent-rules <path> \
+     --parking-lot <path> \
+     --plan-sha256 <reviewed-sha256> \
+     --confirm
+   ```
+
+   The coordinator retains exact before/after images and durable checkpoints.
+   It stages generated host entrypoints and the procedure lock first, then
+   writes the central registry last. This is not atomic across filesystem
+   roots or service restart. The intermediate procedure state may be
+   `INCOMPATIBLE`; the stale-registry guard disables service mutations until
+   restart.
+4. **Restart and reselect.** The PO/service operator restarts the service
+   through the normal deployment procedure. Restart resets repository
+   selection to the configured default; explicitly reselect the target
+   repository. Do not assume the previous selection survives.
+5. **Verify and activate.** Inspect the remap status, confirm the new registry
+   map and the target repository are active, then run the separately
+   confirmed activation:
+
+   ```bash
+   /home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-remap-status \
+     --repository-key <key>
+   /home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-remap-activate \
+     --repository-key <key> --operation-id <id> --confirm
+   ```
+
+   Activation must observe a new runtime instance, the recorded role map and
+   milestone, unchanged mapped-document hashes, valid overlay, generated
+   entrypoint/lock agreement, and procedure `CURRENT`. Do not declare the
+   migration complete from the staging receipt alone.
+6. **Recover out of band if required.** If the service cannot restart or
+   activation fails, use the local operator CLI rather than depending on the
+   browser:
+
+   ```bash
+   /home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-procedure-remap-recover \
+     --repository-key <key> --operation-id <id> --confirm
+   ```
+
+   Recovery restores exact before-images only while every affected target
+   matches a recorded before/after image. Then restart, reselect the target,
+   and verify rollback through status and activation. Corrupt journals,
+   changed documents, unsafe paths, or unknown file images block recovery for
+   operator investigation; never manually edit the lock or generated
+   entrypoints to bypass the block.
+
+This sequence does not authorize a live migration by itself. Product Owner
+acceptance/deployment of M009.017, a separate target-repository decision,
+normal Git Review, and any later retirement of old documents are independent
+gates. Preserve old versions and workflow history until those gates are
+explicitly satisfied.
 
 ## Current integration checks
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
+import hashlib
 import json
 import secrets
 import threading
@@ -413,6 +414,11 @@ def create_web_app(
         if repository_registry_path is not None
         else None
     )
+    app.config["REPOSITORY_REGISTRY_SHA256"] = (
+        hashlib.sha256(Path(app.config["REPOSITORY_REGISTRY_PATH"]).read_bytes()).hexdigest()
+        if app.config["REPOSITORY_REGISTRY_PATH"] is not None
+        else None
+    )
     app.config["STATE_ROOT"] = effective_state_root
     app.config["BOUND_HOST"] = bound_host
     app.config["BOUND_PORT"] = port
@@ -421,6 +427,24 @@ def create_web_app(
     @app.before_request
     def _bind_active_repository() -> None:
         g.active_repository, g.repository_registry_generation = registry.snapshot()
+        registry_path = app.config["REPOSITORY_REGISTRY_PATH"]
+        g.central_registry_stale = False
+        if registry_path is not None:
+            try:
+                current_hash = hashlib.sha256(Path(registry_path).read_bytes()).hexdigest()
+            except OSError as exc:
+                raise WebUIError(
+                    "repository_registry_unavailable",
+                    f"The central repository registry cannot be rechecked: {exc}",
+                    status_code=503,
+                ) from exc
+            g.central_registry_stale = current_hash != app.config["REPOSITORY_REGISTRY_SHA256"]
+            if g.central_registry_stale and request.method not in {"GET", "HEAD", "OPTIONS"}:
+                raise WebUIError(
+                    "repository_registry_reload_required",
+                    "The central registry changed after this service started. Mutations are disabled until the Product Owner reviews and restarts the service.",
+                    status_code=503,
+                )
 
     def current_repository() -> RepositoryEntry:
         return g.active_repository
@@ -2018,11 +2042,13 @@ def create_web_app(
 
     @app.get("/healthz")
     def health_check():
-        active_repository = registry.active()
+        active_repository, active_generation = registry.snapshot()
         return jsonify(
             {
                 "service": "repo-control",
                 "active_repository": active_repository.key,
+                "active_repository_generation": active_generation,
+                "central_registry_stale": g.central_registry_stale,
                 "runtime_capabilities": {
                     "capability_schema_version": 1,
                     "instance_id": app.config["RUNTIME_INSTANCE_ID"],

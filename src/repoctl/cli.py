@@ -161,6 +161,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
     )
 
+    remap_roles = ("context", "architecture", "workflow", "coding_agent_rules", "parking_lot")
+    for command, help_text in (
+        ("coder-procedure-remap-preview", "Preview a PO-controlled five-role remap without writing"),
+        ("coder-procedure-remap-stage", "Confirm a reviewed role remap and stage its restart-bound transition"),
+    ):
+        remap_parser = subparsers.add_parser(command, help=help_text)
+        remap_parser.add_argument("--repository-key", required=True)
+        for role in remap_roles:
+            remap_parser.add_argument(f"--{role.replace('_', '-')}", dest=role, required=True)
+        remap_parser.add_argument("--state-root")
+        remap_parser.add_argument("--runtime-url")
+        remap_parser.add_argument("--format", choices=["json", "text"], default="text")
+        if command.endswith("-stage"):
+            remap_parser.add_argument("--plan-sha256", required=True)
+            remap_parser.add_argument("--confirm", action="store_true", required=True)
+
+    remap_status_parser = subparsers.add_parser(
+        "coder-procedure-remap-status",
+        help="Inspect a pending or completed role-remap checkpoint without writing",
+    )
+    remap_status_parser.add_argument("--repository-key", required=True)
+    remap_status_parser.add_argument("--state-root")
+
+    for command, help_text in (
+        ("coder-procedure-remap-activate", "Confirm post-restart role-remap verification"),
+        ("coder-procedure-remap-recover", "Restore exact pre-remap images through the out-of-band operator path"),
+    ):
+        remap_parser = subparsers.add_parser(command, help=help_text)
+        remap_parser.add_argument("--repository-key", required=True)
+        remap_parser.add_argument("--operation-id", required=True)
+        remap_parser.add_argument("--state-root")
+        remap_parser.add_argument("--confirm", action="store_true", required=True)
+        if command.endswith("-activate"):
+            remap_parser.add_argument("--runtime-url")
+
     release_marker_parser = subparsers.add_parser(
         "coder-procedure-release-marker",
         help="Render an approved-prompt marker bound to the current canonical manifest",
@@ -870,6 +905,136 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"blocker: {blocker}")
             if result.get("manifest_sha256"):
                 print(f"published manifest SHA-256: {result['manifest_sha256']}")
+        return 0
+
+    if args.command in {
+        "coder-procedure-remap-preview",
+        "coder-procedure-remap-stage",
+        "coder-procedure-remap-status",
+        "coder-procedure-remap-activate",
+        "coder-procedure-remap-recover",
+    }:
+        from .procedure_remap import (
+            ProcedureRemapError,
+            finalize_role_remap,
+            inspect_role_remap,
+            preview_role_remap,
+            read_runtime_binding,
+            recover_role_remap,
+            stage_role_remap,
+        )
+        from .scanner.core import DEFAULT_STATE_ROOT
+        from .web.repository_registry import RepositoryRegistry, RepositoryRegistryError
+        from .workflow.coder_interface import CENTRAL_REPOSITORY_REGISTRY_PATH
+
+        try:
+            registry = RepositoryRegistry.from_toml(CENTRAL_REPOSITORY_REGISTRY_PATH)
+            entry = next((item for item in registry.entries if item.key == args.repository_key), None)
+            if entry is None:
+                raise ProcedureRemapError("Select a repository from the centrally configured list.")
+            state_root = Path(args.state_root).expanduser() if args.state_root else DEFAULT_STATE_ROOT
+            if args.command == "coder-procedure-remap-status":
+                result = inspect_role_remap(entry, state_root)
+                if result is None:
+                    result = {"state": "NONE", "blocked": False}
+            elif args.command == "coder-procedure-remap-recover":
+                result = recover_role_remap(entry, args.operation_id, state_root)
+            elif args.command == "coder-procedure-remap-activate":
+                binding = read_runtime_binding(args.runtime_url)
+                result = finalize_role_remap(
+                    entry,
+                    args.operation_id,
+                    state_root,
+                    active_key=binding["active_key"],
+                    registry_generation=binding["registry_generation"],
+                    runtime_instance_id=binding["runtime_instance_id"],
+                )
+            else:
+                binding = read_runtime_binding(args.runtime_url)
+                documents = {
+                    "context": args.context,
+                    "architecture": args.architecture,
+                    "workflow": args.workflow,
+                    "coding_agent_rules": args.coding_agent_rules,
+                    "parking_lot": args.parking_lot,
+                }
+                if args.command == "coder-procedure-remap-preview":
+                    result = preview_role_remap(
+                        entry,
+                        documents,
+                        state_root=state_root,
+                        active_key=binding["active_key"],
+                        registry_generation=binding["registry_generation"],
+                        runtime_instance_id=binding["runtime_instance_id"],
+                    )
+                    result.pop("_internal", None)
+                else:
+                    result = stage_role_remap(
+                        entry,
+                        documents,
+                        args.plan_sha256,
+                        state_root,
+                        active_key=binding["active_key"],
+                        registry_generation=binding["registry_generation"],
+                        runtime_instance_id=binding["runtime_instance_id"],
+                    )
+        except (
+            OSError,
+            UnicodeError,
+            RepositoryRegistryError,
+            ProcedureRemapError,
+        ) as exc:
+            print(f"coder procedure remap command failed: {exc}", file=sys.stderr)
+            return 2
+        if args.command == "coder-procedure-remap-preview" and args.format == "text":
+            print(f"Repository: {result['repository']['key']} ({result['repository']['repository_id']})")
+            print(f"Milestone: {result['milestone']['milestone_id']} — {result['milestone']['phase']}")
+            print(f"Procedure: {result['procedure_release']} ({result['manifest_sha256']})")
+            print(
+                f"Central registry: {result['registry']['path']} "
+                f"{result['registry']['sha256']} -> {result['registry']['after_sha256']}"
+            )
+            print(f"Plan SHA-256: {result['plan_sha256']}")
+            print("Old role map:")
+            for role, path in sorted(result["old_documents"].items()):
+                print(f"  {role}: {path}")
+            print("Proposed role map:")
+            for role, path in sorted(result["new_documents"].items()):
+                print(f"  {role}: {path}")
+            print("Mapped-document dependencies:")
+            for item in result["document_dependencies"]:
+                print(
+                    f"  {item['role']}: {item['source']} ({item['source_sha256']}) -> "
+                    f"{item['destination']} ({item['destination_sha256']}); "
+                    f"source refs={item['source_references']}; "
+                    f"destination refs={item['destination_references']}"
+                )
+            print("Generated procedure effects:")
+            for item in result["generated_artifacts"]:
+                state = "changed" if item["changed"] else "unchanged"
+                print(f"  {item['path']}: {state} ({item['before_sha256']} -> {item['after_sha256']})")
+            print(
+                f"Procedure lock: {result['lock']['path']} "
+                f"{result['lock']['before_sha256']} -> {result['lock']['after_sha256']}"
+            )
+            print("Operator prerequisites:")
+            for prerequisite in result["operator_prerequisites"]:
+                print(f"  {prerequisite}")
+            print(f"Restart implications: {result['restart_implications']}")
+            print("Rollback steps:")
+            for step in result["rollback_steps"]:
+                print(f"  {step}")
+            for key, snapshot in sorted(result["git"].items()):
+                print(f"Git {key}: {snapshot['branch'].get('name')} at {snapshot['head']}")
+                for item in snapshot["working_tree"]:
+                    print(f"  {item['disposition']}: {item['path']}")
+            print(f"Materialization available: {result['materialization_available']}")
+            for blocker in result["blockers"]:
+                print(f"Blocker: {blocker}")
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.command == "coder-procedure-remap-preview" and not result["materialization_available"]:
+            return 3
         return 0
 
     if args.command in {"coder-procedure-status", "coder-procedure-preview"}:
