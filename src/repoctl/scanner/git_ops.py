@@ -261,8 +261,11 @@ def get_working_tree_with_branch(
     repo_root: Path,
     *,
     max_output_bytes: int | None = None,
+    detect_renames: bool = True,
 ) -> dict[str, Any]:
     args = ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]
+    if not detect_renames:
+        args.append("--no-renames")
     if max_output_bytes is None:
         output = _run_git_bytes(repo_root, args)
     else:

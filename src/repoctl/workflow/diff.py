@@ -10,11 +10,12 @@ from typing import Any
 from ..scanner.git_ops import ScanError, _run_git_bounded, validate_git_worktree
 from .git_state import WorkflowGitStateError, inspect_git_state
 
-MAX_STATUS_OUTPUT_BYTES = 1024 * 1024
+MAX_STATUS_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_DIFF_OUTPUT_BYTES = 128 * 1024
 MAX_UNTRACKED_PREVIEW_BYTES = 64 * 1024
 MAX_GIT_STDERR_BYTES = 16 * 1024
 GIT_COMMAND_TIMEOUT_SECONDS = 10
+MAX_REVIEW_PATHS = 5_000
 
 _STATUS_DISPLAY_LABELS = {
     "Conflicted / unmerged": "Conflicts / unmerged",
@@ -668,9 +669,15 @@ def inspect_git_review(
         git_state = inspect_git_state(
             str(repo_root),
             max_status_output_bytes=MAX_STATUS_OUTPUT_BYTES,
+            detect_renames=False,
         )
     except (ScanError, WorkflowGitStateError) as exc:
         raise GitReviewError(str(exc)) from exc
+
+    if len(git_state["working_tree"]["entries"]) > MAX_REVIEW_PATHS:
+        raise GitReviewError(
+            f"Git Review supports at most {MAX_REVIEW_PATHS} changed paths per snapshot."
+        )
 
     files: list[dict[str, Any]] = []
     entries_by_token: dict[str, dict[str, Any]] = {}
@@ -803,5 +810,6 @@ def inspect_git_review(
             "status_bytes": MAX_STATUS_OUTPUT_BYTES,
             "diff_bytes": MAX_DIFF_OUTPUT_BYTES,
             "untracked_preview_bytes": MAX_UNTRACKED_PREVIEW_BYTES,
+            "changed_paths": MAX_REVIEW_PATHS,
         },
     }

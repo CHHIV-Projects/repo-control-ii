@@ -166,6 +166,10 @@ def get_coder_status(
 
     prompt_path = entry.path / candidate["prompt_path"]
     prompt_size = prompt_path.stat().st_size if prompt_path.is_file() else 0
+    from ..web.architect_contract import (
+        MAX_MILESTONE_DOCUMENT_PAGE_BYTES,
+        MAX_REPOSITORY_DOCUMENT_FILE_BYTES,
+    )
 
     standing_references = {
         "coding_agent_rules": entry.documents.get("coding_agent_rules"),
@@ -194,6 +198,13 @@ def get_coder_status(
             "phase": phase,
             "closeout_exists": candidate["closeout_exists"],
             "closeout_path": candidate.get("closeout_path"),
+        },
+        "milestone_document_paging": {
+            "command": "repoctl coder-read-milestone-document",
+            "page_limit_bytes": MAX_MILESTONE_DOCUMENT_PAGE_BYTES,
+            "maximum_file_bytes": MAX_REPOSITORY_DOCUMENT_FILE_BYTES,
+            "continuation_requires_source_fingerprint": True,
+            "evidence_paths_must_be_named_in_active_prompt": True,
         },
         "authorization": auth,
         "procedure_release_preparation": release_preparation,
@@ -289,6 +300,44 @@ def get_coder_context(
     return context_data
 
 
+def read_coder_milestone_document_page(
+    document_path: str,
+    *,
+    expected_milestone_id: str,
+    start_byte: int = 0,
+    source_fingerprint: str | None = None,
+    repository_path: str | Path | None = None,
+    state_root: str | Path | None = None,
+    milestone_root: str | None = None,
+) -> dict[str, Any]:
+    entry, _effective_state_root, candidate, _workflow = _resolve_context_and_workflow(
+        repository_path=repository_path,
+        state_root=state_root,
+        milestone_root=milestone_root,
+    )
+    if candidate["milestone_id"] != expected_milestone_id:
+        raise CoderInterfaceError(
+            "The selected milestone changed; refresh Coder context before reading another page."
+        )
+    from ..web.architect_contract import (
+        ArchitectContractError,
+        read_selected_milestone_document_page,
+    )
+
+    try:
+        return read_selected_milestone_document_page(
+            entry,
+            candidate,
+            document_path,
+            start_byte=start_byte,
+            source_fingerprint=source_fingerprint,
+        )
+    except ArchitectContractError as exc:
+        raise CoderInterfaceError(
+            f"Could not read selected milestone document ({exc.code}): {exc}"
+        ) from exc
+
+
 def format_coder_status_text(data: dict[str, Any]) -> str:
     repo = data["repository"]
     milestone = data["milestone"]
@@ -319,6 +368,12 @@ def format_coder_status_text(data: dict[str, Any]) -> str:
         f"Milestone Root: {repo['milestone_root']}",
         f"Selected ID:    {milestone['id']}",
         f"Prompt Path:    {prompt['path']} ({prompt.get('size_bytes', 0)} bytes)",
+        (
+            "Document Paging: "
+            f"{data.get('milestone_document_paging', {}).get('command', 'unavailable')} "
+            f"--path <path> --expected-milestone-id {milestone['id']} "
+            "[--start-byte <next_offset> --source-fingerprint <fingerprint>]"
+        ),
         f"Lifecycle:      {milestone['phase']}",
         f"Authorization:  {auth['message']}",
         f"Procedure Release: {data.get('procedure_release_preparation', {}).get('status', 'UNKNOWN')}",

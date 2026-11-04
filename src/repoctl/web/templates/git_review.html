@@ -322,12 +322,28 @@
           <dt>HEAD</dt><dd><code>{{ commit_options.head }}</code></dd>
           <dt>Staged paths</dt><dd>{{ commit_options.staged_paths | length }}</dd>
         </dl>
-        <ul>{% for item in commit_options.staged_paths %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+        <nav aria-label="Staged path inventory pages" class="commit-inventory-nav">
+          {% for start in range(0, commit_options.staged_paths | length, 100) %}
+            <a href="#staged-paths-{{ start }}">Paths {{ start + 1 }}–{{ [start + 100, commit_options.staged_paths | length] | min }}</a>
+          {% endfor %}
+        </nav>
+        {% for start in range(0, commit_options.staged_paths | length, 100) %}
+          <h4 id="staged-paths-{{ start }}">Staged paths {{ start + 1 }}–{{ [start + 100, commit_options.staged_paths | length] | min }}</h4>
+          <ul>{% for item in commit_options.staged_paths[start:start + 100] %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+        {% endfor %}
         {% if commit_options.remaining_paths %}
           <h4>Unstaged / untracked paths that will remain outside the commit</h4>
-          <ul>{% for item in commit_options.remaining_paths %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+          <nav aria-label="Remaining path inventory pages" class="commit-inventory-nav">
+            {% for start in range(0, commit_options.remaining_paths | length, 100) %}
+              <a href="#remaining-paths-{{ start }}">Paths {{ start + 1 }}–{{ [start + 100, commit_options.remaining_paths | length] | min }}</a>
+            {% endfor %}
+          </nav>
+          {% for start in range(0, commit_options.remaining_paths | length, 100) %}
+            <h4 id="remaining-paths-{{ start }}">Remaining paths {{ start + 1 }}–{{ [start + 100, commit_options.remaining_paths | length] | min }}</h4>
+            <ul>{% for item in commit_options.remaining_paths[start:start + 100] %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+          {% endfor %}
         {% endif %}
-        <details><summary>Review complete staged diff</summary><pre class="git-diff">{{ commit_options.diff }}</pre></details>
+        <details><summary>Review complete staged diff ({{ commit_options.diff_bytes }} bytes; SHA-256 {{ commit_options.diff_digest }})</summary><pre class="git-diff">{{ commit_options.diff }}</pre></details>
         <form method="post" action="{{ url_for('git_action_prepare') }}" class="commit-message-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="action" value="commit">
@@ -341,7 +357,7 @@
     </article>
 
     <div class="git-review-layout spaced-top">
-      <form id="batch-action-form" method="post" action="{{ url_for('git_action_prepare') }}" data-max-paths="256">
+      <form id="batch-action-form" method="post" action="{{ url_for('git_action_prepare') }}" data-max-paths="5000" data-max-path-bytes="1048576">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <section class="card git-review-files">
         <h3>Changed files ({{ review.files | length }})</h3>

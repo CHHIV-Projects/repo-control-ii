@@ -1358,6 +1358,179 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(oversized_response.status_code, 413)
         self.assertEqual(oversized_response.get_json()["error"]["code"], "response_oversized")
 
+    def test_selected_milestone_pages_reassemble_large_utf8_evidence_and_closeout(self) -> None:
+        evidence_path = f"docs/milestones/{MILESTONE_ID}_approved_manifest.tsv"
+        prompt = self.first / PROMPT_PATH
+        prompt.write_text(
+            f"# Prompt\nApproved current-milestone evidence: {evidence_path}\n",
+            encoding="utf-8",
+        )
+        prefix = b"x" * 127_999
+        multibyte = "😀\tvalue\n".encode("utf-8")
+        raw = prefix + multibyte + b"z" * (415_959 - len(prefix) - len(multibyte))
+        (self.first / evidence_path).write_bytes(raw)
+        common = {
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "expected_milestone_id": MILESTONE_ID,
+            "path": evidence_path,
+        }
+
+        pages = []
+        query = dict(common)
+        while True:
+            response = self.client.get("/api/architect/v1/milestone-document", query_string=query)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            page = response.get_json()["data"]
+            pages.append(page["content"].encode("utf-8"))
+            self.assertLessEqual(page["bytes_returned"], 128_000)
+            if not page["complete"]:
+                query = {
+                    **common,
+                    "start_byte": str(page["next_offset"]),
+                    "source_fingerprint": page["source_fingerprint"],
+                }
+            else:
+                break
+        self.assertEqual(b"".join(pages), raw)
+        self.assertEqual(pages[0], prefix)
+        self.assertEqual(pages[0].decode("utf-8").encode("utf-8"), pages[0])
+        self.assertTrue(pages[1].startswith(multibyte))
+        self.assertEqual(page["sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(page["file_size_bytes"], 415_959)
+        self.assertIsNone(page["next_offset"])
+        split_character = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={
+                **common,
+                "start_byte": "128000",
+                "source_fingerprint": page["source_fingerprint"],
+            },
+        )
+        self.assertEqual(split_character.status_code, 400)
+        self.assertEqual(split_character.get_json()["error"]["code"], "invalid_document_offset")
+
+        (self.first / CLOSEOUT_PATH).write_bytes(b"c" * 128_000)
+        exact_limit = self.client.get("/api/architect/v1/closeout")
+        self.assertEqual(exact_limit.status_code, 200)
+        self.assertEqual(len(exact_limit.get_json()["data"]["content"]["content"].encode("utf-8")), 128_000)
+        (self.first / CLOSEOUT_PATH).write_bytes(b"c" * 128_001)
+        oversized = self.client.get("/api/architect/v1/closeout")
+        self.assertEqual(oversized.status_code, 200)
+        closeout = oversized.get_json()["data"]
+        self.assertIsNone(closeout["content"])
+        self.assertEqual(closeout["content_paging"]["page_limit_bytes"], 128_000)
+        closeout_pages = []
+        query = {**common, "path": CLOSEOUT_PATH}
+        while True:
+            response = self.client.get("/api/architect/v1/milestone-document", query_string=query)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            page = response.get_json()["data"]
+            closeout_pages.append(page["content"].encode("utf-8"))
+            if page["complete"]:
+                break
+            query = {
+                **common,
+                "path": CLOSEOUT_PATH,
+                "start_byte": str(page["next_offset"]),
+                "source_fingerprint": page["source_fingerprint"],
+            }
+        self.assertEqual(b"".join(closeout_pages), b"c" * 128_001)
+
+    def test_selected_milestone_paging_rejects_stale_unapproved_unsafe_and_invalid_sources(self) -> None:
+        evidence_path = f"docs/milestones/{MILESTONE_ID}_approved_manifest.tsv"
+        prompt = self.first / PROMPT_PATH
+        prompt.write_text(f"# Prompt\n{evidence_path}\n", encoding="utf-8")
+        source = self.first / evidence_path
+        source.write_bytes(b"a" * 128_001)
+        args = {
+            "expected_repository_key": "first",
+            "expected_generation": "0",
+            "expected_milestone_id": MILESTONE_ID,
+            "path": evidence_path,
+        }
+        first_page = self.client.get("/api/architect/v1/milestone-document", query_string=args)
+        self.assertEqual(first_page.status_code, 200)
+        page = first_page.get_json()["data"]
+
+        source.write_bytes(b"b" * 128_001)
+        changed = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={
+                **args,
+                "start_byte": str(page["next_offset"]),
+                "source_fingerprint": page["source_fingerprint"],
+            },
+        )
+        self.assertEqual(changed.status_code, 409)
+        self.assertEqual(changed.get_json()["error"]["code"], "milestone_document_changed")
+
+        source.write_bytes(b"a" * 128_001)
+        same_content_page = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string=args,
+        )
+        self.assertEqual(same_content_page.status_code, 200)
+        same_content_fingerprint = same_content_page.get_json()["data"]["source_fingerprint"]
+        replacement = source.with_name(f"{source.name}.replacement")
+        replacement.write_bytes(b"a" * 128_001)
+        os.replace(replacement, source)
+        replaced = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={
+                **args,
+                "start_byte": str(same_content_page.get_json()["data"]["next_offset"]),
+                "source_fingerprint": same_content_fingerprint,
+            },
+        )
+        self.assertEqual(replaced.status_code, 409)
+        self.assertEqual(replaced.get_json()["error"]["code"], "milestone_document_changed")
+
+        unapproved_path = f"docs/milestones/{MILESTONE_ID}_unapproved.tsv"
+        (self.first / unapproved_path).write_bytes(b"not approved\n")
+        unapproved = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={**args, "path": unapproved_path},
+        )
+        self.assertEqual(unapproved.status_code, 403)
+        self.assertEqual(unapproved.get_json()["error"]["code"], "milestone_evidence_not_approved")
+
+        unsafe_path = f"docs/milestones/{MILESTONE_ID}_unsafe.tsv"
+        prompt.write_text(f"# Prompt\n{unsafe_path}\n", encoding="utf-8")
+        (self.first / unsafe_path).symlink_to(source)
+        unsafe = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={**args, "path": unsafe_path},
+        )
+        self.assertEqual(unsafe.status_code, 422)
+        self.assertEqual(unsafe.get_json()["error"]["code"], "unsafe_document_path")
+
+        private_path = f"docs/milestones/{MILESTONE_ID}_private.tsv"
+        prompt.write_text(f"# Prompt\n{private_path}\n", encoding="utf-8")
+        (self.first / private_path).write_text(
+            "-----BEGIN PRIVATE KEY-----\nnot-for-export\n",
+            encoding="utf-8",
+        )
+        private = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={**args, "path": private_path},
+        )
+        self.assertEqual(private.status_code, 422)
+        self.assertEqual(private.get_json()["error"]["code"], "unsafe_document_content")
+        self.assertNotIn("not-for-export", private.get_data(as_text=True))
+
+        traversal = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={**args, "path": "../outside.tsv"},
+        )
+        self.assertEqual(traversal.status_code, 400)
+        unsupported = self.client.get(
+            "/api/architect/v1/milestone-document",
+            query_string={**args, "path": f"docs/milestones/{MILESTONE_ID}_unsupported.json"},
+        )
+        self.assertEqual(unsupported.status_code, 415)
+        self.assertEqual(unsupported.get_json()["error"]["code"], "unsupported_document_type")
+
     def test_oversized_missing_malformed_and_review_missing_closeout_are_visible(self) -> None:
         prompt = self.first / PROMPT_PATH
         original_prompt = prompt.read_text(encoding="utf-8")

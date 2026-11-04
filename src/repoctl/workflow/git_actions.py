@@ -20,13 +20,16 @@ from .diff import GitReviewError, inspect_git_review
 from .git_state import WorkflowGitStateError, inspect_git_state
 from .git_history import GitHistoryError, inspect_branches
 
-MAX_STATUS_BYTES = 1024 * 1024
+MAX_STATUS_BYTES = 32 * 1024 * 1024
 MAX_INDEX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_ACTION_OUTPUT_BYTES = 64 * 1024
-MAX_COMMIT_DIFF_BYTES = 512 * 1024
-MAX_COMMIT_PATHS = 256
+MAX_COMMIT_DIFF_BYTES = 32 * 1024 * 1024
+MAX_COMMIT_PATHS = 5_000
 MAX_ACTION_PATHS = 256
 MAX_ACTION_PATH_BYTES = 32 * 1024
+MAX_STAGE_PATHS = 5_000
+MAX_STAGE_PATH_BYTES = 1024 * 1024
+MAX_REVIEW_PATHS = 5_000
 MAX_FILE_HASH_BYTES = 256 * 1024 * 1024
 ACTION_TTL_SECONDS = 300
 MAX_PREPARED_ACTIONS = 64
@@ -129,7 +132,11 @@ def _run_mutation(
 
 def _state(repo_root: Path) -> dict[str, Any]:
     try:
-        result = inspect_git_state(str(repo_root), max_status_output_bytes=MAX_STATUS_BYTES)
+        result = inspect_git_state(
+            str(repo_root),
+            max_status_output_bytes=MAX_STATUS_BYTES,
+            detect_renames=False,
+        )
     except (ScanError, WorkflowGitStateError) as exc:
         raise GitActionError("git_state_unavailable", str(exc), 503) from exc
     if result["git_operation_in_progress"]:
@@ -139,6 +146,11 @@ def _state(repo_root: Path) -> dict[str, Any]:
         raise GitActionError("conflicts_present", "Unresolved conflicts are present; local actions are disabled.")
     if result["branch"]["state"] != "attached":
         raise GitActionError("detached_head", "Local actions are unavailable while HEAD is detached.")
+    if len(result["working_tree"]["entries"]) > MAX_REVIEW_PATHS:
+        raise GitActionError(
+            "git_inventory_too_large",
+            f"Git Review supports at most {MAX_REVIEW_PATHS} changed paths per snapshot.",
+        )
     return result
 
 
@@ -238,6 +250,8 @@ def _capture_path(
     *,
     state: dict[str, Any] | None = None,
     index_state: str | None = None,
+    index_path_records: bytes,
+    head_path_records: bytes,
 ) -> dict[str, Any]:
     if state is None:
         state = _state(repo_root)
@@ -248,7 +262,6 @@ def _capture_path(
         raise GitActionError("unsupported_path_state", "This path state is not supported by local actions.")
     if entry.get("submodule") not in {None, "N..."}:
         raise GitActionError("unsupported_submodule", "Submodule changes are not supported by local actions.")
-    _assert_no_custom_filter(repo_root, path)
     return {
         "repository_id": make_repository_id(repo_root),
         "repository_root": str(repo_root),
@@ -260,25 +273,99 @@ def _capture_path(
             "path": entry["path"],
         },
         "index_state": index_state or _digest(_index_records(repo_root)),
-        "index_path_records": _digest(_index_records(repo_root, path)),
+        "index_path_records": _digest(index_path_records),
         "worktree": _file_identity(repo_root, path),
-        "head_path_records": _digest(_head_entry(repo_root, path)),
+        "head_path_records": _digest(head_path_records),
         "path": path,
     }
 
 
-def _capture_paths(repo_root: Path, paths: list[str]) -> dict[str, Any]:
+def _records_by_path(output: bytes) -> dict[str, bytes]:
+    records: dict[str, bytearray] = {}
+    for record in output.split(b"\x00"):
+        if not record:
+            continue
+        _metadata, separator, raw_path = record.partition(b"\t")
+        if not separator:
+            raise GitActionError("git_evidence_invalid", "Git returned malformed path snapshot evidence.", 503)
+        records.setdefault(os.fsdecode(raw_path), bytearray()).extend(record + b"\x00")
+    return {path: bytes(value) for path, value in records.items()}
+
+
+def _filter_values(output: bytes, paths: list[str]) -> dict[str, bytes]:
+    fields = output.split(b"\x00")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) != len(paths) * 3:
+        raise GitActionError("filter_inspection_failed", "Git returned invalid clean-filter evidence.", 503)
+    values = {}
+    for index in range(0, len(fields), 3):
+        path, attribute, value = fields[index : index + 3]
+        decoded_path = os.fsdecode(path)
+        if decoded_path not in paths or attribute != b"filter" or decoded_path in values:
+            raise GitActionError("filter_inspection_failed", "Git returned invalid clean-filter evidence.", 503)
+        if value not in {b"unspecified", b"unset"}:
+            raise GitActionError(
+                "unsupported_clean_filter",
+                f"A configured clean filter may alter staged content for {decoded_path}; this path is unsupported.",
+            )
+        values[decoded_path] = value
+    if set(values) != set(paths):
+        raise GitActionError("filter_inspection_failed", "Git omitted clean-filter evidence for a selected path.", 503)
+    return values
+
+
+def _selected_path_evidence(repo_root: Path, paths: list[str]) -> dict[str, bytes]:
+    head_records: dict[str, bytes] = {}
+    for batch in _stage_batches(paths):
+        pathspecs = [f":(literal){path}" for path in batch]
+        head_output, _stderr, code = _run_read(
+            repo_root,
+            ["ls-tree", "-z", "HEAD", "--", *pathspecs],
+            allow_nonzero=True,
+        )
+        if code:
+            raise GitActionError("head_path_unavailable", "Git could not inspect selected paths at HEAD.")
+        head_records.update(_records_by_path(head_output))
+
+        filter_output, _stderr, code = _run_read(
+            repo_root,
+            ["check-attr", "-z", "filter", "--", *batch],
+        )
+        if code:
+            raise GitActionError("filter_inspection_failed", "Git could not inspect clean filters for selected paths.", 503)
+        _filter_values(filter_output, batch)
+    return head_records
+
+
+def _capture_paths(
+    repo_root: Path,
+    paths: list[str],
+    *,
+    max_paths: int = MAX_ACTION_PATHS,
+    max_path_bytes: int = MAX_ACTION_PATH_BYTES,
+) -> dict[str, Any]:
     if not paths:
         raise GitActionError("path_required", "Select at least one changed path for this action.", 400)
-    if len(paths) > MAX_ACTION_PATHS or sum(len(os.fsencode(path)) for path in paths) > MAX_ACTION_PATH_BYTES:
+    if len(paths) > max_paths or sum(len(os.fsencode(path)) for path in paths) > max_path_bytes:
         raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
     if len(set(paths)) != len(paths):
         raise GitActionError("duplicate_path", "The selected path set contains duplicate paths.", 400)
     ordered_paths = sorted(paths, key=os.fsencode)
     state = _state(repo_root)
-    index_state = _digest(_index_records(repo_root))
+    index_output = _index_records(repo_root)
+    index_records = _records_by_path(index_output)
+    head_records = _selected_path_evidence(repo_root, ordered_paths)
+    index_state = _digest(index_output)
     captured = [
-        _capture_path(repo_root, path, state=state, index_state=index_state)
+        _capture_path(
+            repo_root,
+            path,
+            state=state,
+            index_state=index_state,
+            index_path_records=index_records.get(path, b""),
+            head_path_records=head_records.get(path, b""),
+        )
         for path in ordered_paths
     ]
     baseline = captured[0]
@@ -294,6 +381,28 @@ def _capture_paths(repo_root: Path, paths: list[str]) -> dict[str, Any]:
         "index_state": baseline["index_state"],
         "paths": captured,
     }
+
+
+def _stage_batches(paths: list[str]) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_bytes = 0
+    for path in paths:
+        path_bytes = len(os.fsencode(path))
+        if path_bytes > MAX_ACTION_PATH_BYTES:
+            raise GitActionError("path_set_too_large", "A selected path exceeds the safe action byte limit.")
+        if current and (
+            len(current) >= MAX_ACTION_PATHS
+            or current_bytes + path_bytes > MAX_ACTION_PATH_BYTES
+        ):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(path)
+        current_bytes += path_bytes
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _capture_commit(repo_root: Path) -> dict[str, Any]:
@@ -1247,6 +1356,9 @@ class PreparedGitActions:
             "staged_paths": snapshot["staged_paths"],
             "remaining_paths": snapshot["remaining_paths"],
             "diff": snapshot["patch"],
+            "diff_bytes": len(snapshot["patch"].encode("utf-8")),
+            "diff_digest": snapshot["patch_digest"],
+            "diff_limit_bytes": MAX_COMMIT_DIFF_BYTES,
             "head": snapshot["head"],
             "branch": snapshot["branch"],
         }
@@ -1453,13 +1565,18 @@ class PreparedGitActions:
                 "staged_paths": state["staged_paths"],
                 "remaining_paths": state["remaining_paths"],
                 "diff": state["patch"],
+                "diff_bytes": len(state["patch"].encode("utf-8")),
+                "diff_digest": state["patch_digest"],
+                "diff_limit_bytes": MAX_COMMIT_DIFF_BYTES,
                 "warning": "Only the explicitly staged content shown here will be committed. Unstaged and untracked paths remain outside the commit.",
             }
         else:
             submitted_tokens = path_tokens if path_tokens is not None else ([path_token] if path_token else [])
             if not submitted_tokens:
                 raise GitActionError("path_required", "Select at least one changed path for this action.", 400)
-            if len(submitted_tokens) > MAX_ACTION_PATHS:
+            path_limit = MAX_STAGE_PATHS if action == "stage" else MAX_ACTION_PATHS
+            path_byte_limit = MAX_STAGE_PATH_BYTES if action == "stage" else MAX_ACTION_PATH_BYTES
+            if len(submitted_tokens) > path_limit:
                 raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
             if len(set(submitted_tokens)) != len(submitted_tokens):
                 raise GitActionError("duplicate_path", "The selected path set contains duplicate paths.", 400)
@@ -1469,32 +1586,64 @@ class PreparedGitActions:
                 paths = sorted((paths_by_token[token] for token in submitted_tokens), key=os.fsencode)
             except KeyError as exc:
                 raise GitActionError("path_not_found", "A selected changed path is no longer available.", 404) from exc
-            if sum(len(os.fsencode(path)) for path in paths) > MAX_ACTION_PATH_BYTES:
+            if sum(len(os.fsencode(path)) for path in paths) > path_byte_limit:
                 raise GitActionError("path_set_too_large", "The selected path set exceeds the safe action limit.")
-            state = _capture_paths(repo_root, paths)
-            options_by_token = self.options_for_tokens(
+            state = _capture_paths(
+                repo_root,
+                paths,
+                max_paths=path_limit,
+                max_path_bytes=path_byte_limit,
+            )
+            path_state = {item["path"]: item for item in state["paths"]}
+            large_stage = action == "stage" and len(paths) > MAX_ACTION_PATHS
+            options_by_token = {} if large_stage else self.options_for_tokens(
                 str(repo_root),
                 [_path_token(path) for path in paths],
             )
             path_previews = []
             for path in paths:
-                options = options_by_token[_path_token(path)]
-                if action not in options["actions"]:
-                    reason = options.get("blocked_reason") or next(
-                        (item["reason"] for item in options.get("unavailable_actions", []) if item["action"] == action),
-                        "At least one selected path does not support this action.",
-                    )
-                    raise GitActionError("action_unavailable", f"{path}: {reason}")
-                preview_data = _path_preview(repo_root, action, path)
+                if large_stage:
+                    captured_path = path_state[path]
+                    status = captured_path["status"]
+                    if status["kind"] != "untracked" and (
+                        len(status["xy"] or "") < 2 or status["xy"][1] == "."
+                    ):
+                        raise GitActionError(
+                            "action_unavailable",
+                            f"{path}: this path has no unstaged content to stage.",
+                        )
+                    preview_data = {
+                        "summary": (
+                            f"Explicitly selected for staging; current state is "
+                            f"{status['kind']} ({status['xy'] or '??'})."
+                        ),
+                        "layers": ["worktree"],
+                    }
+                    details = None
+                else:
+                    options = options_by_token[_path_token(path)]
+                    if action not in options["actions"]:
+                        reason = options.get("blocked_reason") or next(
+                            (item["reason"] for item in options.get("unavailable_actions", []) if item["action"] == action),
+                            "At least one selected path does not support this action.",
+                        )
+                        raise GitActionError("action_unavailable", f"{path}: {reason}")
+                    preview_data = _path_preview(repo_root, action, path)
+                    details = preview_data
                 path_previews.append(
                     {
                         "path": path,
                         "summary": preview_data["summary"],
                         "layers": preview_data["layers"],
-                        "details": preview_data,
+                        "details": details,
                     }
                 )
-            if _capture_paths(repo_root, paths) != state:
+            if _capture_paths(
+                repo_root,
+                paths,
+                max_paths=path_limit,
+                max_path_bytes=path_byte_limit,
+            ) != state:
                 raise GitActionError(
                     "stale_prepared_action",
                     "Repository state changed while preparing the selected path set; review current evidence again.",
@@ -1519,6 +1668,13 @@ class PreparedGitActions:
                 "paths": path_previews,
                 "warning": warning,
             }
+            stage_batches = _stage_batches(paths) if action == "stage" else []
+            if stage_batches and len(stage_batches) > 1:
+                preview["batch_count"] = len(stage_batches)
+                preview["warning"] = (
+                    f"Staging uses {preview['batch_count']} bounded Git commands and is not atomic. "
+                    "If a command fails, earlier batches remain staged; inspect Git Review before retrying."
+                )
             if len(path_previews) == 1:
                 preview.update(path_previews[0])
         now = time.monotonic()
@@ -1575,6 +1731,8 @@ class PreparedGitActions:
             current = _capture_commit(repo_root) if action == "commit" else _capture_paths(
                 repo_root,
                 [item["path"] for item in prepared.state["paths"]],
+                max_paths=MAX_STAGE_PATHS if action == "stage" else MAX_ACTION_PATHS,
+                max_path_bytes=MAX_STAGE_PATH_BYTES if action == "stage" else MAX_ACTION_PATH_BYTES,
             )
             if current != prepared.state:
                 raise GitActionError("stale_prepared_action", "Prepared action is stale. Repository state changed; review current evidence again.")
@@ -1797,22 +1955,48 @@ class PreparedGitActions:
         raise GitActionError("invalid_action", "Unsupported branch or remote action.", 400)
 
     def _execute_paths(self, repo_root: Path, prepared: PreparedAction) -> None:
-        pathspecs = [f":(literal){item['path']}" for item in prepared.state["paths"]]
-        if prepared.action == "stage":
-            args = ["add", "--", *pathspecs]
-        elif prepared.action == "unstage":
-            args = ["restore", "--staged", "--", *pathspecs]
-        elif prepared.action == "restore-unstaged":
-            args = ["restore", "--worktree", "--", *pathspecs]
-        elif prepared.action == "restore-head":
-            args = ["restore", "--source=HEAD", "--staged", "--worktree", "--", *pathspecs]
-        else:
+        if prepared.action not in {"stage", "unstage", "restore-unstaged", "restore-head"}:
             raise GitActionError("invalid_action", "Unsupported local Git action.", 400)
-        self._check_index_lock(repo_root)
-        returncode, _stdout, stderr = _run_mutation(repo_root, args)
-        if returncode != 0:
-            message = stderr.decode("utf-8", errors="replace").strip()
-            raise GitActionError("git_action_execution_failed", f"Git action failed: {message or 'no diagnostic supplied'}.")
+        paths = [item["path"] for item in prepared.state["paths"]]
+        batches = _stage_batches(paths) if prepared.action == "stage" else [paths]
+        for batch_index, batch in enumerate(batches, start=1):
+            pathspecs = [f":(literal){path}" for path in batch]
+            if prepared.action == "stage":
+                args = ["add", "--", *pathspecs]
+            elif prepared.action == "unstage":
+                args = ["restore", "--staged", "--", *pathspecs]
+            elif prepared.action == "restore-unstaged":
+                args = ["restore", "--worktree", "--", *pathspecs]
+            else:
+                args = ["restore", "--source=HEAD", "--staged", "--worktree", "--", *pathspecs]
+            self._check_index_lock(repo_root)
+            try:
+                returncode, _stdout, stderr = _run_mutation(repo_root, args)
+            except GitActionError as exc:
+                if prepared.action == "stage" and len(batches) > 1:
+                    raise GitActionError(
+                        "partial_batch_failure",
+                        f"Staging stopped at batch {batch_index} of {len(batches)} after "
+                        f"{batch_index - 1} completed batches. Earlier batches remain staged; "
+                        "the failing batch may also have partial effects. Inspect Git Review before retrying.",
+                        503,
+                    ) from exc
+                raise
+            if returncode != 0:
+                message = stderr.decode("utf-8", errors="replace").strip()
+                if prepared.action == "stage" and len(batches) > 1:
+                    raise GitActionError(
+                        "partial_batch_failure",
+                        f"Staging stopped at batch {batch_index} of {len(batches)} after "
+                        f"{batch_index - 1} completed batches. Earlier batches remain staged; "
+                        "the failing batch may also have partial effects. Git reported: "
+                        f"{message or 'no diagnostic supplied'}. Inspect Git Review before retrying.",
+                        503,
+                    )
+                raise GitActionError(
+                    "git_action_execution_failed",
+                    f"Git action failed: {message or 'no diagnostic supplied'}.",
+                )
 
     def _execute_commit(self, repo_root: Path, prepared: PreparedAction) -> None:
         self._check_index_lock(repo_root)

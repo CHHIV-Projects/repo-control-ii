@@ -92,6 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    coder_document_parser = subparsers.add_parser(
+        "coder-read-milestone-document",
+        help="Read one bounded page from an active selected-milestone document or approved evidence file",
+    )
+    coder_document_parser.add_argument("--path", required=True, help="Selected milestone-relative document path")
+    coder_document_parser.add_argument("--expected-milestone-id", required=True)
+    coder_document_parser.add_argument("--start-byte", type=int, default=0)
+    coder_document_parser.add_argument("--source-fingerprint")
+    coder_document_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_document_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_document_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
+
     bootstrap_preview_parser = subparsers.add_parser(
         "coder-bootstrap-preview",
         help="Render read-only per-repository Copilot and Codex hook registration previews",
@@ -757,6 +771,31 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(context_data, ensure_ascii=False, indent=2))
         else:
             print(format_coder_context_text(context_data))
+        return 0
+
+    if args.command == "coder-read-milestone-document":
+        from .workflow.coder_interface import (
+            CoderInterfaceError,
+            read_coder_milestone_document_page,
+        )
+
+        try:
+            page = read_coder_milestone_document_page(
+                args.path,
+                expected_milestone_id=args.expected_milestone_id,
+                start_byte=args.start_byte,
+                source_fingerprint=args.source_fingerprint,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder document read failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder document read failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(page, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "coder-status":

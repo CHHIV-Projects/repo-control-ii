@@ -332,19 +332,17 @@ class GitDiffTests(unittest.TestCase):
             selected = inspect_git_review(str(repo), selected_file=paths[strange_name]["token"])["selected"]
             self.assertEqual(selected["preview"]["text"], "content\n")
 
-    def test_staged_deletion_and_rename_are_visible(self) -> None:
+    def test_staged_deletion_and_rename_are_visible_as_separate_paths(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = _init_repo(Path(td))
             _git(repo, "mv", "tracked.txt", "renamed.txt")
             rename_review = inspect_git_review(str(repo))
-            renamed = next(item for item in rename_review["files"] if item["path"] == "renamed.txt")
-            self.assertEqual(renamed["kind"], "rename_or_copy")
-            self.assertEqual(renamed["original_path"], "tracked.txt")
-            renamed_selected = inspect_git_review(str(repo), selected_file=renamed["token"])["selected"]
-            self.assertEqual(
-                [preview["key"] for preview in renamed_selected["action_previews"]],
-                ["leave-unchanged"],
-            )
+            paths = {item["path"]: item for item in rename_review["files"]}
+            self.assertEqual(set(paths), {"tracked.txt", "renamed.txt"})
+            self.assertTrue(all(item["kind"] == "ordinary" for item in paths.values()))
+            self.assertEqual(paths["tracked.txt"]["xy"], "D.")
+            self.assertEqual(paths["renamed.txt"]["xy"], "A.")
+            self.assertIsNone(paths["renamed.txt"]["original_path"])
 
             _git(repo, "reset", "--hard")
             _git(repo, "rm", "tracked.txt")

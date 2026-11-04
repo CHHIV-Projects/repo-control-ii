@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ from repoctl.workflow.coder_interface import (
     get_authorization_status,
     get_coder_context,
     get_coder_status,
+    read_coder_milestone_document_page,
     resolve_repository_entry,
     submit_coder_bug,
     submit_coder_closeout,
@@ -169,6 +171,71 @@ class TestCoderInterface(unittest.TestCase):
             context["standing_references"]["canonical_parking_lot"],
             "docs/context/canonical_parking_lot.md",
         )
+
+    def test_coder_document_paging_reassembles_prompt_approved_tsv_and_cli_exposes_pages(self):
+        save_milestone_selection(self.repo, self.state_root, "M003.001")
+        document_path = "docs/milestones/M003.001_test_manifest.tsv"
+        prompt = self.repo / self.candidate["prompt_path"]
+        prompt.write_text(
+            f"# Test Milestone Prompt\nApproved evidence: {document_path}\n",
+            encoding="utf-8",
+        )
+        prefix = b"x" * 127_999
+        middle = "😀\tvalue\n".encode("utf-8")
+        raw = prefix + middle + b"z" * (415_959 - len(prefix) - len(middle))
+        (self.repo / document_path).write_bytes(raw)
+
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            self.assertEqual(
+                main(
+                    [
+                        "coder-read-milestone-document",
+                        "--path",
+                        document_path,
+                        "--expected-milestone-id",
+                        "M003.001",
+                        "--repository",
+                        str(self.repo),
+                        "--state-root",
+                        str(self.state_root),
+                    ]
+                ),
+                0,
+            )
+        first_page = json.loads(output.getvalue())
+        self.assertEqual(first_page["bytes_returned"], 127_999)
+        self.assertEqual(first_page["next_offset"], 127_999)
+        self.assertFalse(first_page["complete"])
+        self.assertEqual(first_page["sha256"], hashlib.sha256(raw).hexdigest())
+        status = get_coder_status(self.repo, state_root=self.state_root)
+        self.assertEqual(
+            status["milestone_document_paging"]["command"],
+            "repoctl coder-read-milestone-document",
+        )
+        self.assertIn("Document Paging:", format_coder_status_text(status))
+
+        page = first_page
+        collected = [first_page["content"].encode("utf-8")]
+        while not page["complete"]:
+            page = read_coder_milestone_document_page(
+                document_path,
+                expected_milestone_id="M003.001",
+                start_byte=page["next_offset"],
+                source_fingerprint=page["source_fingerprint"],
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
+            collected.append(page["content"].encode("utf-8"))
+        self.assertEqual(b"".join(collected), raw)
+        self.assertEqual(page["file_size_bytes"], 415_959)
+        with self.assertRaisesRegex(CoderInterfaceError, "milestone_evidence_not_approved"):
+            read_coder_milestone_document_page(
+                "docs/milestones/M003.001_unapproved.tsv",
+                expected_milestone_id="M003.001",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
 
     def test_registered_repo_control_and_vocab_keys_resolve_distinct_worktrees(self):
         vocab = _init_test_repo(self.temp_path, "vocab-app")

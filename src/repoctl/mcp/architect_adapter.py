@@ -102,7 +102,10 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
     },
     {
         "name": "repo_closeout",
-        "description": "Get the milestone closeout report content or status for review and acceptance.",
+        "description": (
+            "Get the milestone closeout report content or status for review and acceptance. "
+            "If content is paged, continue with repo_read_milestone_document using the returned path."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -187,6 +190,46 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                 "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
             },
             "required": ["path", "expected_repository_key", "expected_generation"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "repo_read_milestone_document",
+        "description": (
+            "Read a bounded UTF-8-safe page from one prompt-approved document or evidence artifact "
+            "belonging to the currently selected milestone. Continue with next_offset and the returned "
+            "source_fingerprint; changed sources require restarting at byte zero."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Path of the selected milestone document or prompt-approved evidence file.",
+                },
+                "start_byte": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5_000_000,
+                    "description": "Exact byte offset returned by the preceding page, or zero for the first page.",
+                },
+                "source_fingerprint": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "Fingerprint returned by the first page; required for continuation.",
+                },
+                "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
+                "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
+                "expected_milestone_id": PRECONDITION_PROPERTIES["expected_milestone_id"],
+            },
+            "required": [
+                "path",
+                "expected_repository_key",
+                "expected_generation",
+                "expected_milestone_id",
+            ],
             "additionalProperties": False,
         },
     },
@@ -450,6 +493,32 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
             "expected_repository_key": query_params["expected_repository_key"],
             "expected_generation": query_params["expected_generation"],
         }
+    elif tool_name == "repo_read_milestone_document":
+        for key in ("path", "expected_repository_key", "expected_generation", "expected_milestone_id"):
+            if key not in arguments:
+                raise AdapterValidationError(f"Missing required argument {key!r} for repo_read_milestone_document")
+        path = arguments["path"]
+        if not isinstance(path, str) or not 1 <= len(path) <= 512:
+            raise AdapterValidationError("path must be a non-empty milestone document path <= 512 characters")
+        page_params = {
+            "path": path,
+            "expected_repository_key": query_params["expected_repository_key"],
+            "expected_generation": query_params["expected_generation"],
+            "expected_milestone_id": query_params["expected_milestone_id"],
+        }
+        if "start_byte" in arguments:
+            start_byte = arguments["start_byte"]
+            if not isinstance(start_byte, int) or isinstance(start_byte, bool) or not 0 <= start_byte <= 5_000_000:
+                raise AdapterValidationError("start_byte must be an integer between 0 and 5000000")
+            page_params["start_byte"] = str(start_byte)
+        if "source_fingerprint" in arguments:
+            fingerprint = arguments["source_fingerprint"]
+            if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                raise AdapterValidationError("source_fingerprint must be a 64-character lowercase SHA-256 value")
+            page_params["source_fingerprint"] = fingerprint
+        if "start_byte" in arguments and arguments["start_byte"] > 0 and "source_fingerprint" not in arguments:
+            raise AdapterValidationError("source_fingerprint is required when continuing a document page")
+        return "/api/architect/v1/milestone-document", page_params
     elif tool_name == "repo_history_search":
         for key in ("expected_repository_key", "expected_generation"):
             if key not in arguments:

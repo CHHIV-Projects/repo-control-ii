@@ -38,6 +38,7 @@ CONTRACT_VERSION = "1"
 EVENT_LIMIT = 30
 MAX_REPOSITORY_DOCUMENT_BYTES = MAX_SOURCE_BYTES
 MAX_REPOSITORY_DOCUMENT_FILE_BYTES = 5_000_000
+MAX_MILESTONE_DOCUMENT_PAGE_BYTES = MAX_SOURCE_BYTES
 MAX_HISTORY_CANDIDATES = 2_000
 MAX_HISTORY_SEARCH_FILES = 300
 MAX_HISTORY_SEARCH_BYTES = 16_000_000
@@ -57,6 +58,7 @@ _ARCHIVE_MILESTONE_ID = re.compile(
 )
 _HISTORY_TOKEN = re.compile(r"[\w-]+", re.UNICODE)
 _DOCUMENT_EXTENSIONS = frozenset({".md", ".txt", ".rst"})
+_MILESTONE_DOCUMENT_EXTENSIONS = _DOCUMENT_EXTENSIONS | {".tsv"}
 _SENSITIVE_PATH_COMPONENTS = frozenset(
     {
         ".env",
@@ -343,7 +345,7 @@ def _read_content(repository: RepositoryEntry, relative_path: str, source_type: 
     }
 
 
-def _repository_document_path(value: str | None, *, allow_historical: bool = False) -> str:
+def _document_path_parts(value: str | None) -> tuple[PurePosixPath, list[str]]:
     if (
         not isinstance(value, str)
         or not value
@@ -368,13 +370,18 @@ def _repository_document_path(value: str | None, *, allow_historical: bool = Fal
             "The requested path is outside the documentation allowlist.",
             403,
         )
+    return path, parts
+
+
+def _repository_document_path(value: str | None, *, allow_historical: bool = False) -> str:
+    path, parts = _document_path_parts(value)
+    lowered_parts = {part.lower() for part in parts}
     if not allow_historical and lowered_parts & _HISTORICAL_PATH_COMPONENTS:
         raise ArchitectContractError(
             "historical_document_not_supported",
             "Historical artifact discovery and retrieval are reserved for the separate historical capability.",
             403,
         )
-
     allowed_root = (
         parts[0] == "docs"
         or parts[0] in {".github", ".repo-control"}
@@ -396,15 +403,41 @@ def _repository_document_path(value: str | None, *, allow_historical: bool = Fal
     return value
 
 
+def _selected_milestone_document_path(value: str | None, prompt_path: str) -> str:
+    path, parts = _document_path_parts(value)
+    prompt = PurePosixPath(prompt_path)
+    milestone_id = prompt.name.split("_", 1)[0]
+    if (
+        path.parent != prompt.parent
+        or not path.name.startswith(f"{milestone_id}_")
+    ):
+        raise ArchitectContractError(
+            "milestone_document_not_selected",
+            "Only documents belonging to the selected milestone are available through this reader.",
+            403,
+        )
+    if Path(path.name).suffix.lower() not in _MILESTONE_DOCUMENT_EXTENSIONS:
+        raise ArchitectContractError(
+            "unsupported_document_type",
+            "Only Markdown, plain-text, reStructuredText, and TSV milestone artifacts are supported.",
+            415,
+        )
+    return PurePosixPath(*parts).as_posix()
+
+
 def _read_repository_document(
     repository: RepositoryEntry,
     relative_path: str,
     *,
     allow_historical: bool = False,
+    selected_milestone_prompt_path: str | None = None,
     max_bytes: int = MAX_REPOSITORY_DOCUMENT_BYTES,
     expected_snapshot: tuple[int, int, int, int, int] | None = None,
 ) -> dict[str, Any]:
-    relative_path = _repository_document_path(relative_path, allow_historical=allow_historical)
+    if selected_milestone_prompt_path is None:
+        relative_path = _repository_document_path(relative_path, allow_historical=allow_historical)
+    else:
+        relative_path = _selected_milestone_document_path(relative_path, selected_milestone_prompt_path)
     parts = PurePosixPath(relative_path).parts
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
@@ -534,7 +567,7 @@ def _read_repository_document(
                 "The requested document contains private-key material.",
                 422,
             )
-        return {
+        result = {
             "source_type": "repository_document",
             "path": relative_path,
             "file_size_bytes": before.st_size,
@@ -546,6 +579,9 @@ def _read_repository_document(
             "observed_at": datetime.now(UTC).isoformat(),
             "content": content,
         }
+        if selected_milestone_prompt_path is not None:
+            result["source_snapshot"] = before_snapshot
+        return result
     except ArchitectContractError:
         raise
     except FileNotFoundError as exc:
@@ -572,6 +608,146 @@ def _read_repository_document(
         for directory_fd in reversed(opened_directories):
             os.close(directory_fd)
         os.close(root_fd)
+
+
+def read_selected_milestone_document_page(
+    repository: RepositoryEntry,
+    candidate: dict[str, Any],
+    document_path: str,
+    *,
+    start_byte: int = 0,
+    source_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(start_byte, int) or isinstance(start_byte, bool) or start_byte < 0:
+        raise ArchitectContractError("invalid_document_offset", "The page offset must be a non-negative integer.", 400)
+    if start_byte > MAX_REPOSITORY_DOCUMENT_FILE_BYTES:
+        raise ArchitectContractError(
+            "invalid_document_offset",
+            "The page offset is beyond the maximum selected-document size.",
+            416,
+        )
+    if source_fingerprint is not None and (
+        not isinstance(source_fingerprint, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", source_fingerprint)
+    ):
+        raise ArchitectContractError("invalid_document_fingerprint", "The source fingerprint is invalid.", 400)
+    if start_byte > 0 and source_fingerprint is None:
+        raise ArchitectContractError(
+            "document_fingerprint_required",
+            "A source fingerprint from the first page is required to continue.",
+            400,
+        )
+
+    prompt_path = candidate.get("prompt_path")
+    milestone_id = candidate.get("milestone_id")
+    if not isinstance(prompt_path, str) or not isinstance(milestone_id, str):
+        raise ArchitectContractError("invalid_milestone_selection", "The selected milestone identity is invalid.", 409)
+    document_path = _selected_milestone_document_path(document_path, prompt_path)
+    prompt_content = _read_content(repository, prompt_path, "milestone_prompt")["content"]
+    prompt = PurePosixPath(prompt_path)
+    workflow_path = prompt.with_name(
+        prompt.name.removesuffix("_prompt.md") + "_workflow.md"
+    ).as_posix()
+    expected_closeout_path = prompt.with_name(
+        prompt.name.removesuffix("_prompt.md") + "_closeout.md"
+    ).as_posix()
+    approved_paths = {
+        prompt_path,
+        workflow_path,
+        candidate.get("closeout_path") or expected_closeout_path,
+    }
+    if document_path not in approved_paths and (
+        document_path not in prompt_content
+        and PurePosixPath(document_path).name not in prompt_content
+    ):
+        raise ArchitectContractError(
+            "milestone_evidence_not_approved",
+            "The requested evidence path is not named by the active milestone prompt.",
+            403,
+        )
+
+    document = _read_repository_document(
+        repository,
+        document_path,
+        selected_milestone_prompt_path=prompt_path,
+        max_bytes=MAX_REPOSITORY_DOCUMENT_FILE_BYTES,
+    )
+    raw = document["content"].encode("utf-8")
+    if document["truncated"] or len(raw) != document["file_size_bytes"]:
+        raise ArchitectContractError(
+            "milestone_document_incomplete",
+            "The selected milestone document could not be read completely.",
+            503,
+        )
+    content_digest = hashlib.sha256(raw).hexdigest()
+    fingerprint_material = json.dumps(
+        {
+            "repository_id": repository.repository_id,
+            "milestone_id": milestone_id,
+            "path": document_path,
+            "size_bytes": len(raw),
+            "sha256": content_digest,
+            "snapshot": document["source_snapshot"],
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    fingerprint = hashlib.sha256(fingerprint_material).hexdigest()
+    if source_fingerprint is not None and not hmac.compare_digest(source_fingerprint, fingerprint):
+        raise ArchitectContractError(
+            "milestone_document_changed",
+            "The selected milestone document changed between pages; restart from byte offset zero.",
+            409,
+        )
+    if start_byte > len(raw):
+        raise ArchitectContractError(
+            "invalid_document_offset",
+            "The page offset is beyond the selected document length.",
+            416,
+        )
+    if start_byte < len(raw) and raw[start_byte] & 0xC0 == 0x80:
+        raise ArchitectContractError(
+            "invalid_document_offset",
+            "The page offset is not at a UTF-8 character boundary.",
+            400,
+        )
+
+    end_byte = min(start_byte + MAX_MILESTONE_DOCUMENT_PAGE_BYTES, len(raw))
+    while end_byte > start_byte and end_byte < len(raw) and raw[end_byte] & 0xC0 == 0x80:
+        end_byte -= 1
+    page_bytes = raw[start_byte:end_byte]
+    page_content = page_bytes.decode("utf-8")
+    line_start = raw.count(b"\n", 0, start_byte) + 1
+    line_end = (
+        raw.count(b"\n", 0, end_byte - 1) + 1
+        if end_byte > start_byte
+        else line_start
+    )
+    complete = end_byte == len(raw)
+    return {
+        "source_type": "selected_milestone_document",
+        "authority_classification": "selected_milestone_evidence",
+        "repository_key": repository.key,
+        "repository_id": repository.repository_id,
+        "milestone_id": milestone_id,
+        "path": document_path,
+        "file_size_bytes": len(raw),
+        "sha256": content_digest,
+        "source_fingerprint": fingerprint,
+        "start_byte": start_byte,
+        "end_byte": end_byte,
+        "bytes_returned": len(page_bytes),
+        "character_count": len(page_content),
+        "line_start": line_start,
+        "line_end": line_end,
+        "complete": complete,
+        "next_offset": None if complete else end_byte,
+        "page_limit_bytes": MAX_MILESTONE_DOCUMENT_PAGE_BYTES,
+        "working_tree_source": "current_working_tree",
+        "observed_at": document["observed_at"],
+        "content": page_content,
+    }
 
 
 def _historical_path_info(
@@ -1433,11 +1609,20 @@ def _selected_response(
             }
         closeout = _closeout_metadata(repository, candidate, workflow["phase"])
         if closeout["status"] == "present":
-            closeout["content"] = _read_content(
-                repository,
-                closeout["path"],
-                "milestone_closeout",
-            )
+            if closeout["size_bytes"] is not None and closeout["size_bytes"] > MAX_SOURCE_BYTES:
+                closeout["content"] = None
+                closeout["content_paging"] = {
+                    "endpoint": "/api/architect/v1/milestone-document",
+                    "start_byte": 0,
+                    "page_limit_bytes": MAX_MILESTONE_DOCUMENT_PAGE_BYTES,
+                    "required_source_fingerprint": "returned by the first page",
+                }
+            else:
+                closeout["content"] = _read_content(
+                    repository,
+                    closeout["path"],
+                    "milestone_closeout",
+                )
         return closeout
 
     if resource in {"milestone", "workflow", "evidence", "review"}:
@@ -1565,6 +1750,8 @@ def build_architect_response(
     expected_repository_key: str | None = None,
     expected_generation: int | None = None,
     expected_milestone_id: str | None = None,
+    document_start_byte: int = 0,
+    document_source_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     if resource in {"repository_document", "history_search", "history_document"}:
         if not expected_repository_key or expected_generation is None:
@@ -1573,6 +1760,16 @@ def build_architect_response(
                 "This repository-scoped read requires expected_repository_key and expected_generation.",
                 400,
             )
+    if resource == "milestone_document" and (
+        not expected_repository_key
+        or expected_generation is None
+        or not expected_milestone_id
+    ):
+        raise ArchitectContractError(
+            "invalid_precondition",
+            "Selected-milestone document reads require expected repository, generation, and milestone identity.",
+            400,
+        )
     if expected_repository_key is not None and expected_repository_key != repository.key:
         raise ArchitectContractError(
             "stale_repository_selection",
@@ -1629,6 +1826,20 @@ def build_architect_response(
         )
     elif resource == "history_document":
         envelope["data"] = _read_historical_document(repository, state_root, document_path)
+    elif resource == "milestone_document":
+        if candidate is None:
+            raise ArchitectContractError(
+                "no_selected_milestone",
+                "No milestone is selected for the active repository.",
+                409,
+            )
+        envelope["data"] = read_selected_milestone_document_page(
+            repository,
+            candidate,
+            document_path,
+            start_byte=document_start_byte,
+            source_fingerprint=document_source_fingerprint,
+        )
     elif resource == "status":
         data: dict[str, Any] = {
             "service": "repo-control",

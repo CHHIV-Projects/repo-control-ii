@@ -449,6 +449,29 @@ The Coder:
 - prepares one closeout and submits it for review via `repoctl coder-closeout`;
 - reports final read-only Git state.
 
+### Milestone Artifact Consolidation
+
+The normal durable milestone artifact set is the approved prompt, the
+workflow/lifecycle record where applicable, and the closeout. Additional
+working artifacts may be created while a milestone is active when they help
+implementation, measurement, or review.
+
+Before acceptance, the Coder must identify non-standard milestone files and
+consolidate their durable narrative evidence into the existing closeout.
+Verify that decisions, rationale, measurements, validation evidence,
+limitations, and deferred obligations remain retrievable and that no
+information was lost. Remove superseded working artifacts after that
+verification; do not create a replacement narrative report merely to preserve
+implementation notes.
+
+A separate artifact may remain only when it has an independent continuing
+purpose, such as executable or machine-readable benchmark/test evidence,
+runtime configuration, reproducibility inputs/outputs, canonical
+cross-milestone authority, or another artifact explicitly required by the
+milestone. A narrative document is not retained solely because it was useful
+during implementation. Record the consolidation, removed files, preserved
+evidence location, and resulting artifact set in the closeout.
+
 Standard live transport path (co-located Coder):
 
 ```text

@@ -798,6 +798,8 @@ def create_web_app(
             allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit", "cursor"})
         elif resource == "history_document":
             allowed_parameters.add("path")
+        elif resource == "milestone_document":
+            allowed_parameters.update({"path", "expected_milestone_id", "start_byte", "source_fingerprint"})
         else:
             allowed_parameters.add("expected_milestone_id")
         unknown_parameters = set(request.args) - allowed_parameters
@@ -813,7 +815,17 @@ def create_web_app(
             expected_milestone_id = architect_query_value("expected_milestone_id", maximum_length=32)
             document_path = (
                 architect_query_value("path", maximum_length=512)
-                if resource in {"repository_document", "history_document"}
+                if resource in {"repository_document", "history_document", "milestone_document"}
+                else None
+            )
+            document_start_text = (
+                architect_query_value("start_byte", maximum_length=8)
+                if resource == "milestone_document"
+                else None
+            )
+            document_source_fingerprint = (
+                architect_query_value("source_fingerprint", maximum_length=64)
+                if resource == "milestone_document"
                 else None
             )
             history_query = (
@@ -874,6 +886,23 @@ def create_web_app(
                     )
             else:
                 expected_generation = None
+            if document_start_text is None:
+                document_start_byte = 0
+            else:
+                try:
+                    document_start_byte = int(document_start_text)
+                except ValueError as exc:
+                    raise ArchitectContractError(
+                        "invalid_document_offset",
+                        "The page offset must be a non-negative integer.",
+                        400,
+                    ) from exc
+                if document_start_byte < 0:
+                    raise ArchitectContractError(
+                        "invalid_document_offset",
+                        "The page offset must be a non-negative integer.",
+                        400,
+                    )
 
             with repository_action_lock:
                 active_repository, active_generation = registry.snapshot()
@@ -903,6 +932,8 @@ def create_web_app(
                     expected_repository_key=expected_repository_key,
                     expected_generation=expected_generation,
                     expected_milestone_id=expected_milestone_id,
+                    document_start_byte=document_start_byte,
+                    document_source_fingerprint=document_source_fingerprint,
                 )
                 if resource == "status":
                     payload["data"]["runtime_capabilities"] = {
@@ -974,6 +1005,10 @@ def create_web_app(
     @app.get("/api/architect/v1/repository-document")
     def architect_repository_document():
         return architect_endpoint("repository_document")
+
+    @app.get("/api/architect/v1/milestone-document")
+    def architect_milestone_document():
+        return architect_endpoint("milestone_document")
 
     @app.get("/api/architect/v1/history/search")
     def architect_history_search():

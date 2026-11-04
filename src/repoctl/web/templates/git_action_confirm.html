@@ -20,15 +20,32 @@
   {% if preview.action == 'commit' %}
     <h3>Staged content that will be committed ({{ preview.staged_paths | length }} paths)</h3>
     <p><strong>Only these explicitly staged changes will be committed. No files will be staged automatically.</strong></p>
-    <ul>{% for item in preview.staged_paths %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+    <nav aria-label="Staged path inventory pages" class="commit-inventory-nav">
+      {% for start in range(0, preview.staged_paths | length, 100) %}
+        <a href="#prepared-staged-paths-{{ start }}">Paths {{ start + 1 }}–{{ [start + 100, preview.staged_paths | length] | min }}</a>
+      {% endfor %}
+    </nav>
+    {% for start in range(0, preview.staged_paths | length, 100) %}
+      <h4 id="prepared-staged-paths-{{ start }}">Staged paths {{ start + 1 }}–{{ [start + 100, preview.staged_paths | length] | min }}</h4>
+      <ul>{% for item in preview.staged_paths[start:start + 100] %}<li><span class="git-status-code">{{ item.xy }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+    {% endfor %}
     {% if preview.remaining_paths %}
       <h3>Separate changes that will remain outside the commit</h3>
-      <ul>{% for item in preview.remaining_paths %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+      <nav aria-label="Remaining path inventory pages" class="commit-inventory-nav">
+        {% for start in range(0, preview.remaining_paths | length, 100) %}
+          <a href="#prepared-remaining-paths-{{ start }}">Paths {{ start + 1 }}–{{ [start + 100, preview.remaining_paths | length] | min }}</a>
+        {% endfor %}
+      </nav>
+      {% for start in range(0, preview.remaining_paths | length, 100) %}
+        <h4 id="prepared-remaining-paths-{{ start }}">Remaining paths {{ start + 1 }}–{{ [start + 100, preview.remaining_paths | length] | min }}</h4>
+        <ul>{% for item in preview.remaining_paths[start:start + 100] %}<li><span class="git-status-code">{{ item.xy or '??' }}</span> <code>{{ item.path }}</code></li>{% endfor %}</ul>
+      {% endfor %}
     {% else %}
       <p class="muted">No other unstaged or untracked paths were reported at preparation time.</p>
     {% endif %}
-    <h3>Staged diff</h3>
-    <pre class="git-diff">{{ preview.diff }}</pre>
+    <details open><summary>Complete staged diff ({{ preview.diff_bytes }} bytes; SHA-256 {{ preview.diff_digest }})</summary>
+      <pre class="git-diff">{{ preview.diff }}</pre>
+    </details>
   {% elif preview.paths %}
     <h3>Selected paths ({{ preview.paths | length }})</h3>
     <ul class="selected-action-paths">

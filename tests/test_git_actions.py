@@ -206,7 +206,153 @@ class GitActionTests(unittest.TestCase):
             with self.assertRaisesRegex(GitActionError, "duplicate"):
                 actions.prepare(str(repo), "stage", path_tokens=[token, token])
             with self.assertRaisesRegex(GitActionError, "safe action limit"):
-                actions.prepare(str(repo), "stage", path_tokens=[token] * 257)
+                actions.prepare(str(repo), "unstage", path_tokens=[token] * 257)
+
+    def test_large_mixed_git_review_stages_and_commits_all_1103_paths_through_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = _repo(root)
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+            self.assertEqual(client.get("/git-review").status_code, 200)
+            csrf = _csrf(client)
+            archive = repo / "archive"
+            archive.mkdir()
+            for index in range(549):
+                (archive / f"old-{index:03}.txt").write_text(f"moved {index}\n", encoding="utf-8")
+            for index in range(3):
+                (archive / f"deleted-{index}.txt").write_text(f"deleted {index}\n", encoding="utf-8")
+            _git(repo, "add", "archive")
+            _git(repo, "commit", "-qm", "add relocation fixture")
+
+            docs = repo / "docs"
+            docs.mkdir()
+            for index in range(549):
+                (archive / f"old-{index:03}.txt").rename(docs / f"new-{index:03}.md")
+            for index in range(3):
+                (archive / f"deleted-{index}.txt").unlink()
+            for index in range(2):
+                (docs / f"added-{index}.md").write_text(f"new document {index}\n", encoding="utf-8")
+
+            review = inspect_git_review(str(repo))
+            self.assertEqual(len(review["files"]), 1_103)
+            self.assertFalse(any(item["kind"] == "rename_or_copy" for item in review["files"]))
+            tokens = [item["token"] for item in review["files"]]
+
+            prepared_stage = client.post(
+                "/git-review/action/prepare",
+                data={"csrf_token": csrf, "action": "stage", "path_token": tokens},
+            )
+            self.assertEqual(prepared_stage.status_code, 200)
+            stage_text = prepared_stage.get_data(as_text=True)
+            self.assertIn("Selected paths (1103)", stage_text)
+            self.assertIn("bounded Git commands", stage_text)
+            stage_token = re.search(rb'name="token" value="([A-Za-z0-9_-]+)"', prepared_stage.data)
+            self.assertIsNotNone(stage_token)
+            staged = client.post(
+                "/git-review/action/confirm",
+                data={
+                    "csrf_token": csrf,
+                    "action": "stage",
+                    "token": stage_token.group(1).decode("ascii"),
+                },
+            )
+            self.assertEqual(staged.status_code, 302)
+            self.assertEqual(
+                len(_git(repo, "diff", "--cached", "--name-only", "--no-renames", "-z").split(b"\x00")[:-1]),
+                1_103,
+            )
+            staged_status = _git(repo, "status", "--porcelain", "--no-renames").decode().splitlines()
+            self.assertEqual(len(staged_status), 1_103)
+            self.assertTrue(all(line[1] == " " and line[0] in {"A", "D", "M"} for line in staged_status))
+
+            prepared_commit = client.post(
+                "/git-review/action/prepare",
+                data={
+                    "csrf_token": csrf,
+                    "action": "commit",
+                    "commit_message": "commit reviewed relocation set",
+                },
+            )
+            self.assertEqual(prepared_commit.status_code, 200)
+            commit_text = prepared_commit.get_data(as_text=True)
+            self.assertIn("Staged content that will be committed (1103 paths)", commit_text)
+            self.assertIn("Complete staged diff (", commit_text)
+            commit_token = re.search(rb'name="token" value="([A-Za-z0-9_-]+)"', prepared_commit.data)
+            self.assertIsNotNone(commit_token)
+            committed = client.post(
+                "/git-review/action/confirm",
+                data={
+                    "csrf_token": csrf,
+                    "action": "commit",
+                    "token": commit_token.group(1).decode("ascii"),
+                },
+            )
+            self.assertEqual(committed.status_code, 302)
+            committed_paths = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "HEAD")
+            self.assertEqual(len(committed_paths.splitlines()), 1_103)
+            self.assertEqual(_status_lines(repo), set())
+
+    def test_large_stage_batch_failure_reports_partial_progress_without_touching_unselected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            paths = [f"selected-{index:03}.txt" for index in range(257)]
+            for path in paths:
+                (repo / path).write_text(f"{path}\n", encoding="utf-8")
+            (repo / "unselected.txt").write_text("leave unstaged\n", encoding="utf-8")
+            tokens = {item["path"]: item["token"] for item in inspect_git_review(str(repo))["files"]}
+            token, preview = actions.prepare(
+                str(repo),
+                "stage",
+                path_tokens=[tokens[path] for path in paths],
+            )
+            self.assertEqual(preview["batch_count"], 2)
+
+            from repoctl.workflow import git_actions as git_actions_module
+
+            original_mutation = git_actions_module._run_mutation
+            calls = 0
+
+            def fail_second_batch(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    return 1, b"", b"injected later-batch failure"
+                return original_mutation(*args, **kwargs)
+
+            with mock.patch("repoctl.workflow.git_actions._run_mutation", side_effect=fail_second_batch):
+                with self.assertRaisesRegex(GitActionError, "batch 2 of 2") as raised:
+                    actions.confirm(str(repo), "stage", token)
+            self.assertIn("Earlier batches remain staged", str(raised.exception))
+            self.assertEqual(calls, 2)
+            staged_paths = set(_git(repo, "diff", "--cached", "--name-only").decode().splitlines())
+            self.assertEqual(len(staged_paths), 256)
+            self.assertTrue(staged_paths.issubset(paths))
+            self.assertIn("?? unselected.txt", _status_lines(repo))
+
+    def test_five_thousand_path_stage_envelope_and_selection_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = _repo(Path(temporary))
+            actions = PreparedGitActions()
+            paths = [f"batch/{index:04}.txt" for index in range(5_000)]
+            for path in paths:
+                target = repo / path
+                target.parent.mkdir(exist_ok=True)
+                target.write_text("content\n", encoding="utf-8")
+            tokens = {item["path"]: item["token"] for item in inspect_git_review(str(repo))["files"]}
+            token, preview = actions.prepare(
+                str(repo),
+                "stage",
+                path_tokens=[tokens[path] for path in paths],
+            )
+            self.assertEqual(len(preview["paths"]), 5_000)
+            self.assertEqual(preview["batch_count"], 20)
+            result = actions.confirm(str(repo), "stage", token)
+            self.assertEqual(len(result["paths"]), 5_000)
+            self.assertEqual(len(_git(repo, "diff", "--cached", "--name-only", "-z").split(b"\x00")[:-1]), 5_000)
+            with self.assertRaisesRegex(GitActionError, "safe action limit"):
+                actions.prepare(str(repo), "stage", path_tokens=["invalid"] * 5_001)
 
     def test_one_stale_batch_member_blocks_every_command_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

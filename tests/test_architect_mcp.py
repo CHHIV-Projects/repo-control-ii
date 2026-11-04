@@ -39,6 +39,7 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "repo_documents",
         "repo_document",
         "repo_read_document",
+        "repo_read_milestone_document",
         "repo_history_search",
         "repo_history_document",
         "repo_review",
@@ -52,7 +53,7 @@ class TestArchitectMcpInventory(unittest.TestCase):
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}
         self.assertEqual(advertised_names, self.EXPECTED_TOOLS)
-        self.assertEqual(len(TOOL_INVENTORY), 18)
+        self.assertEqual(len(TOOL_INVENTORY), 19)
 
     def test_schemas_forbid_additional_properties(self):
         for tool in TOOL_INVENTORY:
@@ -146,6 +147,54 @@ class TestArchitectMcpValidation(unittest.TestCase):
                     "root": "/etc",
                 },
             )
+
+    def test_selected_milestone_document_pages_require_stable_identity(self):
+        endpoint, query = validate_tool_call(
+            "repo_read_milestone_document",
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+                "expected_milestone_id": "M003.004",
+                "start_byte": 128_000,
+                "source_fingerprint": "a" * 64,
+            },
+        )
+        self.assertEqual(endpoint, "/api/architect/v1/milestone-document")
+        self.assertEqual(
+            query,
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": "3",
+                "expected_milestone_id": "M003.004",
+                "start_byte": "128000",
+                "source_fingerprint": "a" * 64,
+            },
+        )
+        for arguments in (
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+            },
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+                "expected_milestone_id": "M003.004",
+                "start_byte": 1,
+            },
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+                "expected_milestone_id": "M003.004",
+                "source_fingerprint": "not-a-fingerprint",
+            },
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(AdapterValidationError):
+                validate_tool_call("repo_read_milestone_document", arguments)
 
     def test_history_tools_have_fixed_endpoints_and_bounded_validation(self):
         endpoint, query = validate_tool_call(
@@ -338,7 +387,7 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         resp = handle_rpc_request(req, "http://127.0.0.1:8765")
         self.assertEqual(resp["id"], 2)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 18)
+        self.assertEqual(len(tools), 19)
 
     def test_submission_tools_are_fixed_and_typed(self):
         path, payload = validate_submission_call(
@@ -440,6 +489,52 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
         self.assertEqual(audit_json["repository_key"], "repo-control-ii")
         self.assertEqual(audit_json["milestone_id"], "M003.006")
         self.assertNotIn("status", audit_json)  # Content must NOT be logged
+
+    @patch("repoctl.mcp.architect_adapter.execute_get")
+    def test_selected_milestone_document_tool_forwards_bounded_page_identity(self, mock_exec):
+        mock_exec.return_value = (
+            200,
+            {
+                "contract_version": "1",
+                "source_scope": {"milestone_id": "M003.004"},
+                "data": {
+                    "path": "docs/milestones/M003.004_manifest.tsv",
+                    "start_byte": 128_000,
+                    "next_offset": 256_000,
+                    "complete": False,
+                },
+            },
+        )
+        req = {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "repo_read_milestone_document",
+                "arguments": {
+                    "path": "docs/milestones/M003.004_manifest.tsv",
+                    "expected_repository_key": "repo-control-ii",
+                    "expected_generation": 3,
+                    "expected_milestone_id": "M003.004",
+                    "start_byte": 128_000,
+                    "source_fingerprint": "a" * 64,
+                },
+            },
+        }
+        response = handle_rpc_request(req, "http://127.0.0.1:8765")
+        self.assertFalse(response["result"]["isError"])
+        mock_exec.assert_called_once_with(
+            "http://127.0.0.1:8765",
+            "/api/architect/v1/milestone-document",
+            {
+                "path": "docs/milestones/M003.004_manifest.tsv",
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": "3",
+                "expected_milestone_id": "M003.004",
+                "start_byte": "128000",
+                "source_fingerprint": "a" * 64,
+            },
+        )
 
     @patch("repoctl.mcp.architect_adapter.execute_get")
     def test_tools_call_upstream_error(self, mock_exec):
