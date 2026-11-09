@@ -106,6 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    coder_dispatch_parser = subparsers.add_parser(
+        "coder-read-dispatch",
+        help="Read one approved Architect instruction for the active milestone by exact dispatch ID",
+    )
+    coder_dispatch_parser.add_argument("--dispatch-id", required=True)
+    coder_dispatch_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_dispatch_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_dispatch_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
+
     bootstrap_preview_parser = subparsers.add_parser(
         "coder-bootstrap-preview",
         help="Render read-only per-repository Copilot and Codex hook registration previews",
@@ -294,6 +305,17 @@ def build_parser() -> argparse.ArgumentParser:
     coder_bug_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_bug_parser.add_argument("--state-root", help="Explicit state root override")
     coder_bug_parser.add_argument(
+        "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
+    )
+
+    coder_bug_fixed_parser = subparsers.add_parser(
+        "coder-bug-fixed", help="Record a fix for a classified in-scope bug"
+    )
+    coder_bug_fixed_parser.add_argument("--bug-event-id", required=True)
+    coder_bug_fixed_parser.add_argument("summary", help="Fix and regression-test summary")
+    coder_bug_fixed_parser.add_argument("--repository", help="Path inside target Git repository")
+    coder_bug_fixed_parser.add_argument("--state-root", help="Explicit state root override")
+    coder_bug_fixed_parser.add_argument(
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
@@ -798,6 +820,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(page, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "coder-read-dispatch":
+        from .workflow.coder_interface import CoderInterfaceError, read_coder_dispatch_body
+
+        try:
+            dispatch = read_coder_dispatch_body(
+                args.dispatch_id,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder dispatch read failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(dispatch, ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "coder-status":
         from .workflow.coder_interface import (
             CoderInterfaceError,
@@ -1221,6 +1259,33 @@ def main(argv: list[str] | None = None) -> int:
 
         print("Bug recorded successfully")
         print(f"event_id:     {result['event_id']}")
+        print(f"milestone_id: {result['milestone_id']}")
+        print(f"lifecycle:    {result['phase']}")
+        print(f"summary:      {result['summary']}")
+        print(f"next_action:  {result['next_action']}")
+        return 0
+
+    if args.command == "coder-bug-fixed":
+        from .workflow.coder_interface import CoderInterfaceError, submit_coder_bug_fix
+
+        try:
+            result = submit_coder_bug_fix(
+                bug_event_id=args.bug_event_id,
+                summary=args.summary,
+                repository_path=args.repository,
+                state_root=args.state_root,
+                milestone_root=args.milestone_root,
+            )
+        except CoderInterfaceError as exc:
+            print(f"coder bug fix recording failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"coder bug fix recording failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("Bug fix recorded successfully")
+        print(f"event_id:     {result['event_id']}")
+        print(f"bug_event_id: {result['bug_event_id']}")
         print(f"milestone_id: {result['milestone_id']}")
         print(f"lifecycle:    {result['phase']}")
         print(f"summary:      {result['summary']}")

@@ -26,13 +26,13 @@
     <div class="history-layout spaced-top">
       <section class="card">
         <h3>Recent commit history</h3>
-        <p class="muted">Showing up to {{ history.limit }} commits from local repository history. No remote refresh is performed.</p>
-        {% if not history.complete %}<p class="warning">History output exceeded its limit; the list is incomplete.</p>{% endif %}
+        <p class="muted">Showing {{ history.commits | length }} commits per page from local repository history. No remote refresh is performed.</p>
+        {% if history.has_more %}<p class="muted">More commits are available in this snapshot.</p>{% elif not history.complete %}<p class="warning">History output exceeded its limit; the list is incomplete.</p>{% endif %}
         {% if history.commits %}
           <ul class="history-list">
             {% for commit in history.commits %}
               <li{% if selected_commit == commit.oid %} class="row-selected"{% endif %}>
-                <a href="{{ url_for('git_review_page', view='history', commit=commit.oid, file_history=selected_file_history) if selected_file_history else url_for('git_review_page', view='history', commit=commit.oid) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a>
+                <a href="{{ url_for('git_review_page', view='history', commit=commit.oid, file_history=selected_file_history, file_cursor=selected_file_cursor, cursor=selected_history_cursor) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a>
                 <div class="muted">{{ commit.author }} · {{ commit.commit_date }}</div>
                 {% if commit.merge %}<span class="git-status-code">Merge · {{ commit.parents | length }} parents</span>{% endif %}
                 {% if commit.decorations %}<div class="muted">{{ commit.decorations }}</div>{% endif %}
@@ -41,6 +41,9 @@
           </ul>
         {% else %}
           <p>No commits are available in this repository.</p>
+        {% endif %}
+        {% if history.has_more %}
+          <p><a href="{{ url_for('git_review_page', view='history', cursor=history.next_cursor, commit=selected_commit, file_history=selected_file_history, file_cursor=selected_file_cursor) }}">Next commit page</a></p>
         {% endif %}
       </section>
       <section class="card">
@@ -77,18 +80,21 @@
         {% elif file_history %}
           <h3>History for {{ file_history.path }}</h3>
           <p class="muted">Historical committed state; this is distinct from the current working-tree view.</p>
-          <p class="muted">Showing up to {{ file_history.limit }} commits. Rename following uses Git's path-based <code>--follow</code> behavior and may not identify complex rename/copy histories.</p>
-          {% if not file_history.complete %}<p class="warning">File history is incomplete; output exceeded its limit.</p>{% endif %}
+          <p class="muted">Showing {{ file_history.commits | length }} commits per page. Rename following uses Git's path-based <code>--follow</code> behavior and may not identify complex rename/copy histories.</p>
+          {% if file_history.has_more %}<p class="muted">More file history is available in this snapshot.</p>{% elif not file_history.complete %}<p class="warning">File history output exceeded its limit.</p>{% endif %}
           <ul class="history-list">
             {% for commit in file_history.commits %}
               <li>
-                <a href="{{ url_for('git_review_page', view='history', file_history=file_history.token, commit=commit.oid) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a>
+                <a href="{{ url_for('git_review_page', view='history', file_history=file_history.token, file_cursor=selected_file_cursor, commit=commit.oid) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a>
                 <div class="muted">{{ commit.author }} · {{ commit.commit_date }}</div>
               </li>
             {% else %}
               <li>No committed history was found for this path.</li>
             {% endfor %}
           </ul>
+          {% if file_history.has_more %}
+            <p><a href="{{ url_for('git_review_page', view='history', file_history=file_history.token, file_cursor=file_history.next_cursor) }}">Next file-history page</a></p>
+          {% endif %}
         {% else %}
           <h3>Select a commit</h3>
           <p class="muted">Choose a commit to inspect its metadata, changed files, and bounded first-parent diff.</p>
@@ -177,7 +183,7 @@
     </div>
     <div class="branch-layout spaced-top">
       <section class="card">
-        <h3>Local branches ({{ branches.branches | length }})</h3>
+        <h3>Local branches ({{ branches.total_count }})</h3>
         {% if not branches.main_available %}<p class="warning">Local main is unavailable; branch-vs-main relationships cannot be calculated.</p>{% endif %}
         <div class="table-scroll">
           <table class="branch-table">
@@ -185,7 +191,7 @@
             <tbody>
               {% for branch in branches.branches %}
                 <tr{% if selected_branch == branch.token %} class="row-selected"{% endif %}>
-                  <td><a href="{{ url_for('git_review_page', view='branches', branch=branch.token) }}">{{ branch.name }}</a>{% if branch.current %}<div><strong>Current branch</strong></div>{% endif %}</td>
+                  <td><a href="{{ url_for('git_review_page', view='branches', branch=branch.token, branch_cursor=selected_branch_cursor) }}">{{ branch.name }}</a>{% if branch.current %}<div><strong>Current branch</strong></div>{% endif %}</td>
                   <td><code>{{ branch.short_oid }}</code><div>{{ branch.subject }}</div><div class="muted">{{ branch.commit_date }}</div></td>
                   <td>
                     {% if branch.main_relation.state == 'reference' %}
@@ -213,6 +219,9 @@
             </tbody>
           </table>
         </div>
+        {% if branches.has_more %}
+          <p class="spaced-top"><a href="{{ url_for('git_review_page', view='branches', branch=selected_branch, branch_cursor=branches.next_cursor) }}">Next local branches</a></p>
+        {% endif %}
       </section>
       {% if branches.selected %}
         <section class="card">
@@ -260,11 +269,13 @@
             {% else %}<p class="warning">{{ branches.selected.comparison.reason }}</p>{% endif %}
             {% if branches.main_available %}
               <h4>Recent commits unique to this branch</h4>
-              {% if not branches.selected.recent_commits_complete %}<p class="warning">Branch-only history output is incomplete.</p>{% endif %}
+              {% if branches.selected.recent_commits_has_more %}<p class="muted">More branch-only commits are available in this snapshot.</p>{% elif not branches.selected.recent_commits_complete %}<p class="warning">Branch-only history output is incomplete.</p>{% endif %}
               <ul class="history-list">{% for commit in branches.selected.recent_commits %}<li><a href="{{ url_for('git_review_page', view='history', commit=commit.oid) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a></li>{% else %}<li>No branch-only commits in the bounded list.</li>{% endfor %}</ul>
+              {% if branches.selected.recent_commits_has_more %}<p><a href="{{ url_for('git_review_page', view='branches', branch=selected_branch, branch_cursor=selected_branch_cursor, recent_cursor=branches.selected.recent_commits_cursor, main_only_cursor=selected_main_only_cursor) }}">Next branch-only commit page</a></p>{% endif %}
               <h4>Recent commits on main not in this branch</h4>
-              {% if not branches.selected.main_only_commits_complete %}<p class="warning">Main-only history output is incomplete.</p>{% endif %}
+              {% if branches.selected.main_only_commits_has_more %}<p class="muted">More main-only commits are available in this snapshot.</p>{% elif not branches.selected.main_only_commits_complete %}<p class="warning">Main-only history output is incomplete.</p>{% endif %}
               <ul class="history-list">{% for commit in branches.selected.main_only_commits %}<li><a href="{{ url_for('git_review_page', view='history', commit=commit.oid) }}"><code>{{ commit.short_oid }}</code> {{ commit.subject }}</a></li>{% else %}<li>No main-only commits in the bounded list.</li>{% endfor %}</ul>
+              {% if branches.selected.main_only_commits_has_more %}<p><a href="{{ url_for('git_review_page', view='branches', branch=selected_branch, branch_cursor=selected_branch_cursor, recent_cursor=selected_recent_cursor, main_only_cursor=branches.selected.main_only_commits_cursor) }}">Next main-only commit page</a></p>{% endif %}
             {% else %}
               <p class="warning">Branch-only commit lists are unavailable because local main is missing.</p>
             {% endif %}

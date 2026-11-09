@@ -317,7 +317,7 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
     },
     {
         "name": "repo_dispatches",
-        "description": "Read bounded Architect dispatch status and content for this repository; supply dispatch_id to verify a specific submission.",
+        "description": "Read byte-bounded, snapshot-paginated Architect dispatch status and content; use cursor to continue or dispatch_id for one exact submission.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -341,6 +341,11 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                     "type": "string",
                     "pattern": _DISPATCH_ID_PATTERN,
                     "description": "Optional durable ID of one submitted dispatch.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "maxLength": MAX_HISTORY_CURSOR_LENGTH,
+                    "description": "Opaque continuation cursor bound to the current ledger snapshot and filters.",
                 },
             },
             "required": ["expected_repository_key", "expected_generation"],
@@ -607,6 +612,13 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
             if not isinstance(value, str) or not re.fullmatch(_DISPATCH_ID_PATTERN[1:-1], value):
                 raise AdapterValidationError("dispatch_id must be a 32-character lowercase hexadecimal ID")
             query_params["dispatch_id"] = value
+        if "cursor" in arguments:
+            value = arguments["cursor"]
+            if not isinstance(value, str) or not 1 <= len(value) <= MAX_HISTORY_CURSOR_LENGTH:
+                raise AdapterValidationError("cursor must be a non-empty bounded dispatch cursor")
+            query_params["cursor"] = value
+        if "dispatch_id" in arguments and "cursor" in arguments:
+            raise AdapterValidationError("dispatch_id cannot be combined with cursor")
         for name in ("expected_repository_key", "expected_generation"):
             if name not in arguments:
                 raise AdapterValidationError(f"Missing required argument {name!r} for repo_dispatches")

@@ -1419,7 +1419,10 @@ class MilestoneWebTests(unittest.TestCase):
                 history = [closeout] if events is None else events
                 if not history:
                     return []
-                with mock.patch("repoctl.workflow.architect_dispatches.list_dispatches", return_value=records):
+                with mock.patch(
+                    "repoctl.workflow.architect_dispatches.list_owner_dispatches",
+                    return_value=records,
+                ):
                     return list_outstanding_guidance(
                         repo,
                         Path(td) / "state",

@@ -387,6 +387,10 @@ def _validate_context(
             "milestone_id": dispatch_milestone,
             "approved_at": _bounded_text(_required_text(dispatch, "approved_at"), 64),
             "related_event_id": related_event_id,
+            "body_command": (
+                f"{PYTHON_EXECUTABLE} -m repoctl.cli coder-read-dispatch "
+                f"--dispatch-id {dispatch_id}"
+            ),
         })
 
     standing_references = _mapping(context.get("standing_references"))
@@ -410,7 +414,7 @@ def _validate_context(
     }
     status = "CURRENT_CONTEXT" if authorized else "NO_AUTHORITY"
     instruction = (
-        "This is fresh, point-in-time context, not persistent permission. Read the full canonical prompt and guidance on demand, and rerun coder-context before consequential actions. The adapter does not grant filesystem, shell, or Git authority."
+        "This is fresh, point-in-time context, not persistent permission. Read the full canonical prompt and guidance on demand, and rerun coder-context before consequential actions. If approvedArchitectDispatches.omitted is nonzero, run fullContextCommand to enumerate every approved instruction; use each body's bodyCommand for exact content. The adapter does not grant filesystem, shell, or Git authority."
     )
     if not authorized:
         instruction = (

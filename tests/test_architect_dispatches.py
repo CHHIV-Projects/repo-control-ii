@@ -26,6 +26,8 @@ from repoctl.workflow.architect_dispatches import (
     _write_ledger,
     get_dispatch,
     list_dispatches,
+    list_dispatch_page,
+    list_outstanding_guidance,
     list_owner_dispatches,
     submit_dispatch,
     update_dispatch_status,
@@ -316,6 +318,153 @@ class TestArchitectDispatches(unittest.TestCase):
         self.assertEqual(loaded[-1]["dispatch_id"], records[0]["dispatch_id"])
         self.assertEqual(loaded[0]["body"], body)
         self.assertLess(elapsed, 10.0)
+        self._start_milestone()
+        context = get_coder_context(self.repository, state_root=self.state_root)
+        approved = context["approved_architect_dispatches"]
+        embedded_bytes = sum(len(item.get("body", "").encode("utf-8")) for item in approved)
+        self.assertEqual(len(approved), 499)
+        self.assertLessEqual(embedded_bytes, 64 * 1024)
+        self.assertTrue(any(not item["body_included"] for item in approved))
+        formatted = format_coder_context_text(context)
+        self.assertIn("coder-read-dispatch --dispatch-id", formatted)
+
+    def test_dispatch_cursor_pages_are_complete_byte_bounded_and_stale_after_mutation(self):
+        ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+        records = [
+            {
+                "dispatch_id": f"{index:032x}",
+                "repository_id": self.repository_id,
+                "milestone_id": self.active_milestone_id,
+                "type": "INSTRUCTION",
+                "status": "PENDING",
+                "source": "architect_mcp",
+                "created_at": f"2026-11-02T00:00:{index % 60:02d}+00:00",
+                "updated_at": "2026-11-02T00:00:00+00:00",
+                "body": "Guidance",
+            }
+            for index in range(500)
+        ]
+        _write_ledger(ledger_path, {
+            "schema_version": 1,
+            "repository_id": self.repository_id,
+            "dispatches": records,
+        })
+
+        collected = []
+        cursor = None
+        while True:
+            page = list_dispatch_page(
+                self.repository,
+                self.state_root,
+                self.repository_id,
+                limit=5,
+                cursor=cursor,
+            )
+            collected.extend(item["dispatch_id"] for item in page["dispatches"])
+            if not page["has_more"]:
+                self.assertTrue(page["complete"])
+                self.assertEqual(page["total_count"], 500)
+                break
+            cursor = page["next_cursor"]
+        self.assertEqual(len(collected), 500)
+        self.assertEqual(len(set(collected)), 500)
+
+        first_page = list_dispatch_page(
+            self.repository, self.state_root, self.repository_id, limit=5
+        )
+        with self.assertRaisesRegex(ArchitectDispatchError, "does not match these filters"):
+            list_dispatch_page(
+                self.repository,
+                self.state_root,
+                self.repository_id,
+                status="APPROVED",
+                limit=5,
+                cursor=first_page["next_cursor"],
+            )
+        update_dispatch_status(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+            first_page["dispatches"][-1]["dispatch_id"],
+            "REJECTED",
+            milestone_root="docs/milestones",
+            active_milestone_id=self.active_milestone_id,
+        )
+        with self.assertRaisesRegex(ArchitectDispatchError, "cursor is stale"):
+            list_dispatch_page(
+                self.repository,
+                self.state_root,
+                self.repository_id,
+                limit=5,
+                cursor=first_page["next_cursor"],
+            )
+
+    def test_dispatch_page_selects_by_serialized_bytes(self):
+        ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+        records = [
+            {
+                "dispatch_id": f"{index:032x}",
+                "repository_id": self.repository_id,
+                "milestone_id": self.active_milestone_id,
+                "type": "INSTRUCTION",
+                "status": "APPROVED",
+                "source": "architect_mcp",
+                "created_at": "2026-11-02T00:00:00+00:00",
+                "updated_at": "2026-11-02T00:00:00+00:00",
+                "approved_at": "2026-11-02T00:00:00+00:00",
+                "approved_milestone_id": self.active_milestone_id,
+                "body": "\n" * (MAX_BODY_BYTES - 1) + "x",
+            }
+            for index in range(5)
+        ]
+        _write_ledger(ledger_path, {
+            "schema_version": 1,
+            "repository_id": self.repository_id,
+            "dispatches": records,
+        })
+        page = list_dispatch_page(self.repository, self.state_root, self.repository_id)
+        serialized = json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertLess(len(serialized), 512_000)
+        self.assertLess(len(page["dispatches"]), 5)
+        self.assertTrue(page["has_more"])
+        self.assertFalse(page["complete"])
+
+    def test_outstanding_guidance_scans_all_late_approvals(self):
+        for count in (6, 100, 500):
+            with self.subTest(count=count):
+                ledger_path = self.state_root / self.repository_id / "architect_dispatches.json"
+                records = []
+                for index in range(count):
+                    records.append({
+                        "dispatch_id": f"{index + 1:032x}",
+                        "repository_id": self.repository_id,
+                        "milestone_id": self.active_milestone_id,
+                        "type": "INSTRUCTION",
+                        "status": "APPROVED",
+                        "source": "architect_mcp",
+                        "created_at": f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00",
+                        "updated_at": "2026-01-03T00:00:00+00:00",
+                        "approved_at": (
+                            "2026-01-03T00:00:00+00:00"
+                            if index == 0
+                            else "2026-01-01T00:00:00+00:00"
+                        ),
+                        "approved_milestone_id": self.active_milestone_id,
+                        "body": f"Instruction {index}",
+                    })
+                _write_ledger(ledger_path, {
+                    "schema_version": 1,
+                    "repository_id": self.repository_id,
+                    "dispatches": records,
+                })
+                outstanding = list_outstanding_guidance(
+                    self.repository,
+                    self.state_root,
+                    self.repository_id,
+                    self.active_milestone_id,
+                    "2026-01-02T00:00:00+00:00",
+                )
+                self.assertEqual([item["dispatch_id"] for item in outstanding], [records[0]["dispatch_id"]])
 
     def test_prompt_approval_materializes_canonical_file_once_without_lifecycle_change(self):
         selected = save_milestone_selection(
@@ -716,6 +865,72 @@ class TestArchitectDispatches(unittest.TestCase):
             .get_json()["data"]["dispatches"][0]["status"],
             "APPROVED",
         )
+
+    def test_http_and_owner_dispatch_pages_continue_and_reject_stale_cursors(self):
+        for index in range(6):
+            self._submit("INSTRUCTION", body=f"Guidance {index}")
+        app = create_web_app(repository_path=str(self.repository), state_root=self.state_root)
+        app.testing = True
+        client = app.test_client()
+        status = client.get("/api/architect/v1/status").get_json()
+        query = {
+            "expected_repository_key": status["repository"]["key"],
+            "expected_generation": status["repository"]["registry_generation"],
+        }
+        first = client.get("/api/architect/v1/dispatches", query_string=query)
+        self.assertEqual(first.status_code, 200)
+        data = first.get_json()["data"]
+        self.assertEqual(data["returned_count"], 5)
+        self.assertEqual(data["total_count"], 6)
+        self.assertTrue(data["has_more"])
+        self.assertFalse(data["complete"])
+        second = client.get(
+            "/api/architect/v1/dispatches",
+            query_string={**query, "cursor": data["next_cursor"]},
+        )
+        self.assertEqual(second.status_code, 200, second.get_json())
+        self.assertEqual(second.get_json()["data"]["returned_count"], 1)
+
+        page = client.get("/architect-dispatches")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Next dispatches", page.data)
+        update_dispatch_status(
+            self.repository,
+            self.state_root,
+            self.repository_id,
+            data["dispatches"][0]["dispatch_id"],
+            "REJECTED",
+            milestone_root="docs/milestones",
+            active_milestone_id=self.active_milestone_id,
+        )
+        stale = client.get(
+            "/api/architect/v1/dispatches",
+            query_string={**query, "cursor": data["next_cursor"]},
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.get_json()["error"]["code"], "stale_dispatch_cursor")
+        stale_owner_page = client.get(
+            "/architect-dispatches", query_string={"cursor": data["next_cursor"]}
+        )
+        self.assertEqual(stale_owner_page.status_code, 409)
+
+    def test_http_dispatch_page_stays_below_envelope_for_newline_bodies(self):
+        for _ in range(5):
+            self._submit("INSTRUCTION", body="\n" * (MAX_BODY_BYTES - 1) + "x")
+        app = create_web_app(repository_path=str(self.repository), state_root=self.state_root)
+        app.testing = True
+        client = app.test_client()
+        status = client.get("/api/architect/v1/status").get_json()
+        response = client.get(
+            "/api/architect/v1/dispatches",
+            query_string={
+                "expected_repository_key": status["repository"]["key"],
+                "expected_generation": status["repository"]["registry_generation"],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(len(response.data), 512_000)
+        self.assertLess(response.get_json()["data"]["returned_count"], 5)
 
     def test_active_instruction_approval_is_read_back_without_lifecycle_change(self):
         selected = self._start_milestone()

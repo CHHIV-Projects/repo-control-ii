@@ -5,6 +5,7 @@
     <h2>Architect Dispatches</h2>
     <p>Review complete Architect proposals before they become available to the Coder.</p>
     <p>Active milestone: <strong>{{ active_milestone_id or "None selected" }}</strong></p>
+    <p>Showing {{ dispatch_page.returned_count }} of {{ dispatch_page.total_count }} dispatches on this page.</p>
   </section>
 
   {% if not dispatches %}
@@ -48,4 +49,10 @@
       {% endif %}
     </section>
   {% endfor %}
+
+  {% if dispatch_page.has_more %}
+    <section class="panel">
+      <a class="button" href="{{ url_for('architect_dispatches_page', cursor=dispatch_page.next_cursor) }}">Next dispatches</a>
+    </section>
+  {% endif %}
 {% endblock %}

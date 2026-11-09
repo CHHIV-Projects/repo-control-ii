@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -10,11 +12,13 @@ from ..scanner.git_ops import ScanError, _run_git_bounded, validate_git_worktree
 
 MAX_HISTORY_COMMITS = 30
 MAX_FILE_HISTORY_COMMITS = 30
-MAX_BRANCHES = 256
+MAX_BRANCH_PAGE_SIZE = 20
+MAX_CURSOR_LENGTH = 2_048
 MAX_HISTORY_OUTPUT_BYTES = 1024 * 1024
 MAX_BRANCH_OUTPUT_BYTES = 256 * 1024
 MAX_COMMIT_DIFF_BYTES = 128 * 1024
 MAX_BRANCH_DIFF_BYTES = 128 * 1024
+MAX_BRANCH_DETAIL_COMMITS = 10
 MAX_GIT_STDERR_BYTES = 16 * 1024
 GIT_COMMAND_TIMEOUT_SECONDS = 10
 _OBJECT_ID = re.compile(r"^[0-9a-f]{40,64}$")
@@ -89,6 +93,7 @@ def _history_records(
     repo_root: Path,
     *,
     limit: int,
+    offset: int = 0,
     path: str | None = None,
     follow: bool = False,
     revisions: list[str] | None = None,
@@ -96,6 +101,7 @@ def _history_records(
     args = [
         "log",
         f"--max-count={limit}",
+        f"--skip={offset}",
         "--date=iso-strict",
         "--format=%H%x00%h%x00%an%x00%aI%x00%cI%x00%P%x00%s%x00%D%x1e",
     ]
@@ -130,6 +136,87 @@ def _history_records(
             }
         )
     return result, False
+
+
+def _head_snapshot(repo_root: Path) -> str:
+    output, _stderr, code, truncated = _run(
+        repo_root,
+        ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        output_limit=256,
+        allow_nonzero=True,
+    )
+    if truncated:
+        raise GitHistoryError("HEAD verification exceeded its output limit.")
+    if code == 1:
+        return "unborn"
+    if code != 0:
+        raise GitHistoryError("Git could not determine the current HEAD commit.")
+    snapshot = output.decode("ascii", errors="strict").strip()
+    if not _OBJECT_ID.fullmatch(snapshot):
+        raise GitHistoryError("Git returned an invalid HEAD object ID.")
+    return snapshot
+
+
+def _repository_binding(repo_root: Path) -> str:
+    return hashlib.sha256(os.fsencode(str(repo_root))).hexdigest()
+
+
+def _encode_cursor(
+    kind: str,
+    snapshot: str,
+    selector: str,
+    offset: int,
+    repository_binding: str,
+) -> str:
+    raw = json.dumps(
+        {
+            "version": 1,
+            "kind": kind,
+            "repository": repository_binding,
+            "snapshot": snapshot,
+            "selector": selector,
+            "offset": offset,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(
+    cursor: str | None,
+    *,
+    kind: str,
+    snapshot: str,
+    selector: str,
+    repository_binding: str,
+) -> int:
+    if cursor is None:
+        return 0
+    if (
+        not isinstance(cursor, str)
+        or not 1 <= len(cursor) <= MAX_CURSOR_LENGTH
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", cursor)
+    ):
+        raise GitHistoryError("Git history cursor is invalid.")
+    try:
+        raw = base64.urlsafe_b64decode((cursor + "=" * (-len(cursor) % 4)).encode("ascii"))
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GitHistoryError("Git history cursor is invalid.") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("kind") != kind
+        or payload.get("repository") != repository_binding
+        or payload.get("snapshot") != snapshot
+        or payload.get("selector") != selector
+        or not isinstance(payload.get("offset"), int)
+        or isinstance(payload.get("offset"), bool)
+        or payload["offset"] < 0
+    ):
+        raise GitHistoryError("Git history cursor is stale or does not match this view.")
+    return payload["offset"]
 
 
 def _commit_detail(repo_root: Path, oid: str) -> dict[str, Any]:
@@ -269,27 +356,77 @@ def _parse_name_status(output: bytes) -> list[dict[str, str]]:
     return result
 
 
-def inspect_history(repository_path: str, selected_commit: str | None = None) -> dict[str, Any]:
+def inspect_history(
+    repository_path: str,
+    selected_commit: str | None = None,
+    *,
+    cursor: str | None = None,
+    limit: int = MAX_HISTORY_COMMITS,
+) -> dict[str, Any]:
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_HISTORY_COMMITS:
+        raise ValueError(f"History page limit must be between 1 and {MAX_HISTORY_COMMITS}.")
     try:
         repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
     except ScanError as exc:
         raise GitHistoryError(str(exc)) from exc
-    commits, truncated = _history_records(repo_root, limit=MAX_HISTORY_COMMITS)
+    snapshot = _head_snapshot(repo_root)
+    repository_binding = _repository_binding(repo_root)
+    offset = _decode_cursor(
+        cursor,
+        kind="commits",
+        snapshot=snapshot,
+        selector="",
+        repository_binding=repository_binding,
+    )
+    found, truncated = (
+        _history_records(
+            repo_root,
+            limit=limit + 1,
+            offset=offset,
+            revisions=[snapshot],
+        )
+        if snapshot != "unborn"
+        else ([], False)
+    )
+    if offset and not found and not truncated:
+        raise GitHistoryError("Git history cursor is stale or outside this result set.")
+    has_more = len(found) > limit if not truncated else None
+    commits = found[:limit] if not truncated else []
+    if _head_snapshot(repo_root) != snapshot:
+        raise GitHistoryError("Git history cursor is stale because HEAD changed during read.")
     detail = _commit_detail(repo_root, selected_commit) if selected_commit else None
+    next_cursor = (
+        _encode_cursor("commits", snapshot, "", offset + limit, repository_binding)
+        if has_more
+        else None
+    )
     return {
         "commits": commits,
-        "complete": not truncated,
+        "complete": not truncated and not has_more,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
         "selected": detail,
-        "limit": MAX_HISTORY_COMMITS,
+        "limit": limit,
+        "total_count": None,
+        "snapshot": snapshot,
         "repository_root": str(repo_root),
     }
 
 
-def inspect_file_history(repository_path: str, file_token: str) -> dict[str, Any]:
+def inspect_file_history(
+    repository_path: str,
+    file_token: str,
+    *,
+    cursor: str | None = None,
+    limit: int = MAX_FILE_HISTORY_COMMITS,
+) -> dict[str, Any]:
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_FILE_HISTORY_COMMITS:
+        raise ValueError(f"File history page limit must be between 1 and {MAX_FILE_HISTORY_COMMITS}.")
     try:
         repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
     except ScanError as exc:
         raise GitHistoryError(str(exc)) from exc
+    snapshot = _head_snapshot(repo_root)
     tracked_output, _stderr, _code, truncated = _run(
         repo_root,
         ["ls-files", "-z"],
@@ -298,20 +435,10 @@ def inspect_file_history(repository_path: str, file_token: str) -> dict[str, Any
     if truncated:
         raise GitHistoryError("Tracked-file inventory exceeded the configured output limit.")
     tracked = {os.fsdecode(path) for path in tracked_output.split(b"\x00") if path}
-    _head, _stderr, head_code, head_truncated = _run(
-        repo_root,
-        ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-        output_limit=256,
-        allow_nonzero=True,
-    )
-    if head_truncated:
-        raise GitHistoryError("HEAD verification exceeded its output limit.")
-    if head_code not in {0, 1}:
-        raise GitHistoryError("Git could not determine the current HEAD commit.")
-    if head_code == 0:
+    if snapshot != "unborn":
         committed_output, _stderr, _code, committed_truncated = _run(
             repo_root,
-            ["ls-tree", "-r", "--name-only", "-z", "HEAD"],
+            ["ls-tree", "-r", "--name-only", "-z", snapshot],
             output_limit=MAX_HISTORY_OUTPUT_BYTES,
         )
         if committed_truncated:
@@ -320,18 +447,47 @@ def inspect_file_history(repository_path: str, file_token: str) -> dict[str, Any
     selected = next((path for path in tracked if _token(path) == file_token), None)
     if selected is None:
         raise FileNotFoundError("Selected file is not currently tracked.")
-    commits, history_truncated = _history_records(
-        repo_root,
-        limit=MAX_FILE_HISTORY_COMMITS,
-        path=selected,
-        follow=True,
+    repository_binding = _repository_binding(repo_root)
+    offset = _decode_cursor(
+        cursor,
+        kind="file",
+        snapshot=snapshot,
+        selector=file_token,
+        repository_binding=repository_binding,
+    )
+    found, history_truncated = (
+        _history_records(
+            repo_root,
+            limit=limit + 1,
+            offset=offset,
+            path=selected,
+            follow=True,
+            revisions=[snapshot],
+        )
+        if snapshot != "unborn"
+        else ([], False)
+    )
+    if offset and not found and not history_truncated:
+        raise GitHistoryError("Git file-history cursor is stale or outside this result set.")
+    if _head_snapshot(repo_root) != snapshot:
+        raise GitHistoryError("Git file-history cursor is stale because HEAD changed during read.")
+    has_more = len(found) > limit if not history_truncated else None
+    commits = found[:limit] if not history_truncated else []
+    next_cursor = (
+        _encode_cursor("file", snapshot, file_token, offset + limit, repository_binding)
+        if has_more
+        else None
     )
     return {
         "path": _display_path(selected),
         "token": file_token,
         "commits": commits,
-        "complete": not history_truncated,
-        "limit": MAX_FILE_HISTORY_COMMITS,
+        "complete": not history_truncated and not has_more,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "limit": limit,
+        "total_count": None,
+        "snapshot": snapshot,
         "repository_root": str(repo_root),
     }
 
@@ -370,8 +526,6 @@ def _branch_inventory(repo_root: Path) -> list[dict[str, Any]]:
                 "upstream": upstream,
             }
         )
-        if len(branches) > MAX_BRANCHES:
-            raise GitHistoryError("Local branch inventory exceeds the configured branch count limit.")
     return branches
 
 
@@ -478,7 +632,14 @@ def _branch_metrics(
 def inspect_branches(
     repository_path: str,
     selected_branch: str | None = None,
+    *,
+    cursor: str | None = None,
+    limit: int = MAX_BRANCH_PAGE_SIZE,
+    recent_cursor: str | None = None,
+    main_only_cursor: str | None = None,
 ) -> dict[str, Any]:
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_BRANCH_PAGE_SIZE:
+        raise ValueError(f"Branch page limit must be between 1 and {MAX_BRANCH_PAGE_SIZE}.")
     try:
         repo_root = validate_git_worktree(Path(repository_path).expanduser().resolve())
     except ScanError as exc:
@@ -509,7 +670,30 @@ def inspect_branches(
         raise GitHistoryError("Git could not determine the current branch reference.")
     current_ref = current.decode("utf-8", errors="strict").strip() if current_code == 0 else ""
     branches = _branch_inventory(repo_root)
-    for branch in branches:
+    snapshot = hashlib.sha256(
+        json.dumps(
+            {
+                "branches": branches,
+                "main_oid": main_oid,
+                "current_ref": current_ref,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    repository_binding = _repository_binding(repo_root)
+    offset = _decode_cursor(
+        cursor,
+        kind="branches",
+        snapshot=snapshot,
+        selector="",
+        repository_binding=repository_binding,
+    )
+    if offset > len(branches):
+        raise GitHistoryError("Git branch cursor is stale or outside this result set.")
+    page_branches = branches[offset:offset + limit]
+    for branch in page_branches:
         _branch_metrics(repo_root, branch, main_oid, current_ref)
 
     selected = None
@@ -517,6 +701,8 @@ def inspect_branches(
         selected = next((branch for branch in branches if branch["token"] == selected_branch), None)
         if selected is None:
             raise FileNotFoundError("Selected local branch is no longer available.")
+        if selected not in page_branches:
+            _branch_metrics(repo_root, selected, main_oid, current_ref)
         if main_available:
             base, _stderr, code, truncated = _run(
                 repo_root,
@@ -593,36 +779,104 @@ def inspect_branches(
                 "diff": "",
                 "complete": True,
             }
-        unique_commits, unique_truncated = (
+        recent_offset = _decode_cursor(
+            recent_cursor,
+            kind="branch_ahead",
+            snapshot=snapshot,
+            selector=selected_branch,
+            repository_binding=repository_binding,
+        )
+        unique_found, unique_truncated = (
             _history_records(
                 repo_root,
-                limit=10,
+                limit=MAX_BRANCH_DETAIL_COMMITS + 1,
+                offset=recent_offset,
                 revisions=[f"refs/heads/main..{selected['ref']}"],
             )
             if main_available
             else ([], False)
         )
-        selected["recent_commits"] = unique_commits
-        selected["recent_commits_complete"] = not unique_truncated
-        main_only_commits, main_only_truncated = (
+        if recent_offset and not unique_found and not unique_truncated:
+            raise GitHistoryError("Branch commit cursor is stale or outside this result set.")
+        recent_has_more = (
+            len(unique_found) > MAX_BRANCH_DETAIL_COMMITS if not unique_truncated else None
+        )
+        selected["recent_commits"] = (
+            unique_found[:MAX_BRANCH_DETAIL_COMMITS] if not unique_truncated else []
+        )
+        selected["recent_commits_has_more"] = recent_has_more
+        selected["recent_commits_complete"] = not unique_truncated and not recent_has_more
+        selected["recent_commits_cursor"] = (
+            _encode_cursor(
+                "branch_ahead",
+                snapshot,
+                selected_branch,
+                recent_offset + MAX_BRANCH_DETAIL_COMMITS,
+                repository_binding,
+            )
+            if recent_has_more
+            else None
+        )
+        main_offset = _decode_cursor(
+            main_only_cursor,
+            kind="branch_main",
+            snapshot=snapshot,
+            selector=selected_branch,
+            repository_binding=repository_binding,
+        )
+        main_only_found, main_only_truncated = (
             _history_records(
                 repo_root,
-                limit=10,
+                limit=MAX_BRANCH_DETAIL_COMMITS + 1,
+                offset=main_offset,
                 revisions=[f"{selected['ref']}..refs/heads/main"],
             )
             if main_available
             else ([], False)
         )
-        selected["main_only_commits"] = main_only_commits
-        selected["main_only_commits_complete"] = not main_only_truncated
+        if main_offset and not main_only_found and not main_only_truncated:
+            raise GitHistoryError("Branch main-only cursor is stale or outside this result set.")
+        main_has_more = (
+            len(main_only_found) > MAX_BRANCH_DETAIL_COMMITS if not main_only_truncated else None
+        )
+        selected["main_only_commits"] = (
+            main_only_found[:MAX_BRANCH_DETAIL_COMMITS] if not main_only_truncated else []
+        )
+        selected["main_only_commits_has_more"] = main_has_more
+        selected["main_only_commits_complete"] = not main_only_truncated and not main_has_more
+        selected["main_only_commits_cursor"] = (
+            _encode_cursor(
+                "branch_main",
+                snapshot,
+                selected_branch,
+                main_offset + MAX_BRANCH_DETAIL_COMMITS,
+                repository_binding,
+            )
+            if main_has_more
+            else None
+        )
 
+    has_more = offset + len(page_branches) < len(branches)
+    next_cursor = (
+        _encode_cursor(
+            "branches", snapshot, "", offset + len(page_branches), repository_binding
+        )
+        if has_more
+        else None
+    )
     return {
         "repository_root": str(repo_root),
         "main_available": main_available,
         "main_oid": main_oid,
         "head_state": "attached" if current_code == 0 else "detached",
-        "branches": branches,
+        "branches": page_branches,
         "selected": selected,
-        "branch_limit": MAX_BRANCHES,
+        "branch_limit": limit,
+        "total_count": len(branches),
+        "returned_count": len(page_branches),
+        "has_more": has_more,
+        "complete": not has_more,
+        "next_cursor": next_cursor,
+        "snapshot": snapshot,
         "freshness": "Upstream comparisons use local refs only; no fetch was performed and remote-tracking refs may be stale.",
     }

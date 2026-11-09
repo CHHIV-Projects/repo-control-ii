@@ -50,6 +50,7 @@ from ..workflow.architect_dispatches import (
     ArchitectDispatchError,
     get_dispatch,
     list_dispatches,
+    list_dispatch_page,
     list_outstanding_guidance,
     list_owner_dispatches,
     submit_dispatch,
@@ -1906,6 +1907,7 @@ def create_web_app(
             "status",
             "limit",
             "dispatch_id",
+            "cursor",
         }
         unknown = set(request.args) - allowed_parameters
         if unknown:
@@ -1938,7 +1940,13 @@ def create_web_app(
         milestone_values = request.args.getlist("milestone_id")
         status_values = request.args.getlist("status")
         limit_values = request.args.getlist("limit")
-        if len(milestone_values) > 1 or len(status_values) > 1 or len(limit_values) > 1:
+        cursor_values = request.args.getlist("cursor")
+        if (
+            len(milestone_values) > 1
+            or len(status_values) > 1
+            or len(limit_values) > 1
+            or len(cursor_values) > 1
+        ):
             raise ArchitectContractError("invalid_query_parameter", "Dispatch filters may be supplied only once.", 400)
         try:
             try:
@@ -1963,6 +1971,8 @@ def create_web_app(
             if len(dispatch_id_values) > 1:
                 raise ArchitectDispatchError("Dispatch ID may be supplied only once.")
             if dispatch_id_values:
+                if cursor_values:
+                    raise ArchitectDispatchError("A dispatch ID cannot be combined with a cursor.")
                 records = [
                     get_dispatch(
                         current_repository().path,
@@ -1971,20 +1981,32 @@ def create_web_app(
                         dispatch_id_values[0],
                     )
                 ]
+                page = {
+                    "total_count": len(records),
+                    "returned_count": len(records),
+                    "limit": limit,
+                    "has_more": False,
+                    "complete": True,
+                    "next_cursor": None,
+                }
                 if milestone_values and records[0]["milestone_id"] != milestone_values[0]:
                     records = []
                 if status_values and records and records[0]["status"] != status_values[0]:
                     records = []
             else:
-                records = list_dispatches(
+                page = list_dispatch_page(
                     current_repository().path,
                     effective_state_root,
                     current_repository().repository_id,
                     milestone_id=milestone_values[0] if milestone_values else None,
                     status=status_values[0] if status_values else None,
                     limit=limit,
+                    cursor=cursor_values[0] if cursor_values else None,
                 )
+                records = page["dispatches"]
         except ArchitectDispatchError as exc:
+            if "cursor is stale" in str(exc):
+                raise ArchitectContractError("stale_dispatch_cursor", str(exc), 409) from exc
             raise ArchitectContractError("invalid_dispatch_query", str(exc), 400) from exc
         return _architect_json_response(
             {
@@ -1996,8 +2018,7 @@ def create_web_app(
                 },
                 "data": {
                     "dispatches": records,
-                    "returned_count": len(records),
-                    "limit": limit,
+                    **page,
                 },
             }
         )
@@ -2005,17 +2026,26 @@ def create_web_app(
     @app.get("/architect-dispatches")
     def architect_dispatches_page():
         try:
-            records = list_owner_dispatches(
+            page = list_dispatch_page(
                 current_repository().path,
                 effective_state_root,
                 current_repository().repository_id,
+                limit=MAX_ARCHITECT_DISPATCH_READ_LIMIT,
+                cursor=request.args.get("cursor"),
             )
+            records = page["dispatches"]
             selection = load_milestone_selection(
                 current_repository().path,
                 effective_state_root,
                 current_repository().milestone_root,
             )
         except (ArchitectDispatchError, MilestoneArtifactError) as exc:
+            if isinstance(exc, ArchitectDispatchError) and "cursor is stale" in str(exc):
+                raise WebUIError(
+                    "stale_dispatch_cursor",
+                    "Dispatches changed while browsing. Restart from the first page.",
+                    status_code=409,
+                ) from exc
             raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
         active_milestone_id = (
             selection["selection"]["milestone_id"] if selection["status"] == "selected" else None
@@ -2023,6 +2053,7 @@ def create_web_app(
         return render_template(
             "architect_dispatches.html",
             dispatches=records,
+            dispatch_page=page,
             active_milestone_id=active_milestone_id,
         )
 
@@ -2371,14 +2402,22 @@ def create_web_app(
                 history = inspect_history(
                     str(current_repository().path),
                     selected_commit=request.args.get("commit"),
+                    cursor=request.args.get("cursor"),
                 )
                 file_token = request.args.get("file_history")
                 if file_token:
-                    file_history = inspect_file_history(str(current_repository().path), file_token)
+                    file_history = inspect_file_history(
+                        str(current_repository().path),
+                        file_token,
+                        cursor=request.args.get("file_cursor"),
+                    )
             elif review_view == "branches":
                 branches = inspect_branches(
                     str(current_repository().path),
                     selected_branch=request.args.get("branch"),
+                    cursor=request.args.get("branch_cursor"),
+                    recent_cursor=request.args.get("recent_cursor"),
+                    main_only_cursor=request.args.get("main_only_cursor"),
                 )
                 branch_controls = git_actions.branch_controls(
                     str(current_repository().path),
@@ -2393,7 +2432,7 @@ def create_web_app(
             raise WebUIError("invalid_git_selection", str(exc), status_code=400) from exc
         except (GitReviewError, GitHistoryError, GitActionError) as exc:
             error_message = str(exc)
-            status_code = 503
+            status_code = 409 if "cursor is stale" in str(exc) else 503
         return render_template(
             "git_review.html",
             review_view=review_view,
@@ -2405,7 +2444,12 @@ def create_web_app(
             remote_controls=remote_controls,
             selected_commit=request.args.get("commit"),
             selected_file_history=request.args.get("file_history"),
+            selected_history_cursor=request.args.get("cursor"),
+            selected_file_cursor=request.args.get("file_cursor"),
             selected_branch=request.args.get("branch"),
+            selected_branch_cursor=request.args.get("branch_cursor"),
+            selected_recent_cursor=request.args.get("recent_cursor"),
+            selected_main_only_cursor=request.args.get("main_only_cursor"),
             file_action_options=file_action_options,
             commit_options=commit_options,
             error_message=error_message,

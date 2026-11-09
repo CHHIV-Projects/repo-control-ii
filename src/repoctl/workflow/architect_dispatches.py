@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -24,6 +26,8 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_TITLE_CHARS = 200
 MAX_DISPATCHES_PER_REPOSITORY = 500
 MAX_READ_LIMIT = 5
+MAX_DISPATCH_CURSOR_LENGTH = 2_048
+MAX_DISPATCH_PAGE_BYTES = 400_000
 MAX_LEDGER_BYTES = 40 * 1024 * 1024
 
 
@@ -365,6 +369,123 @@ def list_dispatches(
     return [dict(item) for item in reversed(records[-limit:])]
 
 
+def _dispatch_cursor(
+    *,
+    repository_id: str,
+    milestone_id: str | None,
+    status: str | None,
+    snapshot: str,
+    offset: int,
+) -> str:
+    payload = json.dumps(
+        {
+            "version": 1,
+            "repository_id": repository_id,
+            "milestone_id": milestone_id,
+            "status": status,
+            "snapshot": snapshot,
+            "offset": offset,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def list_dispatch_page(
+    repository_root: str | Path,
+    state_root: str | Path,
+    repository_id: str,
+    *,
+    milestone_id: str | None = None,
+    status: str | None = None,
+    limit: int = MAX_READ_LIMIT,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_READ_LIMIT:
+        raise ArchitectDispatchError(f"Dispatch read limit must be between 1 and {MAX_READ_LIMIT}.")
+    if status is not None and status not in _STATUSES:
+        raise ArchitectDispatchError(f"Dispatch status must be one of {sorted(_STATUSES)}.")
+    if milestone_id is not None:
+        _validate_milestone_id(milestone_id)
+    if cursor is not None and (
+        not isinstance(cursor, str)
+        or not 1 <= len(cursor) <= MAX_DISPATCH_CURSOR_LENGTH
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", cursor)
+    ):
+        raise ArchitectDispatchError("Dispatch cursor is invalid.")
+
+    path = _state_file(repository_root, state_root, repository_id)
+    with state_artifact_lock(state_root):
+        ledger = _read_ledger(path, repository_id)
+    snapshot = hashlib.sha256(
+        json.dumps(ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    offset = 0
+    if cursor is not None:
+        try:
+            encoded = cursor + "=" * (-len(cursor) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(encoded.encode("ascii")))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArchitectDispatchError("Dispatch cursor is invalid.") from exc
+        if (
+            not isinstance(decoded, dict)
+            or decoded.get("version") != 1
+            or decoded.get("repository_id") != repository_id
+            or decoded.get("milestone_id") != milestone_id
+            or decoded.get("status") != status
+            or decoded.get("snapshot") != snapshot
+            or not isinstance(decoded.get("offset"), int)
+            or isinstance(decoded.get("offset"), bool)
+            or decoded["offset"] < 0
+        ):
+            raise ArchitectDispatchError("Dispatch cursor is stale or does not match these filters.")
+        offset = decoded["offset"]
+
+    records = [
+        item
+        for item in reversed(ledger["dispatches"])
+        if (milestone_id is None or item["milestone_id"] == milestone_id)
+        and (status is None or item["status"] == status)
+    ]
+    if offset > len(records):
+        raise ArchitectDispatchError("Dispatch cursor is stale or outside this result set.")
+
+    selected: list[dict[str, Any]] = []
+    selected_bytes = 0
+    for item in records[offset:offset + limit]:
+        record_bytes = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if selected and selected_bytes + record_bytes > MAX_DISPATCH_PAGE_BYTES:
+            break
+        if record_bytes > MAX_DISPATCH_PAGE_BYTES:
+            raise ArchitectDispatchError("One dispatch exceeds the bounded response page size.")
+        selected.append(dict(item))
+        selected_bytes += record_bytes
+
+    next_offset = offset + len(selected)
+    has_more = next_offset < len(records)
+    next_cursor = (
+        _dispatch_cursor(
+            repository_id=repository_id,
+            milestone_id=milestone_id,
+            status=status,
+            snapshot=snapshot,
+            offset=next_offset,
+        )
+        if has_more
+        else None
+    )
+    return {
+        "dispatches": selected,
+        "total_count": len(records),
+        "returned_count": len(selected),
+        "limit": limit,
+        "has_more": has_more,
+        "complete": not has_more,
+        "next_cursor": next_cursor,
+    }
+
+
 def list_outstanding_guidance(
     repository_root: str | Path,
     state_root: str | Path,
@@ -380,13 +501,7 @@ def list_outstanding_guidance(
         raise ArchitectDispatchError("The latest closeout timestamp has no UTC offset.")
 
     outstanding: list[tuple[datetime, dict[str, Any]]] = []
-    for dispatch in list_dispatches(
-        repository_root,
-        state_root,
-        repository_id,
-        milestone_id=milestone_id,
-        status="APPROVED",
-    ):
+    for dispatch in list_owner_dispatches(repository_root, state_root, repository_id):
         if (
             dispatch.get("repository_id") != repository_id
             or dispatch.get("status") != "APPROVED"

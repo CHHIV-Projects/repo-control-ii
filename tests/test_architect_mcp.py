@@ -439,6 +439,19 @@ class TestArchitectMcpRpcProtocol(unittest.TestCase):
                 },
             )
 
+        path, query = validate_tool_call(
+            "repo_dispatches",
+            {
+                "expected_repository_key": "repo-control-ii",
+                "expected_generation": 3,
+                "cursor": "opaque_cursor",
+                "limit": 5,
+            },
+        )
+        self.assertEqual(path, "/api/architect/v1/dispatches")
+        self.assertEqual(query["cursor"], "opaque_cursor")
+        self.assertEqual(query["limit"], "5")
+
     @patch("urllib.request.urlopen")
     def test_execute_post_success(self, mock_urlopen):
         mock_resp = MagicMock()

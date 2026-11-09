@@ -36,6 +36,39 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD").decode("ascii").strip()
 
 
+def _fast_import_commits(repo: Path, count: int, *, path: str | None = None) -> None:
+    parent = _git(repo, "rev-parse", "refs/heads/main").decode("ascii").strip()
+    stream: list[str] = []
+    if path is not None:
+        for index in range(count):
+            content = f"fast-import-{index}\n"
+            stream.extend(["blob", f"mark :{index + 1}", f"data {len(content)}", content])
+    commit_mark_start = count + 1
+    for index in range(count):
+        commit_mark = commit_mark_start + index
+        message = f"fast-import commit {index:04d}"
+        stream.extend([
+            "commit refs/heads/main",
+            f"mark :{commit_mark}",
+            "author History Test <history@example.test> 1700000000 +0000",
+            "committer History Test <history@example.test> 1700000000 +0000",
+            f"data {len(message)}",
+            message,
+            f"from {parent if index == 0 else f':{commit_mark - 1}'}",
+        ])
+        if path is not None:
+            stream.append(f"M 100644 :{index + 1} {path}")
+    result = subprocess.run(
+        ["git", "-C", str(repo), "fast-import", "--quiet"],
+        input="\n".join(stream).encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
+
+
 def _repository(root: Path) -> tuple[Path, str, str, str]:
     repo = root / "history-repo"
     repo.mkdir()
@@ -131,20 +164,71 @@ class GitHistoryTests(unittest.TestCase):
     def test_history_output_limit_and_git_error_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo, _root_commit, _feature_commit, _main_commit = _repository(Path(temporary))
-            with mock.patch(
-                "repoctl.workflow.git_history._run",
-                return_value=(b"", b"", 0, True),
-            ):
+            original_run = git_history._run
+
+            def truncated_log(repository, args, **kwargs):
+                if args[0] == "log":
+                    return b"", b"", 0, True
+                return original_run(repository, args, **kwargs)
+
+            with mock.patch("repoctl.workflow.git_history._run", side_effect=truncated_log):
                 result = inspect_history(str(repo))
             self.assertFalse(result["complete"])
             self.assertEqual(result["commits"], [])
 
-            with mock.patch(
-                "repoctl.workflow.git_history._run",
-                side_effect=GitHistoryError("git log failed"),
-            ):
+            def failing_log(repository, args, **kwargs):
+                if args[0] == "log":
+                    raise GitHistoryError("git log failed")
+                return original_run(repository, args, **kwargs)
+
+            with mock.patch("repoctl.workflow.git_history._run", side_effect=failing_log):
                 with self.assertRaisesRegex(GitHistoryError, "git log failed"):
                     inspect_history(str(repo))
+
+    def test_commit_and_file_history_continue_through_1000_records_and_stale_after_head_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo, _root_commit, _feature_commit, _main_commit = _repository(Path(temporary))
+            _fast_import_commits(repo, 997, path="tracked.txt")
+
+            commits = []
+            cursor = None
+            while True:
+                page = inspect_history(str(repo), cursor=cursor, limit=30)
+                commits.extend(commit["oid"] for commit in page["commits"])
+                if not page["has_more"]:
+                    self.assertTrue(page["complete"])
+                    break
+                cursor = page["next_cursor"]
+            self.assertEqual(len(commits), 1000)
+            self.assertEqual(len(set(commits)), 1000)
+
+            token = base64.urlsafe_b64encode(b"tracked.txt").decode().rstrip("=")
+            file_commits = []
+            cursor = None
+            while True:
+                page = inspect_file_history(str(repo), token, cursor=cursor, limit=30)
+                file_commits.extend(commit["oid"] for commit in page["commits"])
+                if not page["has_more"]:
+                    self.assertTrue(page["complete"])
+                    break
+                cursor = page["next_cursor"]
+            self.assertGreater(len(file_commits), 30)
+            self.assertEqual(len(file_commits), len(set(file_commits)))
+            client = create_web_app(
+                repository_path=str(repo),
+                state_root=Path(temporary) / "state",
+            ).test_client()
+            history_page = client.get("/git-review?view=history")
+            file_page = client.get(f"/git-review?view=history&file_history={token}")
+            self.assertEqual(history_page.status_code, 200)
+            self.assertIn(b"Next commit page", history_page.data)
+            self.assertEqual(file_page.status_code, 200)
+            self.assertIn(b"Next file-history page", file_page.data)
+
+            first = inspect_history(str(repo), limit=1)
+            _commit(repo, "move HEAD")
+            with self.assertRaisesRegex(GitHistoryError, "cursor is stale"):
+                inspect_history(str(repo), cursor=first["next_cursor"], limit=1)
 
     def test_branch_relationship_counts_and_local_upstream_staleness(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -198,6 +282,50 @@ class GitHistoryTests(unittest.TestCase):
             detached = inspect_branches(str(repo))
             self.assertEqual(detached["head_state"], "detached")
             self.assertFalse(any(branch["current"] for branch in detached["branches"]))
+
+    def test_branch_pages_cover_1000_local_refs_and_reject_stale_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo, _root_commit, _feature_commit, _main_commit = _repository(Path(temporary))
+            oid = _git(repo, "rev-parse", "refs/heads/main").decode("ascii").strip()
+            commands = "".join(
+                f"create refs/heads/paged/{index:04d} {oid}\n"
+                for index in range(995)
+            )
+            result = subprocess.run(
+                ["git", "-C", str(repo), "update-ref", "--stdin"],
+                input=commands.encode("ascii"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+
+            first = inspect_branches(str(repo), limit=1)
+            self.assertEqual(first["total_count"], 1000)
+            self.assertEqual(first["returned_count"], 1)
+            self.assertTrue(first["has_more"])
+            last_cursor = git_history._encode_cursor(
+                "branches",
+                first["snapshot"],
+                "",
+                999,
+                git_history._repository_binding(repo),
+            )
+            last = inspect_branches(str(repo), cursor=last_cursor, limit=1)
+            self.assertEqual(last["returned_count"], 1)
+            self.assertTrue(last["complete"])
+            client = create_web_app(
+                repository_path=str(repo),
+                state_root=Path(temporary) / "state",
+            ).test_client()
+            browser_page = client.get("/git-review?view=branches")
+            self.assertEqual(browser_page.status_code, 200)
+            self.assertIn(b"Local branches (1000)", browser_page.data)
+            self.assertIn(b"Next local branches", browser_page.data)
+
+            _git(repo, "branch", "new-after-snapshot")
+            with self.assertRaisesRegex(GitHistoryError, "cursor is stale"):
+                inspect_branches(str(repo), cursor=first["next_cursor"], limit=1)
 
     def test_selections_are_validated_and_inspection_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

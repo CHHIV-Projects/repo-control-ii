@@ -7,7 +7,7 @@ from typing import Any
 
 from ..scanner.core import DEFAULT_STATE_ROOT
 from ..scanner.git_ops import ScanError, validate_git_worktree
-from .architect_dispatches import ArchitectDispatchError, list_owner_dispatches
+from .architect_dispatches import ArchitectDispatchError, get_dispatch, list_owner_dispatches
 from ..web.repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .authority import get_authorization_status, is_correction_mode as _is_correction_mode
 from .lifecycle import (
@@ -48,6 +48,7 @@ class CoderInterfaceError(RuntimeError):
 
 
 CENTRAL_REPOSITORY_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "ops" / "repositories.toml"
+MAX_CODER_DISPATCH_BODY_BYTES = 64 * 1024
 
 
 def resolve_repository_entry(
@@ -279,18 +280,25 @@ def get_coder_context(
         and item["type"] in {"INSTRUCTION", "RESPONSE"}
         and item.get("approved_milestone_id") == milestone_id
     ]
-    context_data["approved_architect_dispatches"] = [
-        {
+    context_dispatches = []
+    included_body_bytes = 0
+    for index, item in enumerate(applicable_dispatches, start=1):
+        body_bytes = len(item["body"].encode("utf-8"))
+        include_body = included_body_bytes + body_bytes <= MAX_CODER_DISPATCH_BODY_BYTES
+        dispatch = {
             "alias": f"A{index}",
             "dispatch_id": item["dispatch_id"],
             "type": item["type"],
             "milestone_id": item["milestone_id"],
             "approved_at": item["approved_at"],
             "related_event_id": item.get("related_event_id"),
-            "body": item["body"],
+            "body_included": include_body,
         }
-        for index, item in enumerate(applicable_dispatches, start=1)
-    ]
+        if include_body:
+            dispatch["body"] = item["body"]
+            included_body_bytes += body_bytes
+        context_dispatches.append(dispatch)
+    context_data["approved_architect_dispatches"] = context_dispatches
     context_data["prompt"] = {
         "path": prompt_rel_path,
         "content": prompt_content,
@@ -298,6 +306,46 @@ def get_coder_context(
         "identity": status_data["prompt"]["identity"],
     }
     return context_data
+
+
+def read_coder_dispatch_body(
+    dispatch_id: str,
+    repository_path: str | Path | None = None,
+    state_root: str | Path | None = None,
+    milestone_root: str | None = None,
+) -> dict[str, Any]:
+    status_data = get_coder_status(
+        repository_path=repository_path,
+        state_root=state_root,
+        milestone_root=milestone_root,
+    )
+    repository = status_data["repository"]
+    milestone_id = status_data["milestone"]["id"]
+    effective_state_root = Path(state_root).expanduser().resolve() if state_root else DEFAULT_STATE_ROOT
+    try:
+        dispatch = get_dispatch(
+            repository["path"],
+            effective_state_root,
+            repository["repository_id"],
+            dispatch_id,
+        )
+    except ArchitectDispatchError as exc:
+        raise CoderInterfaceError(f"Could not read approved Architect dispatch: {exc}") from exc
+    if (
+        dispatch["status"] != "APPROVED"
+        or dispatch["type"] not in {"INSTRUCTION", "RESPONSE"}
+        or dispatch.get("approved_milestone_id") != milestone_id
+    ):
+        raise CoderInterfaceError(
+            "The requested dispatch is not approved for the currently selected milestone."
+        )
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        "milestone_id": milestone_id,
+        "type": dispatch["type"],
+        "approved_at": dispatch["approved_at"],
+        "body": dispatch["body"],
+    }
 
 
 def read_coder_milestone_document_page(
@@ -427,10 +475,20 @@ def format_coder_context_text(data: dict[str, Any]) -> str:
                     f"{dispatch['alias']} — {dispatch['milestone_id']}",
                     f"Type: {dispatch['type']}",
                     f"Approved: {dispatch['approved_at']}",
-                    dispatch["body"],
-                    "",
                 ]
             )
+            if dispatch.get("body_included", "body" in dispatch):
+                lines.extend([dispatch["body"], ""])
+            else:
+                lines.extend(
+                    [
+                        f"Body not embedded to keep Coder context within "
+                        f"{MAX_CODER_DISPATCH_BODY_BYTES} bytes.",
+                        "Read the complete instruction with: repoctl coder-read-dispatch "
+                        f"--dispatch-id {dispatch['dispatch_id']}",
+                        "",
+                    ]
+                )
     else:
         lines.append("None.")
     release_preparation = data.get("procedure_release_preparation", {})
@@ -577,6 +635,55 @@ def submit_coder_bug(
     recorded_event = updated_workflow["event_history"][-1]
     return {
         "event_id": recorded_event["event_id"],
+        "milestone_id": candidate["milestone_id"],
+        "phase": recorded_event["phase_after"],
+        "summary": clean_summary,
+        "next_action": updated_workflow["next_action"],
+    }
+
+
+def submit_coder_bug_fix(
+    bug_event_id: str,
+    summary: str,
+    repository_path: str | Path | None = None,
+    state_root: str | Path | None = None,
+    milestone_root: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(bug_event_id, str) or not bug_event_id:
+        raise CoderInterfaceError("Bug event ID must not be empty.")
+    if not summary or not summary.strip():
+        raise CoderInterfaceError("Bug fix summary must not be empty.")
+    clean_summary = summary.strip()
+    entry, effective_state_root, candidate, workflow = _resolve_context_and_workflow(
+        repository_path=repository_path,
+        state_root=state_root,
+        milestone_root=milestone_root,
+    )
+    fixable_ids = {
+        item.get("event_id")
+        for item in workflow.get("fixable_bugs", [])
+        if isinstance(item, dict)
+    }
+    if bug_event_id not in fixable_ids:
+        raise CoderInterfaceError("Bug event ID is not a classified, unfixed in-scope bug.")
+    try:
+        updated_workflow = record_milestone_event(
+            repository_root=entry.path,
+            state_root=effective_state_root,
+            milestone_root=entry.milestone_root,
+            candidate=candidate,
+            event_type="bug_fixed",
+            actor_role="coder",
+            summary=clean_summary,
+            related_event_id=bug_event_id,
+            po_approved=False,
+        )
+    except WorkflowRecordError as exc:
+        raise CoderInterfaceError(str(exc)) from exc
+    recorded_event = updated_workflow["event_history"][-1]
+    return {
+        "event_id": recorded_event["event_id"],
+        "bug_event_id": bug_event_id,
         "milestone_id": candidate["milestone_id"],
         "phase": recorded_event["phase_after"],
         "summary": clean_summary,

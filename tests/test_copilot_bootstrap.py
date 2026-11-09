@@ -182,6 +182,28 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertIs(runner.last_kwargs["stdin"], subprocess.DEVNULL)
         self.assertFalse(runner.last_kwargs.get("shell", False))
 
+    def test_bootstrap_retains_all_bounded_dispatch_references(self):
+        self.context["approved_architect_dispatches"] = [
+            {
+                "alias": f"A{index + 1}",
+                "dispatch_id": f"{index + 1:032x}",
+                "type": "INSTRUCTION",
+                "milestone_id": "M009.001",
+                "approved_at": "2026-10-26T12:00:00+00:00",
+                "related_event_id": None,
+            }
+            for index in range(500)
+        ]
+        hook_output, _diagnostic = self._run()
+        payload = json.loads(hook_output["additionalContext"])
+        references = payload["approvedArchitectDispatches"]
+        self.assertEqual(references["count"], 500)
+        self.assertEqual(len(references["items"]), 4)
+        self.assertEqual(references["omitted"], 496)
+        self.assertIn("coder-context", payload["fullContextCommand"])
+        self.assertIn("coder-read-dispatch", references["items"][-1]["body_command"])
+        self.assertIn("approvedArchitectDispatches.omitted", payload["instruction"])
+
     def test_delivery_probe_is_added_only_when_acceptance_mode_is_requested(self):
         hook_output, diagnostic = self._run(delivery_marker="repoctl-probe-test-marker")
         context = json.loads(hook_output["additionalContext"])

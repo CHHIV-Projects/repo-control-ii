@@ -24,6 +24,7 @@ from repoctl.workflow.coder_interface import (
     read_coder_milestone_document_page,
     resolve_repository_entry,
     submit_coder_bug,
+    submit_coder_bug_fix,
     submit_coder_closeout,
     submit_coder_context_verification,
     submit_coder_question,
@@ -711,6 +712,33 @@ class TestCoderInterface(unittest.TestCase):
         )
         self.assertEqual(res["phase"], "IN_PROGRESS")
         self.assertEqual(res["summary"], "Found off-by-one error in pagination")
+
+        _record(
+            self.repo,
+            self.state_root,
+            self.candidate,
+            "bug_classified",
+            "Fix within scope",
+            actor_role="product_owner",
+            po_approved=True,
+            related_event_id=res["event_id"],
+            bug_scope="in_scope",
+        )
+        fixed = submit_coder_bug_fix(
+            res["event_id"],
+            "Added a regression test and corrected the pagination boundary.",
+            repository_path=self.repo,
+            state_root=self.state_root,
+        )
+        self.assertEqual(fixed["bug_event_id"], res["event_id"])
+        self.assertEqual(fixed["phase"], "IN_PROGRESS")
+        with self.assertRaisesRegex(CoderInterfaceError, "not a classified"):
+            submit_coder_bug_fix(
+                res["event_id"],
+                "Duplicate fix record",
+                repository_path=self.repo,
+                state_root=self.state_root,
+            )
 
         # Empty summary fails
         with self.assertRaises(CoderInterfaceError):
