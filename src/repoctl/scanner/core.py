@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import os
 import shutil
+import stat
 import threading
+import time
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Any, Iterator
@@ -20,25 +23,168 @@ from .util import classify_file_type, count_lines_if_text, encode_path_order, ma
 SCHEMA_VERSION = 1
 DEFAULT_STATE_ROOT = Path("~/.local/share/repoctl").expanduser()
 STATE_ARTIFACT_LOCK = threading.RLock()
+STATE_ARTIFACT_LOCK_TIMEOUT_SECONDS = 10.0
+_STATE_ARTIFACT_LOCK_LOCAL = threading.local()
+
+
+class StateArtifactLockError(RuntimeError):
+    pass
+
+
+class StateArtifactLockBusyError(StateArtifactLockError):
+    pass
+
+
+class StateArtifactLockOrderError(StateArtifactLockError):
+    pass
+
+
+def state_artifact_lock_held() -> bool:
+    return bool(getattr(_STATE_ARTIFACT_LOCK_LOCAL, "held", None))
+
+
+def _open_state_artifact_lock(state_root: Path) -> tuple[int, int]:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        root_descriptor = os.open(state_root, directory_flags)
+    except OSError as exc:
+        raise StateArtifactLockError(f"Could not safely open state root: {exc}") from exc
+    try:
+        try:
+            os.mkdir(".locks", mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            pass
+        try:
+            lock_directory_descriptor = os.open(".locks", directory_flags, dir_fd=root_descriptor)
+        except OSError as exc:
+            raise StateArtifactLockError(f"Could not safely open state lock directory: {exc}") from exc
+    finally:
+        os.close(root_descriptor)
+
+    try:
+        directory_info = os.fstat(lock_directory_descriptor)
+        if (
+            not stat.S_ISDIR(directory_info.st_mode)
+            or directory_info.st_uid != os.geteuid()
+            or directory_info.st_mode & 0o077
+        ):
+            raise StateArtifactLockError("State lock directory has unsafe type, ownership, or permissions.")
+        try:
+            lock_descriptor = os.open(
+                "state-artifacts.lock",
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=lock_directory_descriptor,
+            )
+        except OSError as exc:
+            raise StateArtifactLockError(f"Could not safely open persistent state lock file: {exc}") from exc
+        try:
+            lock_info = os.fstat(lock_descriptor)
+            named_info = os.stat(
+                "state-artifacts.lock",
+                dir_fd=lock_directory_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(lock_info.st_mode)
+                or lock_info.st_uid != os.geteuid()
+                or lock_info.st_mode & 0o077
+                or lock_info.st_nlink != 1
+                or (lock_info.st_dev, lock_info.st_ino) != (named_info.st_dev, named_info.st_ino)
+            ):
+                raise StateArtifactLockError("Persistent state lock file has unsafe identity or permissions.")
+            return lock_descriptor, lock_directory_descriptor
+        except BaseException:
+            os.close(lock_descriptor)
+            raise
+    except BaseException:
+        os.close(lock_directory_descriptor)
+        raise
+
+
+def _verify_state_artifact_lock_path(lock_descriptor: int, directory_descriptor: int) -> None:
+    try:
+        lock_info = os.fstat(lock_descriptor)
+        named_info = os.stat(
+            "state-artifacts.lock",
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise StateArtifactLockError(f"Persistent state lock file changed or became unavailable: {exc}") from exc
+    if (
+        not stat.S_ISREG(named_info.st_mode)
+        or (lock_info.st_dev, lock_info.st_ino) != (named_info.st_dev, named_info.st_ino)
+    ):
+        raise StateArtifactLockError("Persistent state lock file was replaced while in use.")
 
 
 @contextmanager
 def state_artifact_lock(state_root: str | Path) -> Iterator[None]:
-    lock_directory = Path(state_root).expanduser().resolve().parent
-    lock_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with STATE_ARTIFACT_LOCK:
-        descriptor = os.open(lock_directory, os.O_RDONLY | os.O_DIRECTORY)
+    root = Path(state_root).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        canonical_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise StateArtifactLockError(f"Could not resolve canonical state root: {exc}") from exc
+    held = getattr(_STATE_ARTIFACT_LOCK_LOCAL, "held", None)
+    if held:
+        if canonical_root not in held:
+            raise StateArtifactLockOrderError(
+                "Nested state-artifact locks must use the same canonical state root."
+            )
+        held[canonical_root]["depth"] += 1
+        try:
+            yield
+        finally:
+            held[canonical_root]["depth"] -= 1
+        return
+
+    deadline = time.monotonic() + STATE_ARTIFACT_LOCK_TIMEOUT_SECONDS
+    if not STATE_ARTIFACT_LOCK.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise StateArtifactLockBusyError(
+            f"State artifact lock is busy after {STATE_ARTIFACT_LOCK_TIMEOUT_SECONDS:g} seconds."
+        )
+    try:
+        held = getattr(_STATE_ARTIFACT_LOCK_LOCAL, "held", None)
+        if held:
+            raise StateArtifactLockOrderError("State-artifact lock order changed during acquisition.")
+        descriptor, directory_descriptor = _open_state_artifact_lock(canonical_root)
         acquired = False
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            acquired = True
-            yield
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise StateArtifactLockError(f"Could not acquire persistent state lock: {exc}") from exc
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise StateArtifactLockBusyError(
+                            f"State artifact lock is busy after {STATE_ARTIFACT_LOCK_TIMEOUT_SECONDS:g} seconds."
+                        ) from exc
+                    time.sleep(min(0.01, remaining))
+            _verify_state_artifact_lock_path(descriptor, directory_descriptor)
+            _STATE_ARTIFACT_LOCK_LOCAL.held = {canonical_root: {"depth": 1}}
+            try:
+                yield
+            finally:
+                del _STATE_ARTIFACT_LOCK_LOCAL.held
+                _verify_state_artifact_lock_path(descriptor, directory_descriptor)
         finally:
             try:
                 if acquired:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    except OSError as exc:
+                        raise StateArtifactLockError(f"Could not release persistent state lock: {exc}") from exc
             finally:
                 os.close(descriptor)
+                os.close(directory_descriptor)
+    finally:
+        STATE_ARTIFACT_LOCK.release()
 
 
 def _extract_requirements(repo_root: Path, tracked_files: list[str]) -> list[dict[str, Any]]:

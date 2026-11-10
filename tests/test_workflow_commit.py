@@ -10,6 +10,7 @@ from unittest import mock
 
 from repoctl.cli import main
 from repoctl.scanner.core import run_scan_with_artifacts
+from repoctl.scanner.util import make_repository_id
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.workflow import commit_execution as commit_execution_module
 from repoctl.workflow.commit_execution import execute_prepared_commit
@@ -484,9 +485,9 @@ class WorkflowCommitTests(unittest.TestCase):
                 code = main(["milestone", "prepare-commit", "--repository", str(repo), "--message", "cli message"])
                 self.assertEqual(code, 0)
 
-                repo_id_dirs = [p for p in state.iterdir() if p.is_dir()]
-                self.assertTrue(repo_id_dirs)
-                plans = list((repo_id_dirs[0] / "workflow" / "commit_plans").iterdir())
+                plans = list(
+                    (state / make_repository_id(repo) / "workflow" / "commit_plans").iterdir()
+                )
                 self.assertEqual(len(plans), 1)
                 plan_id = plans[0].name
 

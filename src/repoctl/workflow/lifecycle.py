@@ -10,7 +10,7 @@ from html import escape
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..scanner.core import STATE_ARTIFACT_LOCK
+from ..scanner.core import state_artifact_lock
 from ..scanner.util import make_repository_id
 from .architect_dispatches import list_outstanding_guidance
 from .context_verification import (
@@ -693,7 +693,7 @@ def load_milestone_workflow(
     milestone_root: str,
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         return _load_milestone_workflow_locked(
             repository_root,
             state_root,
@@ -827,7 +827,7 @@ def _record_milestone_event_locked(
     _, milestone_dir = _root_paths(root, milestone_root)
     relative_sidecar = _sidecar_path(current_candidate)
     sidecar_path = root / Path(*PurePosixPath(relative_sidecar).parts)
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         if sidecar_path.exists() or sidecar_path.is_symlink():
             try:
                 _contained_file(root, milestone_dir, relative_sidecar)
@@ -1072,7 +1072,7 @@ def record_milestone_action(
     outstanding_dispatch_ids: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Validate the entire browser action before one atomic sidecar replacement."""
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         workflow = _load_milestone_workflow_locked(
             repository_root, state_root, milestone_root, candidate,
         )
@@ -1127,7 +1127,7 @@ def record_milestone_reopen(
         raise WorkflowRecordError("A reopen reason is required and must not exceed 1000 characters.")
     if not isinstance(target_phase, str) or target_phase not in {"REVIEW", "IN_PROGRESS"}:
         raise WorkflowRecordError("Choose REVIEW or IN_PROGRESS as the reopen target.")
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         workflow = _load_milestone_workflow_locked(
             repository_root, state_root, milestone_root, candidate,
         )
@@ -1167,7 +1167,7 @@ def record_milestone_event(
     expected_event_count: int | None = None,
     expected_prompt_identity: str | None = None,
 ) -> dict[str, Any]:
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(state_root):
         return _record_milestone_event_locked(
             repository_root,
             state_root,

@@ -30,7 +30,15 @@ from ..intelligence.service import (
     refresh_graph,
     source_snapshot,
 )
-from ..scanner.core import DEFAULT_STATE_ROOT, run_scan_with_artifacts
+from ..scanner.core import (
+    DEFAULT_STATE_ROOT,
+    StateArtifactLockBusyError,
+    StateArtifactLockError,
+    StateArtifactLockOrderError,
+    run_scan_with_artifacts,
+    state_artifact_lock,
+    state_artifact_lock_held,
+)
 from ..scanner.git_ops import ScanError
 from ..snapshot.manager import create_snapshot
 from ..workflow.errors import WorkflowReasonError
@@ -73,7 +81,6 @@ from ..workflow.lifecycle import (
     waiting_resolution,
 )
 from ..workflow.context_verification import VERIFICATION_RECORD_SCHEMA_VERSION
-from ..scanner.core import STATE_ARTIFACT_LOCK
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
     MAX_HISTORY_CURSOR_LENGTH,
@@ -326,6 +333,26 @@ class WebUIError(RuntimeError):
         super().__init__(safe_message)
 
 
+class _RepositoryActionLock:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._depth = threading.local()
+
+    def __enter__(self) -> _RepositoryActionLock:
+        depth = getattr(self._depth, "value", 0)
+        if depth == 0 and state_artifact_lock_held():
+            raise StateArtifactLockOrderError(
+                "Repository action lock must be acquired before the state-artifact lock."
+            )
+        self._lock.acquire()
+        self._depth.value = depth + 1
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        self._depth.value -= 1
+        self._lock.release()
+
+
 def _validate_host(host: str) -> str:
     candidate = host.strip()
     if candidate not in ALLOWED_LOOPBACK_HOSTS:
@@ -405,7 +432,7 @@ def create_web_app(
     initial_repository = registry.active()
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
     git_actions = PreparedGitActions()
-    repository_action_lock = threading.RLock()
+    repository_action_lock = _RepositoryActionLock()
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = secrets.token_hex(32)
@@ -549,7 +576,7 @@ def create_web_app(
 
         @contextmanager
         def publication_guard():
-            with STATE_ARTIFACT_LOCK:
+            with state_artifact_lock(effective_state_root):
                 validate_start_snapshot()
                 yield
 
@@ -654,6 +681,57 @@ def create_web_app(
             error_message=err.safe_message,
             mutation_note="NO TARGET GIT MUTATION",
         ), err.status_code
+
+    @app.errorhandler(StateArtifactLockOrderError)
+    def _handle_state_lock_order_error(err: StateArtifactLockOrderError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "state_lock_order_violation", "message": str(err)},
+                },
+                500,
+            )
+        return render_template(
+            "error.html",
+            error_code="state_lock_order_violation",
+            error_message=str(err),
+            mutation_note="NO WORKFLOW EVENT OR TARGET GIT MUTATION",
+        ), 500
+
+    @app.errorhandler(StateArtifactLockBusyError)
+    def _handle_state_artifact_lock_busy(err: StateArtifactLockBusyError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "state_artifact_lock_busy", "message": str(err)},
+                },
+                503,
+            )
+        return render_template(
+            "error.html",
+            error_code="state_artifact_lock_busy",
+            error_message=str(err),
+            mutation_note="NO WORKFLOW EVENT OR TARGET GIT MUTATION",
+        ), 503
+
+    @app.errorhandler(StateArtifactLockError)
+    def _handle_state_artifact_lock_error(err: StateArtifactLockError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "state_artifact_lock_unavailable", "message": str(err)},
+                },
+                503,
+            )
+        return render_template(
+            "error.html",
+            error_code="state_artifact_lock_unavailable",
+            error_message=str(err),
+            mutation_note="REFRESH AND VERIFY STATE BEFORE RETRYING; THE OPERATION RESULT MAY BE UNCERTAIN",
+        ), 503
 
     @app.errorhandler(WorkflowReasonError)
     def _handle_workflow_reason_error(err: WorkflowReasonError):
@@ -1178,7 +1256,7 @@ def create_web_app(
 
             @contextmanager
             def publication_guard():
-                with STATE_ARTIFACT_LOCK:
+                with state_artifact_lock(effective_state_root):
                     validate_coder_refresh()
                     yield
 
@@ -2671,7 +2749,7 @@ def create_web_app(
     def record_milestone_workflow_event():
         require_mutation_request()
         intelligence_baseline = prepare_milestone_start_baseline()
-        with repository_action_lock, STATE_ARTIFACT_LOCK:
+        with repository_action_lock, state_artifact_lock(effective_state_root):
             require_current_repository_selection()
             submitted_repository = request.form.get("repository_key", "")
             submitted_generation = request.form.get("repository_generation", "")
@@ -2899,7 +2977,7 @@ def create_web_app(
     @app.post("/milestones/reopen")
     def reopen_milestone():
         require_mutation_request()
-        with repository_action_lock, STATE_ARTIFACT_LOCK:
+        with repository_action_lock, state_artifact_lock(effective_state_root):
             require_current_repository_selection()
             repository = current_repository()
             if (

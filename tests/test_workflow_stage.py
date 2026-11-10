@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from repoctl.cli import main
+from repoctl.scanner.util import make_repository_id
 from repoctl.workflow.errors import WorkflowReasonError
 from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
@@ -325,9 +326,9 @@ class WorkflowStageTests(unittest.TestCase):
                 code = main(["milestone", "prepare-stage", "--repository", str(repo), "--all"])
                 self.assertEqual(code, 0)
 
-                repo_id_dirs = [p for p in state.iterdir() if p.is_dir()]
-                self.assertTrue(repo_id_dirs)
-                plans = list((repo_id_dirs[0] / "workflow" / "stage_plans").iterdir())
+                plans = list(
+                    (state / make_repository_id(repo) / "workflow" / "stage_plans").iterdir()
+                )
                 self.assertEqual(len(plans), 1)
                 plan_id = plans[0].name
 

@@ -78,7 +78,7 @@ def _dispatch_worker(
     original_flock = scanner_core.fcntl.flock
 
     def report_lock_attempt(descriptor, operation):
-        if operation == scanner_core.fcntl.LOCK_EX:
+        if operation & scanner_core.fcntl.LOCK_EX:
             lock_attempted.set()
         return original_flock(descriptor, operation)
 

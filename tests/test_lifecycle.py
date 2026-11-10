@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import multiprocessing
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from repoctl.workflow import lifecycle
 from repoctl.workflow.lifecycle import (
     WorkflowRecordError,
     load_milestone_workflow,
@@ -64,6 +67,43 @@ def _record(repo: Path, state_root: Path, candidate: dict, event_type: str, summ
         actor_role=kwargs.pop("actor_role", "coder"),
         **kwargs,
     )
+
+
+def _append_workflow_event_concurrently(
+    repository_root: str,
+    state_root: str,
+    candidate: dict,
+    worker_number: int,
+    barrier,
+    results,
+) -> None:
+    original_read = lifecycle._read_ledger
+
+    def synchronized_read(*args, **kwargs):
+        ledger = original_read(*args, **kwargs)
+        if len(ledger["events"]) == 2:
+            try:
+                barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError:
+                pass
+        return ledger
+
+    try:
+        with patch("repoctl.workflow.lifecycle._read_ledger", side_effect=synchronized_read):
+            workflow = record_milestone_event(
+                repository_root,
+                state_root,
+                "docs/milestones",
+                candidate,
+                event_type="decision_recorded",
+                summary=f"Concurrent decision {worker_number}",
+                actor_role="product_owner",
+                po_approved=True,
+            )
+        results.put(("ok", workflow["event_history"][-1]["event_id"]))
+    except BaseException as exc:
+        results.put(("error", repr(exc)))
+        raise
 
 
 class MilestoneLifecycleTests(unittest.TestCase):
@@ -297,6 +337,62 @@ class MilestoneLifecycleTests(unittest.TestCase):
                 with self.assertRaises(WorkflowRecordError):
                     self.action("approve_and_start", **fields)
                 self.assertEqual(sidecar.read_bytes(), before)
+
+    def test_concurrent_process_appends_preserve_both_workflow_events(self) -> None:
+        initial_workflow = self.action("approve_and_start")
+        initial_ids = [
+            event["event_id"] for event in initial_workflow["event_history"]
+        ]
+        context = multiprocessing.get_context("fork")
+        barrier = context.Barrier(2)
+        results = context.Queue()
+        processes = [
+            context.Process(
+                target=_append_workflow_event_concurrently,
+                args=(
+                    str(self.repo),
+                    str(self.state_root),
+                    self.candidate,
+                    worker_number,
+                    barrier,
+                    results,
+                ),
+            )
+            for worker_number in (1, 2)
+        ]
+        for process in processes:
+            process.start()
+        outputs = []
+        try:
+            outputs = [results.get(timeout=10) for _ in processes]
+        finally:
+            for process in processes:
+                process.join(5)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(5)
+
+        self.assertEqual(len(outputs), 2)
+        self.assertTrue(all(not process.is_alive() for process in processes))
+        self.assertEqual([process.exitcode for process in processes], [0, 0])
+        self.assertTrue(all(status == "ok" for status, _ in outputs), outputs)
+        recorded_ids = {event_id for _, event_id in outputs}
+        workflow = load_milestone_workflow(
+            self.repo, self.state_root, "docs/milestones", self.candidate,
+        )
+        self.assertEqual(workflow["event_count"], 4)
+        self.assertEqual(
+            [event["event_id"] for event in workflow["event_history"][:2]],
+            initial_ids,
+        )
+        persisted_ids = {
+            event["event_id"]
+            for event in workflow["event_history"]
+            if event["event_type"] == "decision_recorded"
+        }
+        self.assertEqual(persisted_ids, recorded_ids)
+        sidecar = self.repo / workflow["sidecar_path"]
+        self.assertEqual(sidecar.read_text(encoding="utf-8").count("repoctl-workflow-ledger:v1"), 1)
 
     def test_following_event_failure_does_not_persist_first_event(self) -> None:
         sidecar = self.repo / "docs/milestones/M003.001_example_workflow.md"

@@ -1385,7 +1385,11 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
                 def fail_target_temp_create(path, flags, mode=0o777, *, dir_fd=None):
                     nonlocal target_creates
-                    if dir_fd is not None and flags & os.O_CREAT:
+                    if (
+                        dir_fd is not None
+                        and flags & os.O_CREAT
+                        and str(path).startswith(".repoctl-")
+                    ):
                         target_creates += 1
                         if target_creates == failure_index:
                             raise OSError("fixture ENOSPC creating generated target temp")

@@ -12,8 +12,14 @@ from repoctl.intelligence import measurements
 from repoctl.intelligence.provider import IntelligenceError
 from repoctl.intelligence.service import artifact_root, build_graph, graph_status
 from repoctl.web.repository_registry import RepositoryRegistry
+from repoctl.scanner.core import (
+    StateArtifactLockBusyError,
+    StateArtifactLockError,
+    StateArtifactLockOrderError,
+    state_artifact_lock,
+)
 from repoctl.scanner.util import make_repository_id
-from repoctl.web.app import create_web_app
+from repoctl.web.app import _RepositoryActionLock, create_web_app
 from repoctl.workflow.architect_dispatches import (
     list_outstanding_guidance,
     submit_dispatch,
@@ -101,6 +107,41 @@ class FakeGraphProvider:
 
 
 class MilestoneWebTests(unittest.TestCase):
+    def test_repository_action_lock_order_and_lock_error_responses(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            state_root = Path(td) / "state"
+            action_lock = _RepositoryActionLock()
+            with state_artifact_lock(state_root):
+                with self.assertRaises(StateArtifactLockOrderError):
+                    with action_lock:
+                        self.fail("action lock must not be acquired after state lock")
+            with action_lock:
+                with state_artifact_lock(state_root):
+                    with action_lock:
+                        pass
+
+            repository = _repo(Path(td), "repo", "R003.01")
+            app = create_web_app(repository_path=str(repository), state_root=state_root)
+
+            @app.get("/api/architect/v1/test-state-lock-error")
+            def raise_state_lock_error():
+                raise StateArtifactLockError("The state artifact lock is busy.")
+
+            @app.get("/api/architect/v1/test-state-lock-busy")
+            def raise_state_lock_busy():
+                raise StateArtifactLockBusyError("The state artifact lock is busy.")
+
+            client = app.test_client()
+            unavailable = client.get("/api/architect/v1/test-state-lock-error")
+            self.assertEqual(unavailable.status_code, 503)
+            self.assertEqual(
+                unavailable.get_json()["error"]["code"],
+                "state_artifact_lock_unavailable",
+            )
+            busy = client.get("/api/architect/v1/test-state-lock-busy")
+            self.assertEqual(busy.status_code, 503)
+            self.assertEqual(busy.get_json()["error"]["code"], "state_artifact_lock_busy")
+
     def test_reads_queries_and_nonstart_events_do_not_refresh_graphs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..scanner.core import STATE_ARTIFACT_LOCK
+from ..scanner.core import state_artifact_lock
 from ..scanner.util import make_repository_id
 
 _CANONICAL_FILENAME_RE = re.compile(
@@ -243,8 +243,15 @@ def load_milestone_selection(
     state_root: str | Path,
     milestone_root: str = "docs/milestones",
 ) -> dict[str, Any]:
-    with STATE_ARTIFACT_LOCK:
-        root = Path(repository_root).resolve(strict=True)
+    root = Path(repository_root).resolve(strict=True)
+    external_state_root = Path(state_root).expanduser().resolve()
+    if external_state_root == root or external_state_root.is_relative_to(root):
+        return {
+            "status": "invalid",
+            "selection": None,
+            "reason": "Milestone selection state must be stored outside the selected repository.",
+        }
+    with state_artifact_lock(state_root):
         repository_id = make_repository_id(root)
         path = _pointer_path(Path(state_root).expanduser(), repository_id)
         try:
@@ -342,7 +349,7 @@ def save_milestone_selection(
         "milestone_id": milestone_id,
         "prompt_path": candidate["prompt_path"],
     }
-    with STATE_ARTIFACT_LOCK:
+    with state_artifact_lock(external_state_root):
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
