@@ -530,6 +530,136 @@ class WorkflowLedgerV2Tests(unittest.TestCase):
             "clean",
         )
 
+    def test_partial_pending_record_write_is_isolated_and_retryable(self) -> None:
+        import os
+
+        manifest = self.create()
+        events = self.start_events()
+        transaction_id = uuid.uuid4().hex
+        original_write = os.write
+        calls = 0
+
+        def partial_then_fail(fd: int, data: bytes) -> int:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return original_write(fd, data[:1])
+            raise OSError("injected partial recovery-record write")
+
+        with patch("repoctl.workflow.ledger_v2.os.write", side_effect=partial_then_fail):
+            with self.assertRaisesRegex(ledger_v2.LedgerV2Error, "recovery temporary"):
+                self.append(manifest, events, transaction_id)
+
+        _, index_dir = ledger_v2._sidecar_dirs(self.anchor)
+        pending = index_dir / ledger_v2._PENDING_NAME
+        temporary_files = list(index_dir.glob(".pending-transaction-*.tmp"))
+        self.assertFalse(pending.exists())
+        self.assertEqual(len(temporary_files), 1)
+        self.assertEqual(temporary_files[0].read_bytes(), b"{")
+
+        audit = ledger_v2.audit_history(
+            self.anchor,
+            self.repository_id,
+            self.milestone_id,
+            self.prompt_path,
+            self.prompt_sha256,
+        )
+        self.assertTrue(audit["history_verified"])
+        self.assertEqual(audit["event_count"], 0)
+        self.assertEqual(audit["recovery_status"], "orphan_pending_temporary")
+        self.assertEqual(audit["pending_temporary_count"], 1)
+
+        result = self.append(manifest, events, transaction_id)
+        self.assertFalse(result["reconciled"])
+        audit = ledger_v2.audit_history(
+            self.anchor,
+            self.repository_id,
+            self.milestone_id,
+            self.prompt_path,
+            self.prompt_sha256,
+        )
+        self.assertTrue(audit["history_verified"])
+        self.assertEqual(audit["event_count"], len(events))
+        self.assertEqual(audit["recovery_status"], "orphan_pending_temporary")
+        page = ledger_v2.page_events(
+            self.anchor,
+            self.repository_id,
+            self.milestone_id,
+            self.prompt_path,
+            self.prompt_sha256,
+        )
+        self.assertEqual([event["event_id"] for event in page["events"]], [
+            event["event_id"] for event in events
+        ])
+        self.assertEqual(temporary_files[0].read_bytes(), b"{")
+
+    def test_audit_reports_malformed_pending_marker_separately_from_history(self) -> None:
+        manifest = self.create()
+        _, index_dir = ledger_v2._sidecar_dirs(self.anchor)
+        (index_dir / ledger_v2._PENDING_NAME).write_bytes(b"{")
+
+        audit = ledger_v2.audit_history(
+            self.anchor,
+            self.repository_id,
+            self.milestone_id,
+            self.prompt_path,
+            self.prompt_sha256,
+        )
+        self.assertTrue(audit["history_verified"])
+        self.assertEqual(audit["event_count"], 0)
+        self.assertEqual(audit["recovery_status"], "invalid_pending_marker")
+        self.assertIn("malformed", audit["recovery_error"])
+
+        event = self.start_events()[0]
+        with self.assertRaisesRegex(ledger_v2.LedgerV2Error, "malformed"):
+            self.append(manifest, [event], uuid.uuid4().hex)
+
+    def test_published_pending_marker_survives_directory_sync_uncertainty(self) -> None:
+        import os
+
+        manifest = self.create()
+        events = self.start_events()
+        transaction_id = uuid.uuid4().hex
+        original_fsync = os.fsync
+        calls = 0
+
+        def fail_pending_directory_sync(fd: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected pending directory fsync failure")
+            original_fsync(fd)
+
+        with patch("repoctl.workflow.ledger_v2.os.fsync", side_effect=fail_pending_directory_sync):
+            with self.assertRaisesRegex(ledger_v2.LedgerV2Error, "published"):
+                self.append(manifest, events, transaction_id)
+
+        _, index_dir = ledger_v2._sidecar_dirs(self.anchor)
+        pending = index_dir / ledger_v2._PENDING_NAME
+        self.assertTrue(pending.exists())
+        self.assertEqual(
+            ledger_v2.audit_history(
+                self.anchor,
+                self.repository_id,
+                self.milestone_id,
+                self.prompt_path,
+                self.prompt_sha256,
+            )["recovery_status"],
+            "unresolved",
+        )
+        retry = self.append(manifest, events, transaction_id)
+        self.assertFalse(retry["reconciled"])
+        audit = ledger_v2.audit_history(
+            self.anchor,
+            self.repository_id,
+            self.milestone_id,
+            self.prompt_path,
+            self.prompt_sha256,
+        )
+        self.assertTrue(audit["history_verified"])
+        self.assertEqual(audit["event_count"], len(events))
+        self.assertEqual(audit["recovery_status"], "clean")
+
     def test_tampered_segment_and_index_pages_fail_closed(self) -> None:
         manifest = self.create()
         manifest = self.append(manifest, self.start_events())["manifest"]

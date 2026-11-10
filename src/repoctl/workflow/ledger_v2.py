@@ -31,6 +31,8 @@ _TX_RE = re.compile(r"^[0-9a-f]{32}$")
 _PAGE_SCHEMA_VERSION = 1
 _SEGMENT_SCHEMA_VERSION = 1
 _PENDING_NAME = ".pending-transaction.json"
+_PENDING_TEMP_RE = re.compile(r"^\.pending-transaction-[0-9a-f]{32}-[0-9a-f]{32}\.tmp$")
+_MAX_REPORTED_PENDING_TEMPS = 16
 _ROOT_NAMES = (
     "segment_catalog",
     "event_ids",
@@ -374,16 +376,53 @@ def _read_pending_transaction(index_fd: int) -> dict[str, Any] | None:
 
 
 def _write_pending_transaction(index_fd: int, pending: dict[str, Any]) -> None:
-    _write_new_file(
-        index_fd,
-        _PENDING_NAME,
-        canonical_json_bytes(pending),
-        maximum=MAX_ANCHOR_BYTES,
-    )
+    content = canonical_json_bytes(pending)
+    temporary_name = f".pending-transaction-{pending['transaction_id']}-{uuid.uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
+        fd = os.open(temporary_name, flags, 0o600, dir_fd=index_fd)
+    except OSError as exc:
+        raise LedgerV2Error(f"Could not create workflow recovery temporary: {exc}") from exc
+    try:
+        view = memoryview(content)
+        written = 0
+        while written < len(view):
+            count = os.write(fd, view[written:])
+            if count <= 0:
+                raise OSError("Workflow recovery record write made no forward progress.")
+            written += count
+        os.fsync(fd)
+    except OSError as exc:
+        raise LedgerV2Error(
+            f"Could not durably write workflow recovery temporary {temporary_name}: {exc}"
+        ) from exc
+    finally:
+        os.close(fd)
+
+    try:
+        os.link(
+            temporary_name,
+            _PENDING_NAME,
+            src_dir_fd=index_fd,
+            dst_dir_fd=index_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as exc:
+        raise LedgerV2Error("A workflow recovery record appeared before it could be published.") from exc
+    except OSError as exc:
+        raise LedgerV2Error(f"Could not atomically publish workflow recovery record: {exc}") from exc
+    try:
+        os.unlink(temporary_name, dir_fd=index_fd)
         os.fsync(index_fd)
     except OSError as exc:
-        raise LedgerV2Error(f"Workflow recovery record directory sync failed: {exc}") from exc
+        raise LedgerV2Error(
+            f"Workflow recovery record was published but directory durability is uncertain: {exc}"
+        ) from exc
+
+
+def _pending_temporary_artifacts(index_fd: int) -> tuple[int, list[str]]:
+    names = sorted(name for name in os.listdir(index_fd) if _PENDING_TEMP_RE.fullmatch(name))
+    return len(names), names[:_MAX_REPORTED_PENDING_TEMPS]
 
 
 def _clear_pending_transaction(index_fd: int) -> None:
@@ -2106,11 +2145,18 @@ def audit_history(
             index_fd,
             closeout_path,
         )
-        pending = _read_pending_transaction(index_fd)
+        pending_error = None
+        try:
+            pending = _read_pending_transaction(index_fd)
+        except LedgerV2Error as exc:
+            pending = None
+            pending_error = str(exc)
         recovery_status = "clean"
         pending_transaction_id = None
         pending_segment_names: list[str] = []
-        if pending is not None:
+        if pending_error is not None:
+            recovery_status = "invalid_pending_marker"
+        elif pending is not None:
             pending_transaction_id = pending["transaction_id"]
             committed = indexes.tree("transactions").get(pending_transaction_id)
             if committed is None:
@@ -2122,6 +2168,9 @@ def audit_history(
                 raise LedgerV2Error(
                     "Workflow recovery record disagrees with the committed transaction index."
                 )
+        pending_temp_count, pending_temp_names = _pending_temporary_artifacts(index_fd)
+        if recovery_status == "clean" and pending_temp_count:
+            recovery_status = "orphan_pending_temporary"
         if _read_anchor(path, repository_id, milestone_id, prompt_path, prompt_sha256)[1] != anchor_hash:
             raise StaleCursorError("Workflow generation changed while the full audit was running.")
         return {
@@ -2132,8 +2181,14 @@ def audit_history(
             "index_pages_verified": True,
             "segment_chain_verified": True,
             "recovery_status": recovery_status,
+            "recovery_error": pending_error,
             "pending_transaction_id": pending_transaction_id,
             "pending_segment_names": pending_segment_names,
+            "pending_temporary_count": pending_temp_count,
+            "pending_temporary_names": pending_temp_names,
+            "omitted_pending_temporary_count": max(
+                0, pending_temp_count - len(pending_temp_names)
+            ),
         }
     finally:
         os.close(index_fd)
