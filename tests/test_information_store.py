@@ -300,6 +300,36 @@ class InformationStoreTests(unittest.TestCase):
         with self.assertRaises(RevisionConflictError):
             self.store.get_revision(prompt["document_id"], "wrong-revision")
 
+    def test_revision_listing_pages_exact_versions_and_reports_status(self) -> None:
+        first = self._create_prompt()
+        second = self.store.create_immutable_revision(
+            DocumentRevisionInput(
+                document_id="prompt-document",
+                revision_id="prompt-revision-2",
+                logical_key=FIXTURE_PROMPT_PATH,
+                logical_type="PROMPT",
+                source_path=FIXTURE_PROMPT_PATH,
+                content="# Updated fixture prompt\n",
+                parent_revision_id=first["revision_id"],
+            )
+        )
+        page_one = self.store.list_revisions(first["document_id"], limit=1)
+        self.assertEqual(len(page_one["revisions"]), 1)
+        self.assertEqual(page_one["revisions"][0]["revision_id"], first["revision_id"])
+        self.assertEqual(page_one["revisions"][0]["status"], "historical")
+        self.assertIsNotNone(page_one["next_cursor"])
+        page_two = self.store.list_revisions(
+            first["document_id"],
+            after_order=page_one["next_cursor"],
+            limit=1,
+        )
+        self.assertEqual(len(page_two["revisions"]), 1)
+        self.assertEqual(page_two["revisions"][0]["revision_id"], second["revision_id"])
+        self.assertEqual(page_two["revisions"][0]["status"], "draft")
+        self.assertIsNone(page_two["next_cursor"])
+        with self.assertRaises(RevisionConflictError):
+            self.store.list_revisions("missing-document")
+
     def test_prompt_approval_requires_explicit_fixture_po_confirmation(self) -> None:
         prompt = self._create_prompt()
         event = _closeout_history()[0]

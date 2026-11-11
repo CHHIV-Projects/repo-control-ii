@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ document.name }} - Document Library</title>
+  </head>
+  <body>
+    <main>
+      <h1>{{ document.name }}</h1>
+      <dl>
+        <dt>Repository</dt><dd>{{ document.repository_key }} ({{ document.repository_id }})</dd>
+        <dt>Path</dt><dd>{{ document.path }}</dd>
+        <dt>Milestone</dt><dd>{{ document.milestone_id or '-' }}</dd>
+        <dt>Type</dt><dd>{{ document.logical_type }}</dd>
+        <dt>Revision</dt><dd>{{ document.revision_id }}</dd>
+        <dt>SHA-256</dt><dd>{{ document.content_sha256 }}</dd>
+        <dt>Authority</dt><dd>{{ document.authority_classification }} - {{ document.authority_note }}</dd>
+        <dt>Status</dt><dd>{{ document.revision_status }} / {{ document.approval_state }}</dd>
+        <dt>Provenance</dt><dd><pre>{{ document.version_provenance | tojson(indent=2) }}</pre></dd>
+      </dl>
+      <p>
+        UTF-8 bytes {{ document.byte_offset }}-{{ document.next_byte_offset }};
+        complete revision: {{ document.complete }}.
+      </p>
+      <pre>{{ document.content }}</pre>
+      {% if document.next_cursor %}
+        <a href="{{ url_for('.document', document_id=document.document_id, revision_id=document.revision_id, cursor=document.next_cursor) }}">
+          Read next content page
+        </a>
+      {% endif %}
+      <p><a href="{{ url_for('.index') }}">Back to search</a></p>
+    </main>
+  </body>
+</html>

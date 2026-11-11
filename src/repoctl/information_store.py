@@ -22,6 +22,7 @@ MAX_EVENT_COUNT = 2000
 MAX_EVENT_BATCH_BYTES = 5_000_000
 MAX_EVENT_PAGE_SIZE = 100
 MAX_DOCUMENT_LIST_SIZE = 100
+MAX_DOCUMENT_REVISION_LIST_SIZE = 100
 MAX_DOCUMENT_PAGE_BYTES = 64 * 1024
 MAX_DOCUMENT_BYTES = 5_000_000
 MAX_DISPATCH_COUNT = 500
@@ -1780,6 +1781,88 @@ class InformationStore:
             return {
                 "documents": [dict(row) for row in selected],
                 "next_cursor": selected[-1]["document_order"] if has_more and selected else None,
+            }
+        finally:
+            connection.close()
+
+    def list_revisions(
+        self,
+        document_id: str,
+        *,
+        after_order: int = 0,
+        limit: int = MAX_DOCUMENT_REVISION_LIST_SIZE,
+    ) -> dict[str, Any]:
+        if not isinstance(document_id, str) or not document_id:
+            raise ValueError("Document ID is required.")
+        if type(after_order) is not int or after_order < 0:
+            raise ValueError("Revision cursor must be a non-negative integer.")
+        if type(limit) is not int or not 1 <= limit <= MAX_DOCUMENT_REVISION_LIST_SIZE:
+            raise ValueError(
+                f"Revision page size must be between 1 and {MAX_DOCUMENT_REVISION_LIST_SIZE}."
+            )
+        connection = self._connection(read_only=True)
+        try:
+            self._verify_identity(connection, self.identity)
+            document = connection.execute(
+                """
+                SELECT draft_revision_id, approved_revision_id
+                FROM document
+                WHERE repository_id = ? AND milestone_id = ? AND document_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, document_id),
+            ).fetchone()
+            if document is None:
+                raise RevisionConflictError("Document was not found.")
+            rows = connection.execute(
+                """
+                SELECT revision_order, revision_id, parent_revision_id, content_sha256,
+                       source_kind, provenance_json, created_at
+                FROM document_revision
+                WHERE repository_id = ? AND milestone_id = ? AND document_id = ?
+                    AND revision_order > ?
+                ORDER BY revision_order
+                LIMIT ?
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    document_id,
+                    after_order,
+                    limit + 1,
+                ),
+            ).fetchall()
+            has_more = len(rows) > limit
+            selected = rows[:limit]
+            revisions = []
+            for row in selected:
+                status = (
+                    "approved"
+                    if row["revision_id"] == document["approved_revision_id"]
+                    else "draft"
+                    if row["revision_id"] == document["draft_revision_id"]
+                    else "historical"
+                )
+                revisions.append(
+                    {
+                        **{
+                            key: row[key]
+                            for key in (
+                                "revision_order",
+                                "revision_id",
+                                "parent_revision_id",
+                                "content_sha256",
+                                "source_kind",
+                                "created_at",
+                            )
+                        },
+                        "provenance": json.loads(row["provenance_json"]),
+                        "status": status,
+                    }
+                )
+            return {
+                "document_id": document_id,
+                "revisions": revisions,
+                "next_cursor": selected[-1]["revision_order"] if has_more and selected else None,
             }
         finally:
             connection.close()

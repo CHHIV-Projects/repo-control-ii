@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Document Library</title>
+  </head>
+  <body>
+    <main>
+      <h1>Document Library</h1>
+      <form method="get">
+        <label>Keywords <input name="q" value="{{ search_args.q }}"></label>
+        <label>Repository ID <input name="repository_id" value="{{ search_args.repository_id or '' }}"></label>
+        <label>Repository key <input name="repository_key" value="{{ search_args.repository_key or '' }}"></label>
+        <label>Milestone ID <input name="milestone_id" value="{{ search_args.milestone_id or '' }}"></label>
+        <label>Milestone text <input name="milestone_text" value="{{ search_args.milestone_text or '' }}"></label>
+        <label>Document class <input name="document_class" value="{{ search_args.document_class or '' }}"></label>
+        <label>Authority <input name="authority" value="{{ search_args.authority or '' }}"></label>
+        <label>Source <input name="source" value="{{ search_args.source or '' }}"></label>
+        <label>Status <input name="status" value="{{ search_args.status or '' }}"></label>
+        <label>Page size <input name="page_size" type="number" min="1" max="100" value="{{ search_args.page_size }}"></label>
+        <button type="submit">Search</button>
+      </form>
+
+      <p>
+        {{ page.returned_count }} shown of {{ page.total_count }} matching records;
+        {{ page.searched_count }} candidates searched;
+        {{ page.candidate_count }} total provider records;
+        complete: {{ page.total_count_complete }}.
+      </p>
+      {% if page.warnings %}
+        <ul aria-label="Source warnings">
+          {% for warning in page.warnings %}<li>{{ warning }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      <form method="get" action="{{ url_for('.export') }}">
+        <table>
+          <thead>
+            <tr>
+              <th>Export</th><th>Document</th><th>Repository</th><th>Milestone</th>
+              <th>Class</th><th>Authority</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in page.documents %}
+              <tr>
+                <td><input type="checkbox" name="selection" value="{{ item.document_id }}|{{ item.revision_id }}"></td>
+                <td>
+                  <a href="{{ url_for('.document', document_id=item.document_id, revision_id=item.revision_id) }}">
+                    {{ item.name }}
+                  </a>
+                  <small>{{ item.path }} | {{ item.revision_id }}</small>
+                </td>
+                <td>{{ item.repository_key }} ({{ item.repository_id }})</td>
+                <td>{{ item.milestone_id or '-' }}</td>
+                <td>{{ item.logical_type }}</td>
+                <td>{{ item.authority_classification }}</td>
+                <td>{{ item.revision_status }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7">No matching documents.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <button type="submit">Download selected manifest and Markdown</button>
+      </form>
+
+      {% if page.documents %}
+        <form method="get" action="{{ url_for('.compare') }}">
+          <label>
+            Compare left
+            <select name="left">
+              {% for item in page.documents %}
+                <option value="{{ item.document_id }}|{{ item.revision_id }}">{{ item.name }} | {{ item.revision_id }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Compare right
+            <select name="right">
+              {% for item in page.documents %}
+                <option value="{{ item.document_id }}|{{ item.revision_id }}">{{ item.name }} | {{ item.revision_id }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Compare exact revisions</button>
+        </form>
+      {% endif %}
+
+      {% if page.has_more %}
+        <form method="get">
+          {% for key, value in search_args.items() %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endfor %}
+          <input type="hidden" name="cursor" value="{{ page.next_cursor }}">
+          <button type="submit">Next page ({{ page.deferred_count }} remaining)</button>
+        </form>
+      {% endif %}
+    </main>
+  </body>
+</html>

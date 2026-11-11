@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Compare revisions - Document Library</title>
+  </head>
+  <body>
+    <main>
+      <h1>Compare exact revisions</h1>
+      <section>
+        <h2>Left</h2>
+        <p>{{ result.left.repository_key }} | {{ result.left.path }} | {{ result.left.revision_id }}</p>
+        <p>{{ result.left.authority_classification }} | {{ result.left.revision_status }}</p>
+        <h2>Right</h2>
+        <p>{{ result.right.repository_key }} | {{ result.right.path }} | {{ result.right.revision_id }}</p>
+        <p>{{ result.right.authority_classification }} | {{ result.right.revision_status }}</p>
+      </section>
+      <p>Diff size: {{ result.diff_bytes }} bytes; complete: {{ result.complete }}.</p>
+      <pre>{{ result.diff }}</pre>
+      <p><a href="{{ url_for('.index') }}">Back to search</a></p>
+    </main>
+  </body>
+</html>
