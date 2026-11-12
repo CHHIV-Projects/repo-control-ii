@@ -14,8 +14,8 @@ from .workflow import architect_dispatches, lifecycle
 
 
 APPLICATION_ID = 0x52434953
-SCHEMA_VERSION = 1
-SCHEMA_ID = "repoctl.information-store:v1"
+SCHEMA_VERSION = 2
+SCHEMA_ID = "repoctl.information-store:v2"
 MINIMUM_SQLITE_VERSION = (3, 51, 3)
 BUSY_TIMEOUT_MS = 250
 MAX_EVENT_COUNT = 2000
@@ -56,6 +56,17 @@ _PUBLICATION_STATUSES = {
     "committed",
     "failed",
     "drifted",
+}
+_PUBLICATION_TRANSITIONS = {
+    "accepted_not_published": {"accepted_not_published", "preview_ready", "failed", "drifted"},
+    "preview_ready": {"preview_ready", "materialized_unstaged", "staged", "committed", "failed", "drifted"},
+    "materialized_unstaged": {
+        "materialized_unstaged", "staged", "committed", "failed", "drifted",
+    },
+    "staged": {"staged", "committed", "failed", "drifted"},
+    "committed": {"committed"},
+    "failed": {"failed", "materialized_unstaged", "staged", "committed", "drifted"},
+    "drifted": {"drifted"},
 }
 
 
@@ -372,18 +383,31 @@ _SCHEMA_STATEMENTS = (
         repository_id TEXT NOT NULL,
         milestone_id TEXT NOT NULL,
         publication_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
         document_id TEXT NOT NULL,
         revision_id TEXT NOT NULL,
         content_sha256 TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        target_branch TEXT NOT NULL,
+        target_head TEXT NOT NULL,
+        worktree_fingerprint TEXT NOT NULL,
+        index_fingerprint TEXT NOT NULL,
+        preview_fingerprint TEXT NOT NULL,
+        git_observation_json TEXT NOT NULL,
         status TEXT NOT NULL CHECK (
             status IN (
                 'accepted_not_published', 'preview_ready', 'materialized_unstaged',
                 'staged', 'committed', 'failed', 'drifted'
             )
         ),
+        related_commit_id TEXT,
+        failure_reason TEXT,
+        confirmed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (repository_id, publication_id),
+        UNIQUE (repository_id, milestone_id, request_id),
         FOREIGN KEY (repository_id, milestone_id, revision_id, content_sha256)
             REFERENCES document_revision(repository_id, milestone_id, revision_id, content_sha256)
     )
@@ -481,6 +505,29 @@ _EXPECTED_TABLES = {
     "dispatch_history",
     "import_source",
     "document_publication",
+}
+_DOCUMENT_PUBLICATION_COLUMNS = {
+    "repository_id",
+    "milestone_id",
+    "publication_id",
+    "request_id",
+    "request_hash",
+    "document_id",
+    "revision_id",
+    "content_sha256",
+    "target_path",
+    "target_branch",
+    "target_head",
+    "worktree_fingerprint",
+    "index_fingerprint",
+    "preview_fingerprint",
+    "git_observation_json",
+    "status",
+    "related_commit_id",
+    "failure_reason",
+    "confirmed_at",
+    "created_at",
+    "updated_at",
 }
 _EXPECTED_TRIGGERS = {
     "document_revision_no_update",
@@ -799,13 +846,22 @@ class InformationStore:
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
         }
         if tables != _EXPECTED_TABLES:
-            raise SchemaMismatchError("SQLite information-store table set does not match schema version 1.")
+            raise SchemaMismatchError(
+                f"SQLite information-store table set does not match schema version {SCHEMA_VERSION}."
+            )
+        publication_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(document_publication)")
+        }
+        if publication_columns != _DOCUMENT_PUBLICATION_COLUMNS:
+            raise SchemaMismatchError("SQLite publication record columns do not match the current schema.")
         triggers = {
             row["name"]
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'trigger'")
         }
         if triggers != _EXPECTED_TRIGGERS:
-            raise SchemaMismatchError("SQLite information-store trigger set does not match schema version 1.")
+            raise SchemaMismatchError(
+                f"SQLite information-store trigger set does not match schema version {SCHEMA_VERSION}."
+            )
         metadata = dict(connection.execute("SELECT key, value FROM store_metadata").fetchall())
         if metadata != {"schema_id": SCHEMA_ID, "creation_mode": "disposable_fixture"}:
             raise SchemaMismatchError("SQLite database is not an initialized disposable fixture store.")
@@ -1912,6 +1968,376 @@ class InformationStore:
         finally:
             connection.close()
         return self.get_revision(document_id, row["revision_id"])
+
+    def get_closeout_publication_evidence(
+        self,
+        document_id: str,
+        revision_id: str,
+    ) -> dict[str, Any]:
+        connection = self._connection(read_only=True)
+        try:
+            connection.execute("BEGIN")
+            self._verify_identity(connection, self.identity)
+            revision_row = connection.execute(
+                """
+                SELECT d.document_id, d.logical_key, d.logical_type, d.source_path,
+                       r.revision_id, r.content, r.content_sha256
+                FROM document_revision r
+                JOIN document d ON d.document_id = r.document_id
+                WHERE r.repository_id = ? AND r.milestone_id = ?
+                    AND r.document_id = ? AND r.revision_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, document_id, revision_id),
+            ).fetchone()
+            if revision_row is None:
+                raise RevisionConflictError("Exact closeout revision was not found.")
+            revision = dict(revision_row)
+            if _sha256(revision["content"].encode("utf-8")) != revision["content_sha256"]:
+                raise IntegrityFailureError("Stored closeout content hash does not match its revision.")
+
+            state = connection.execute(
+                """
+                SELECT store_revision, event_count, projection_json
+                FROM workflow_state WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id),
+            ).fetchone()
+            events = self._load_events(connection)
+            projection = self._validate_projection(state, events)
+            links = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT event_id, document_id, revision_id, content_sha256, link_role
+                    FROM workflow_document_link
+                    WHERE repository_id = ? AND milestone_id = ?
+                        AND document_id = ? AND revision_id = ? AND content_sha256 = ?
+                    ORDER BY event_id, link_role
+                    """,
+                    (
+                        self.identity.repository_id,
+                        self.identity.milestone_id,
+                        document_id,
+                        revision_id,
+                        revision["content_sha256"],
+                    ),
+                )
+            ]
+            decisions = [
+                {
+                    **{
+                        key: row[key]
+                        for key in ("decision_type", "actor_role", "po_confirmed", "source_kind", "decided_at")
+                    },
+                    "payload": json.loads(row["payload_json"]),
+                }
+                for row in connection.execute(
+                    """
+                    SELECT decision_type, actor_role, po_confirmed, source_kind, decided_at, payload_json
+                    FROM document_revision_decision
+                    WHERE repository_id = ? AND milestone_id = ?
+                        AND document_id = ? AND revision_id = ?
+                    ORDER BY decided_at, decision_id
+                    """,
+                    (self.identity.repository_id, self.identity.milestone_id, document_id, revision_id),
+                )
+            ]
+            result = {
+                "repository_id": self.identity.repository_id,
+                "milestone_id": self.identity.milestone_id,
+                "store_revision": state["store_revision"],
+                "projection": projection,
+                "events": events,
+                "revision": revision,
+                "links": links,
+                "decisions": decisions,
+            }
+            connection.commit()
+            return result
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def get_document_publication(
+        self,
+        *,
+        publication_id: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if (publication_id is None) == (request_id is None):
+            raise ValueError("Supply exactly one publication ID or request ID.")
+        column, value = (
+            ("publication_id", publication_id)
+            if publication_id is not None
+            else ("request_id", request_id)
+        )
+        if not isinstance(value, str) or not value:
+            raise ValueError("Publication lookup ID must be non-empty text.")
+        connection = self._connection(read_only=True)
+        try:
+            self._verify_identity(connection, self.identity)
+            row = connection.execute(
+                f"""
+                SELECT * FROM document_publication
+                WHERE repository_id = ? AND milestone_id = ? AND {column} = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, value),
+            ).fetchone()
+            return self._publication_row(row) if row is not None else None
+        finally:
+            connection.close()
+
+    def create_document_publication(
+        self,
+        *,
+        publication_id: str,
+        request_id: str,
+        request_hash: str,
+        document_id: str,
+        revision_id: str,
+        content_sha256: str,
+        target_path: str,
+        target_branch: str,
+        target_head: str,
+        worktree_fingerprint: str,
+        index_fingerprint: str,
+        preview_fingerprint: str,
+        git_observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        for label, value in (
+            ("publication ID", publication_id),
+            ("request ID", request_id),
+            ("document ID", document_id),
+            ("revision ID", revision_id),
+            ("target branch", target_branch),
+        ):
+            if not isinstance(value, str) or not value or len(value) > 256:
+                raise ValueError(f"{label} must be non-empty text of at most 256 characters.")
+        _validate_relative_path(target_path, "Publication target path")
+        for label, value in (
+            ("request hash", request_hash),
+            ("content hash", content_sha256),
+            ("worktree fingerprint", worktree_fingerprint),
+            ("index fingerprint", index_fingerprint),
+            ("preview fingerprint", preview_fingerprint),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest.")
+        if not isinstance(target_head, str) or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", target_head):
+            raise ValueError("Target HEAD must be a full Git object ID.")
+        if not isinstance(git_observation, dict):
+            raise ValueError("Git observation must be a JSON object.")
+
+        connection = self._connection()
+        try:
+            self._begin_immediate(connection)
+            self._verify_identity(connection, self.identity)
+            existing = connection.execute(
+                """
+                SELECT * FROM document_publication
+                WHERE repository_id = ? AND milestone_id = ? AND request_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, request_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_hash"] != request_hash:
+                    raise IdempotencyConflictError(
+                        "Publication request ID was already used with different inputs."
+                    )
+                connection.commit()
+                return self._publication_row(existing)
+
+            revision = connection.execute(
+                """
+                SELECT d.logical_type, d.source_path
+                FROM document_revision r JOIN document d ON d.document_id = r.document_id
+                WHERE r.repository_id = ? AND r.milestone_id = ?
+                    AND r.document_id = ? AND r.revision_id = ? AND r.content_sha256 = ?
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    document_id,
+                    revision_id,
+                    content_sha256,
+                ),
+            ).fetchone()
+            if revision is None:
+                raise RevisionConflictError("Publication must reference an exact stored revision and hash.")
+            if revision["logical_type"] != "CLOSEOUT" or revision["source_path"] != target_path:
+                raise IdentityMismatchError("Publication target must match the exact closeout revision path.")
+
+            timestamp = _now()
+            connection.execute(
+                """
+                INSERT INTO document_publication
+                    (repository_id, milestone_id, publication_id, request_id, request_hash,
+                     document_id, revision_id, content_sha256, target_path, target_branch, target_head,
+                     worktree_fingerprint, index_fingerprint, preview_fingerprint,
+                     git_observation_json, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_not_published', ?, ?)
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    publication_id,
+                    request_id,
+                    request_hash,
+                    document_id,
+                    revision_id,
+                    content_sha256,
+                    target_path,
+                    target_branch,
+                    target_head,
+                    worktree_fingerprint,
+                    index_fingerprint,
+                    preview_fingerprint,
+                    _json_text(git_observation),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM document_publication
+                WHERE repository_id = ? AND publication_id = ?
+                """,
+                (self.identity.repository_id, publication_id),
+            ).fetchone()
+            connection.commit()
+            return self._publication_row(row)
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.rollback()
+            if "unique constraint failed" in str(exc).lower():
+                raise IdempotencyConflictError("Publication operation identity is already in use.") from exc
+            raise IntegrityFailureError("Publication record failed SQLite integrity validation.") from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _publication_row(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["git_observation"] = json.loads(result.pop("git_observation_json"))
+        return result
+
+    def update_document_publication(
+        self,
+        publication_id: str,
+        *,
+        expected_status: str,
+        status: str,
+        target_branch: str,
+        target_head: str,
+        worktree_fingerprint: str,
+        index_fingerprint: str,
+        preview_fingerprint: str,
+        git_observation: dict[str, Any],
+        related_commit_id: str | None = None,
+        failure_reason: str | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        if expected_status not in _PUBLICATION_STATUSES or status not in _PUBLICATION_STATUSES:
+            raise ValueError("Publication status is unsupported.")
+        if status not in _PUBLICATION_TRANSITIONS[expected_status]:
+            raise ValueError(f"Publication cannot transition from {expected_status} to {status}.")
+        if not isinstance(publication_id, str) or not publication_id:
+            raise ValueError("Publication ID is required.")
+        if not isinstance(target_branch, str) or not target_branch:
+            raise ValueError("Target branch is required.")
+        if not isinstance(target_head, str) or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", target_head):
+            raise ValueError("Target HEAD must be a full Git object ID.")
+        for label, value in (
+            ("worktree fingerprint", worktree_fingerprint),
+            ("index fingerprint", index_fingerprint),
+            ("preview fingerprint", preview_fingerprint),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest.")
+        if not isinstance(git_observation, dict):
+            raise ValueError("Git observation must be a JSON object.")
+        if related_commit_id is not None and not re.fullmatch(
+            r"(?:[a-f0-9]{40}|[a-f0-9]{64})", related_commit_id
+        ):
+            raise ValueError("Related commit ID must be a full Git object ID.")
+        if status == "committed" and related_commit_id is None:
+            raise ValueError("Committed publication requires a verified related commit ID.")
+        if type(confirm) is not bool:
+            raise ValueError("Publication confirmation must be an explicit boolean.")
+        if confirm and expected_status != "preview_ready":
+            raise ValueError("PO confirmation is valid only for a preview-ready publication.")
+        if failure_reason is not None and (
+            not isinstance(failure_reason, str) or len(failure_reason) > 1000
+        ):
+            raise ValueError("Failure reason must be text of at most 1000 characters.")
+
+        connection = self._connection()
+        try:
+            self._begin_immediate(connection)
+            row = connection.execute(
+                """
+                SELECT * FROM document_publication
+                WHERE repository_id = ? AND milestone_id = ? AND publication_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, publication_id),
+            ).fetchone()
+            if row is None:
+                raise RevisionConflictError("Publication operation was not found.")
+            if row["status"] != expected_status:
+                raise StaleStateError("Publication status changed before the update.")
+            commit_id = related_commit_id if related_commit_id is not None else row["related_commit_id"]
+            confirmed_at = row["confirmed_at"] or (_now() if confirm else None)
+            cursor = connection.execute(
+                """
+                UPDATE document_publication
+                SET status = ?, target_branch = ?, target_head = ?,
+                    worktree_fingerprint = ?, index_fingerprint = ?, preview_fingerprint = ?,
+                    git_observation_json = ?, related_commit_id = ?, failure_reason = ?,
+                    confirmed_at = ?, updated_at = ?
+                WHERE repository_id = ? AND milestone_id = ? AND publication_id = ? AND status = ?
+                """,
+                (
+                    status,
+                    target_branch,
+                    target_head,
+                    worktree_fingerprint,
+                    index_fingerprint,
+                    preview_fingerprint,
+                    _json_text(git_observation),
+                    commit_id,
+                    failure_reason,
+                    confirmed_at,
+                    _now(),
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    publication_id,
+                    expected_status,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleStateError("Publication status changed during the update.")
+            updated = connection.execute(
+                """
+                SELECT * FROM document_publication
+                WHERE repository_id = ? AND milestone_id = ? AND publication_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id, publication_id),
+            ).fetchone()
+            connection.commit()
+            return self._publication_row(updated)
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def read_revision_page(
         self,

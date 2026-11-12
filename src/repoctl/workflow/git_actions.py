@@ -10,7 +10,7 @@ import stat
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -897,6 +897,146 @@ def _branch_name(repo_root: Path, value: str | None) -> str:
 
 def _index_fingerprint(repo_root: Path) -> str:
     return _digest(_index_records(repo_root))
+
+
+def inspect_publication_target(
+    repository_path: str | Path,
+    target_path: str,
+    *,
+    commit_id: str | None = None,
+) -> dict[str, Any]:
+    """Read-only Git Review evidence for one canonical publication target."""
+    if not isinstance(target_path, str):
+        raise GitActionError("invalid_publication_path", "Publication target must be a contained POSIX path.", 400)
+    relative = PurePosixPath(target_path)
+    if (
+        not target_path
+        or relative.is_absolute()
+        or "\\" in target_path
+        or any(part in {"", ".", ".."} for part in target_path.split("/"))
+    ):
+        raise GitActionError("invalid_publication_path", "Publication target must be a contained POSIX path.", 400)
+    repo_root = Path(repository_path).expanduser().resolve()
+    state = _state(repo_root)
+    index_records = _index_records(repo_root)
+    target_identity = _file_identity(repo_root, target_path)
+    worktree_entries = []
+    total_bytes = target_identity.get("size", 0)
+    for item in state["working_tree"]["entries"]:
+        path = item["path"]
+        identity = _file_identity(repo_root, path)
+        total_bytes += identity.get("size", 0)
+        if total_bytes > 64 * 1024 * 1024:
+            raise GitActionError(
+                "publication_snapshot_too_large",
+                "Changed worktree files exceed the bounded publication fingerprint size.",
+            )
+        worktree_entries.append(
+            {
+                "path": path,
+                "kind": item["kind"],
+                "xy": item.get("xy"),
+                "identity": identity,
+            }
+        )
+    worktree_fingerprint = _digest(
+        json.dumps(
+            {"entries": worktree_entries, "target": target_identity},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    worktree_fingerprint_without_target = _digest(
+        json.dumps(
+            {"entries": [item for item in worktree_entries if item["path"] != target_path]},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    index_fingerprint = _digest(index_records)
+    entry = _status_entry(state, target_path)
+    xy = (entry.get("xy") or "") if entry else ""
+    staged = bool(xy and xy[0] != ".")
+    target_index_records = _index_records(repo_root, target_path)
+    staged_blob_sha256 = None
+    if target_index_records:
+        staged_blob, _stderr, code = _run_read(
+            repo_root,
+            ["show", f":{target_path}"],
+            limit=MAX_FILE_HASH_BYTES,
+        )
+        if code != 0:
+            raise GitActionError("git_index_inspection_failed", "Git could not read the target index blob.")
+        staged_blob_sha256 = _digest(staged_blob)
+
+    def blob_at(reference: str) -> str | None:
+        tree_entry, _stderr, code = _run_read(
+            repo_root,
+            ["ls-tree", "-z", reference, "--", f":(literal){target_path}"],
+            allow_nonzero=True,
+            limit=4096,
+        )
+        if code != 0:
+            raise GitActionError("git_blob_inspection_failed", "Git could not inspect the requested path tree.")
+        if not tree_entry:
+            return None
+        entry = _records_by_path(tree_entry).get(target_path)
+        if entry is None:
+            return None
+        metadata = entry.split(b"\t", 1)[0].split()
+        if len(metadata) != 3 or metadata[1] != b"blob":
+            raise GitActionError("git_blob_inspection_failed", "Git path entry is not a blob.")
+        content, _stderr, code = _run_read(
+            repo_root,
+            ["show", f"{reference}:{target_path}"],
+            limit=MAX_FILE_HASH_BYTES,
+        )
+        if code != 0:
+            raise GitActionError("git_blob_inspection_failed", "Git could not read the requested path blob.")
+        return _digest(content)
+
+    head_blob_sha256 = blob_at("HEAD")
+    verified_commit_id = None
+    commit_blob_sha256 = None
+    if commit_id is not None:
+        if not isinstance(commit_id, str) or not _OBJECT_ID.fullmatch(commit_id):
+            raise GitActionError("invalid_commit_id", "Commit observation requires a full Git object ID.", 400)
+        resolved_commit = _resolve_commit(repo_root, commit_id)
+        if resolved_commit == commit_id:
+            commit_blob_sha256 = blob_at(resolved_commit)
+            if commit_blob_sha256 is not None:
+                verified_commit_id = resolved_commit
+
+    final_state = _state(repo_root)
+    final_index_records = _index_records(repo_root)
+    if (
+        final_state["head"] != state["head"]
+        or final_state["branch"]["name"] != state["branch"]["name"]
+        or final_state["working_tree"]["entries"] != state["working_tree"]["entries"]
+        or final_index_records != index_records
+        or _file_identity(repo_root, target_path) != target_identity
+    ):
+        raise GitActionError("stale_publication_snapshot", "Git state changed while publication evidence was captured.")
+    return {
+        "connected": True,
+        "repository_root": str(repo_root),
+        "branch": state["branch"]["name"],
+        "head": state["head"],
+        "index_fingerprint": index_fingerprint,
+        "worktree_fingerprint": worktree_fingerprint,
+        "worktree_fingerprint_without_target": worktree_fingerprint_without_target,
+        "target": {
+            "path": target_path,
+            "worktree": target_identity,
+            "status": entry,
+            "staged": staged,
+            "index_records_sha256": _digest(target_index_records),
+            "staged_blob_sha256": staged_blob_sha256,
+            "head_blob_sha256": head_blob_sha256,
+        },
+        "verified_commit_id": verified_commit_id,
+        "commit_blob_sha256": commit_blob_sha256,
+    }
 
 
 def _ref_counts(repo_root: Path, left: str, right: str) -> tuple[int, int]:

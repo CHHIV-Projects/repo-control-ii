@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture closeout publication</title>
+</head>
+<body>
+  <main>
+    <h1>Accepted closeout publication (fixture only)</h1>
+    <p>Git Review integration: <strong>{{ integration_status }}</strong></p>
+    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+    {% if result %}
+      <h2>Status: {{ result.status }}</h2>
+      <dl>
+        <dt>Repository</dt>
+        <dd>{{ result.repository_key }} ({{ result.registered_repository_root }})</dd>
+        <dt>Branch / HEAD</dt>
+        <dd>{{ result.branch }} / {{ result.head }}</dd>
+        <dt>Source document / revision</dt>
+        <dd>{{ result.source.document_id }} / {{ result.source.revision_id }}</dd>
+        <dt>Accepted Markdown SHA-256</dt>
+        <dd>{{ result.source.content_sha256 }}</dd>
+        <dt>Canonical target</dt>
+        <dd>{{ result.target_path }}</dd>
+        <dt>Worktree status</dt>
+        <dd>{{ result.git_observation.target.status }}</dd>
+        <dt>Index fingerprint</dt>
+        <dd>{{ result.index_fingerprint }}</dd>
+      </dl>
+      <h3>Complete proposed Markdown diff</h3>
+      <pre>{{ result.proposed_diff }}</pre>
+      <details>
+        <summary>Exact accepted Markdown</summary>
+        <pre>{{ result.source.content }}</pre>
+      </details>
+      <p>No associated code or reconnaissance context is attached.</p>
+      {% if result.status == "preview_ready" %}
+        <form method="post" action="{{ url_for('fixture_closeout_publication.publish', publication_id=result.publication_id) }}">
+          <input type="hidden" name="preview_fingerprint" value="{{ result.preview_fingerprint }}">
+          <label>
+            <input type="checkbox" name="confirm_publish" value="yes" required>
+            Confirm this exact fixture preview as the Product Owner
+          </label>
+          <button type="submit">Publish accepted closeout to Git</button>
+        </form>
+      {% endif %}
+      <p>Materialization is unstaged. Use the existing Git Review for any later stage or commit; this component exposes neither action.</p>
+    {% else %}
+      <p>Status: accepted_not_published. Accept &amp; Close does not create or stage a file.</p>
+      <form method="post" action="{{ url_for('fixture_closeout_publication.preview') }}">
+        <label>Request ID <input name="request_id" required></label>
+        <label>Document ID <input name="document_id" required></label>
+        <label>Revision ID <input name="revision_id" required></label>
+        <label>Accepted content SHA-256 <input name="content_sha256" required></label>
+        <button type="submit">Preview accepted closeout publication</button>
+      </form>
+    {% endif %}
+  </main>
+</body>
+</html>
