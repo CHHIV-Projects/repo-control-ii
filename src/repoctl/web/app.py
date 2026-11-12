@@ -44,7 +44,13 @@ from ..snapshot.manager import create_snapshot
 from ..workflow.errors import WorkflowReasonError
 from ..workflow.git_state import inspect_git_state
 from ..workflow.diff import GitReviewError, inspect_git_review
-from ..workflow.git_actions import GitActionError, PreparedGitActions
+from ..workflow.git_actions import (
+    MAX_ACTION_PATHS,
+    MAX_STAGE_PATHS,
+    MAX_STAGE_PATH_BYTES,
+    GitActionError,
+    PreparedGitActions,
+)
 from ..workflow.git_history import (
     GitHistoryError,
     inspect_branches,
@@ -2461,6 +2467,7 @@ def create_web_app(
         branches = None
         branch_controls = None
         remote_controls = None
+        git_review_asset_version = None
         status_code = 200
         file_action_options = {}
         commit_options = {"available": False, "reason": "Commit is available when supported changes are staged."}
@@ -2511,6 +2518,10 @@ def create_web_app(
         except (GitReviewError, GitHistoryError, GitActionError) as exc:
             error_message = str(exc)
             status_code = 409 if "cursor is stale" in str(exc) else 503
+        if review_view == "changes":
+            git_review_asset_version = hashlib.sha256(
+                (Path(__file__).parent / "static" / "git_review.js").read_bytes()
+            ).hexdigest()
         return render_template(
             "git_review.html",
             review_view=review_view,
@@ -2530,6 +2541,10 @@ def create_web_app(
             selected_main_only_cursor=request.args.get("main_only_cursor"),
             file_action_options=file_action_options,
             commit_options=commit_options,
+            max_action_paths=MAX_ACTION_PATHS,
+            max_stage_paths=MAX_STAGE_PATHS,
+            max_stage_path_bytes=MAX_STAGE_PATH_BYTES,
+            git_review_asset_version=git_review_asset_version,
             error_message=error_message,
             selected_file=selected_file,
         ), status_code
@@ -2557,7 +2572,10 @@ def create_web_app(
             "fast-forward",
         }
         view = "branches" if action in branch_actions else "changes"
-        return redirect(url_for("git_review_page", view=view))
+        target = url_for("git_review_page", view=view)
+        if action == "stage":
+            target += "#changed-files"
+        return redirect(target)
 
     @app.post("/git-review/action/prepare")
     def git_action_prepare():

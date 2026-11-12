@@ -284,7 +284,7 @@
       {% endif %}
     </div>
   {% elif review %}
-    {% if review_view == 'changes' %}<script src="{{ url_for('static', filename='git_review.js') }}" defer></script>{% endif %}
+    {% if review_view == 'changes' %}<script src="{{ url_for('static', filename='git_review.js', v=git_review_asset_version) }}" defer></script>{% endif %}
     <article class="card">
       <h3>Repository</h3>
       <dl>
@@ -324,7 +324,7 @@
       </dl>
     </article>
 
-    <article class="card spaced-top commit-review">
+    <article id="commit-review" class="card spaced-top commit-review">
       <h3>Staged set: {% if commit_options.available %}{{ commit_options.staged_paths | length }} file{% if commit_options.staged_paths | length != 1 %}s{% endif %}{% else %}commit unavailable{% endif %}</h3>
       <p>Commit will include only the staged paths and diff shown below. Unstaged and untracked changes remain outside the commit; no automatic staging occurs.</p>
       {% if commit_options.available %}
@@ -368,10 +368,21 @@
     </article>
 
     <div class="git-review-layout spaced-top">
-      <form id="batch-action-form" method="post" action="{{ url_for('git_action_prepare') }}" data-max-paths="5000" data-max-path-bytes="1048576">
+      <form id="batch-action-form" method="post" action="{{ url_for('git_action_prepare') }}"
+        data-max-stage-paths="{{ max_stage_paths }}"
+        data-max-stage-path-bytes="{{ max_stage_path_bytes }}"
+        data-max-action-paths="{{ max_action_paths }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <section class="card git-review-files">
-        <h3>Changed files ({{ review.files | length }})</h3>
+        <h3 id="changed-files">Changed files ({{ review.files | length }})</h3>
+        {% if commit_options.available %}
+          <p class="staged-next-action" role="status">
+            <strong>{{ commit_options.staged_paths | length }} staged file{% if commit_options.staged_paths | length != 1 %}s{% endif %}.</strong>
+            <a href="#commit-review">Next: review the staged commit</a>
+          </p>
+        {% else %}
+          <p class="staged-next-action muted" role="status">{{ commit_options.reason }}</p>
+        {% endif %}
         {% if review.files %}
           <div class="batch-selection-toolbar">
             <label><input id="select-all-visible" type="checkbox"> Select all visible</label>
