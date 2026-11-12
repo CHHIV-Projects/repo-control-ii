@@ -563,11 +563,123 @@ class DocumentLibraryTests(unittest.TestCase):
             },
             "same_content": role_document["content"] == baseline_role["content"],
         }
+        known_record = next(
+            item
+            for item in self.sqlite_provider.enumerate_records().records
+            if item.revision_id.endswith("sqlite-revision-274-v2")
+        )
+        known_started = time.perf_counter()
+        known_document = self.library.get(known_record.document_id, known_record.revision_id)
+        known_elapsed_ms = (time.perf_counter() - known_started) * 1000
+        self.assertIn("sqlite-new-version-274", known_document["content"])
+        known_metrics = {
+            "elapsed_ms": round(known_elapsed_ms, 3),
+            "candidate_count": 1,
+            "tool_calls": 1,
+            "evidence_bytes": len(known_document["content"].encode("utf-8")),
+            "estimated_tokens": estimate_tokens(known_document["content"]),
+            "exact_revision": known_document["revision_id"] == known_record.revision_id,
+        }
+
+        filtered_started = time.perf_counter()
+        filtered = self.library.search(
+            query="legacy-tail-marker",
+            filters={
+                "repository_key": "alpha-git",
+                "milestone_id": "12.65.0",
+                "document_class": "PROMPT",
+            },
+            page_size=5,
+        )
+        filtered_document = self.library.get(
+            filtered["documents"][0]["document_id"],
+            filtered["documents"][0]["revision_id"],
+        )
+        filtered_elapsed_ms = (time.perf_counter() - filtered_started) * 1000
+        self.assertEqual(filtered["total_count"], 1)
+        self.assertEqual(filtered["documents"][0]["milestone_id"], "12.65.0")
+        filtered_metrics = {
+            "elapsed_ms": round(filtered_elapsed_ms, 3),
+            "candidate_count": filtered["candidate_count"],
+            "searched_count": filtered["searched_count"],
+            "tool_calls": 2,
+            "evidence_bytes": len(filtered_document["content"].encode("utf-8")),
+            "estimated_tokens": estimate_tokens(filtered_document["content"]),
+            "complete": filtered["total_count_complete"],
+        }
+
+        broad_started = time.perf_counter()
+        broad_page = self.library.search(query="wide-tail-token", page_size=100)
+        broad_documents = list(broad_page["documents"])
+        broad_pages = 1
+        while broad_page["has_more"]:
+            broad_page = self.library.search(
+                query="wide-tail-token",
+                page_size=100,
+                cursor=broad_page["next_cursor"],
+            )
+            broad_documents.extend(broad_page["documents"])
+            broad_pages += 1
+        broad_elapsed_ms = (time.perf_counter() - broad_started) * 1000
+        broad_identities = {
+            (item["document_id"], item["revision_id"])
+            for item in broad_documents
+        }
+        self.assertEqual(len(broad_documents), 556)
+        self.assertEqual(len(broad_identities), 556)
+        self.assertTrue(broad_page["total_count_complete"])
+        broad_response = json.dumps(broad_documents, ensure_ascii=False, sort_keys=True)
+        broad_metrics = {
+            "elapsed_ms": round(broad_elapsed_ms, 3),
+            "candidate_count": broad_page["candidate_count"],
+            "match_count": len(broad_documents),
+            "tool_calls_or_pages": broad_pages,
+            "serialized_result_bytes": len(broad_response.encode("utf-8")),
+            "estimated_result_tokens": estimate_tokens(broad_response),
+            "complete": broad_page["total_count_complete"],
+        }
+
+        open_export_started = time.perf_counter()
+        exact_document = self.library.get(known_record.document_id, known_record.revision_id)
+        content_pages = []
+        cursor = None
+        page_count = 0
+        while True:
+            content_page = self.library.read_page(
+                exact_document["document_id"],
+                exact_document["revision_id"],
+                cursor=cursor,
+                page_bytes=64,
+            )
+            content_pages.append(content_page["content"])
+            page_count += 1
+            if content_page["complete"]:
+                break
+            cursor = content_page["next_cursor"]
+        exported = self.library.export(
+            [(exact_document["document_id"], exact_document["revision_id"])]
+        )
+        open_export_elapsed_ms = (time.perf_counter() - open_export_started) * 1000
+        self.assertEqual("".join(content_pages), exact_document["content"])
+        self.assertEqual(exported["manifest"][0]["content_sha256"], exact_document["content_sha256"])
+        open_export_metrics = {
+            "elapsed_ms": round(open_export_elapsed_ms, 3),
+            "candidate_count": 1,
+            "tool_calls": 2 + page_count,
+            "content_pages": page_count,
+            "evidence_bytes": len(exact_document["content"].encode("utf-8")),
+            "estimated_tokens": estimate_tokens(exact_document["content"]),
+            "open_exact_and_export_hash_match": True,
+        }
         metrics = {
             "method": "UTF-8 bytes / 4, rounded up; estimate_tokens",
             "tasks": {
                 "historical_archive_tail": historical_metrics,
                 "current_role_document": role_metrics,
+                "known_revision_id": known_metrics,
+                "filtered_legacy_history": filtered_metrics,
+                "broad_complete_search": broad_metrics,
+                "full_content_open_and_export": open_export_metrics,
             },
         }
         print(f"document-library-retrieval-metrics={json.dumps(metrics, sort_keys=True)}")

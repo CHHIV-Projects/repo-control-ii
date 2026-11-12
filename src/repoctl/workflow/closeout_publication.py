@@ -783,6 +783,71 @@ class CloseoutPublicationService:
             os.close(root_fd)
 
 
+class FixtureGitReviewHandoffAdapter:
+    """Prepare a read-only pointer from a materialized fixture to the existing Git Review UI."""
+
+    def __init__(self, service: CloseoutPublicationService) -> None:
+        if service.context.test_only is not True:
+            raise CloseoutPublicationError("Git Review handoff adapter is fixture-only.")
+        self.service = service
+
+    def prepare(self, publication_id: str) -> dict[str, Any]:
+        record = self.service.store.get_document_publication(publication_id=publication_id)
+        if record is None:
+            raise RevisionConflictError("Publication operation was not found.")
+        if (
+            record["status"] != "materialized_unstaged"
+            or record["confirmed_at"] is None
+            or record["target_path"] != self.service.target_path
+        ):
+            raise PublicationDriftError(
+                "Only a confirmed, safely materialized, unstaged closeout can be handed to Git Review."
+            )
+        source = self.service._accepted_source(
+            record["document_id"],
+            record["revision_id"],
+            record["content_sha256"],
+        )
+        if source["revision"]["content_sha256"] != record["content_sha256"]:
+            raise PublicationDriftError("Accepted closeout revision no longer matches the publication record.")
+        target_bytes = self.service._read_target()
+        if target_bytes is None or hashlib.sha256(target_bytes).hexdigest() != record["content_sha256"]:
+            raise PublicationDriftError("Materialized closeout bytes do not match the accepted revision.")
+        observation = self.service._observe()
+        previous = record["git_observation"]
+        target = observation["target"]
+        worktree = target.get("worktree")
+        if (
+            observation["branch"] != record["target_branch"]
+            or observation["head"] != record["target_head"]
+            or observation["index_fingerprint"] != record["index_fingerprint"]
+            or observation["worktree_fingerprint_without_target"]
+            != previous.get("worktree_fingerprint_without_target")
+            or target.get("staged") is not False
+            or not isinstance(worktree, dict)
+            or worktree.get("sha256") != record["content_sha256"]
+        ):
+            raise PublicationDriftError("Git state changed after materialization; Git Review handoff is withheld.")
+        return {
+            "status": "ready_for_product_owner_git_review",
+            "publication_id": publication_id,
+            "repository_id": self.service.identity.repository_id,
+            "repository_key": self.service.identity.repository_key,
+            "repository_root": self.service.identity.repository_root,
+            "milestone_id": self.service.identity.milestone_id,
+            "document_id": record["document_id"],
+            "revision_id": record["revision_id"],
+            "content_sha256": record["content_sha256"],
+            "target_path": record["target_path"],
+            "branch": observation["branch"],
+            "head": observation["head"],
+            "git_review_path": "/git-review?view=changes",
+            "operator_action_required": True,
+            "automatic_stage_or_commit": False,
+            "existing_git_review_remains_mutation_authority": True,
+        }
+
+
 def _fingerprint(value: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

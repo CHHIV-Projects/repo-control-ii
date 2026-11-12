@@ -24,6 +24,7 @@ from repoctl.web.closeout_publication import create_fixture_closeout_publication
 from repoctl.workflow.closeout_publication import (
     CloseoutPublicationError,
     CloseoutPublicationService,
+    FixtureGitReviewHandoffAdapter,
     FixturePublicationContext,
     NotConnectedGitReviewObserver,
     PublicationCollisionError,
@@ -575,6 +576,68 @@ class CloseoutPublicationTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), self.closeout_content.encode())
         self.assertIsNone(self.observer.staged_blob_sha256)
 
+    def test_materialized_closeout_handoff_is_exact_read_only_and_requires_no_git_mutation(self) -> None:
+        preview = self._preview()
+        self.service.materialize(
+            preview["publication_id"],
+            preview["preview_fingerprint"],
+            fixture_po_confirmation=True,
+        )
+        with patch.object(git_actions, "_run_mutation") as mutation:
+            handoff = FixtureGitReviewHandoffAdapter(self.service).prepare(preview["publication_id"])
+        self.assertEqual(handoff["status"], "ready_for_product_owner_git_review")
+        self.assertEqual(handoff["revision_id"], self.closeout["revision_id"])
+        self.assertEqual(handoff["content_sha256"], self.closeout_hash)
+        self.assertEqual(handoff["target_path"], _CLOSEOUT_PATH)
+        self.assertEqual(handoff["git_review_path"], "/git-review?view=changes")
+        self.assertTrue(handoff["operator_action_required"])
+        self.assertFalse(handoff["automatic_stage_or_commit"])
+        mutation.assert_not_called()
+
+    def test_handoff_refuses_changed_git_state_without_mutation(self) -> None:
+        preview = self._preview()
+        self.service.materialize(
+            preview["publication_id"],
+            preview["preview_fingerprint"],
+            fixture_po_confirmation=True,
+        )
+        self.observer.other_index = "changed after materialization"
+        with patch.object(git_actions, "_run_mutation") as mutation:
+            with self.assertRaises(PublicationDriftError):
+                FixtureGitReviewHandoffAdapter(self.service).prepare(preview["publication_id"])
+        mutation.assert_not_called()
+
+    def test_ambiguous_post_materialization_observation_is_reconciled_read_only(self) -> None:
+        preview = self._preview()
+        original_inspect = self.observer.inspect
+        call_count = 0
+
+        def fail_once_after_write(worktree_root, target_path, *, commit_id=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise git_actions.GitActionError(
+                    "fixture_acknowledgement_lost",
+                    "Injected lost read-only acknowledgement after materialization.",
+                )
+            return original_inspect(worktree_root, target_path, commit_id=commit_id)
+
+        with (
+            patch.object(self.observer, "inspect", side_effect=fail_once_after_write),
+            patch.object(git_actions, "_run_mutation") as mutation,
+        ):
+            failed = self.service.materialize(
+                preview["publication_id"],
+                preview["preview_fingerprint"],
+                fixture_po_confirmation=True,
+            )
+            self.assertEqual(failed["status"], "failed")
+            self.assertTrue(self.target.exists())
+            reconciled = self.service.reconcile(preview["publication_id"])
+        self.assertEqual(reconciled["status"], "materialized_unstaged")
+        self.assertEqual(self.target.read_bytes(), self.closeout_content.encode())
+        mutation.assert_not_called()
+
     def test_staged_and_committed_statuses_require_read_only_observation(self) -> None:
         preview = self._preview()
         materialized = self.service.materialize(
@@ -638,6 +701,29 @@ class CloseoutPublicationTests(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 403)
         self.assertFalse(self.target.exists())
+
+    def test_fixture_web_exposes_only_read_only_git_review_handoff(self) -> None:
+        app = Flask(__name__)
+        app.register_blueprint(
+            create_fixture_closeout_publication_blueprint(
+                self.service,
+                fixture_po_confirmation=lambda _record: True,
+            ),
+            url_prefix="/fixture",
+        )
+        preview = self._preview("handoff-route")
+        self.service.materialize(
+            preview["publication_id"],
+            preview["preview_fingerprint"],
+            fixture_po_confirmation=True,
+        )
+        client = app.test_client()
+        response = client.get(f"/fixture/{preview['publication_id']}/handoff")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["content_sha256"], self.closeout_hash)
+        routes = {rule.rule for rule in app.url_map.iter_rules()}
+        self.assertIn("/fixture/<publication_id>/handoff", routes)
+        self.assertFalse(any("stage" in route or "commit" in route for route in routes))
 
     def test_not_connected_git_review_is_explicit_and_never_materializes(self) -> None:
         unavailable = self._service(observer=NotConnectedGitReviewObserver())

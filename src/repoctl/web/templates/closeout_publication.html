@@ -44,6 +44,13 @@
           <button type="submit">Publish accepted closeout to Git</button>
         </form>
       {% endif %}
+      {% if result.status == "materialized_unstaged" %}
+        <p>
+          <a href="{{ url_for('fixture_closeout_publication.handoff', publication_id=result.publication_id) }}">
+            Prepare a read-only handoff to existing Git Review
+          </a>
+        </p>
+      {% endif %}
       <p>Materialization is unstaged. Use the existing Git Review for any later stage or commit; this component exposes neither action.</p>
     {% else %}
       <p>Status: accepted_not_published. Accept &amp; Close does not create or stage a file.</p>

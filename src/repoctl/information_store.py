@@ -151,11 +151,11 @@ class WorkflowDocumentLink:
 @dataclass(frozen=True)
 class V1FixtureBundle:
     prompt_path: str
-    closeout_path: str
-    workflow_path: str
+    closeout_path: str | None
+    workflow_path: str | None
     prompt_bytes: bytes
-    closeout_bytes: bytes
-    workflow_bytes: bytes
+    closeout_bytes: bytes | None
+    workflow_bytes: bytes | None
     dispatch_path: str | None = None
     dispatch_bytes: bytes | None = None
 
@@ -611,6 +611,24 @@ def _validate_relative_path(value: str, label: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError(f"{label} must be a contained POSIX relative path.")
     return value
+
+
+def _validate_dispatch_source_path(value: str, identity: StoreIdentity) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ValueError("Dispatch source path must be a non-empty absolute path.")
+    path = Path(value).expanduser()
+    if (
+        not path.is_absolute()
+        or path.name != "architect_dispatches.json"
+        or path.parent.name != identity.repository_id
+        or path.is_symlink()
+    ):
+        raise ImportSourceError("Dispatch source path must identify the selected repository's external ledger.")
+    resolved = path.resolve(strict=False)
+    repository_root = Path(identity.repository_root).expanduser().resolve(strict=False)
+    if resolved.is_relative_to(repository_root):
+        raise ImportSourceError("Central dispatch source path must remain outside the repository.")
+    return str(resolved)
 
 
 def _validate_store_identity(identity: StoreIdentity) -> None:
@@ -2386,24 +2404,49 @@ class InformationStore:
         if bundle.prompt_path != self.identity.prompt_path:
             raise ImportSourceError("Imported prompt path does not match the fixture milestone identity.")
         prompt_path = _validate_relative_path(bundle.prompt_path, "Prompt source path")
-        closeout_path = _validate_relative_path(bundle.closeout_path, "Closeout source path")
-        workflow_path = _validate_relative_path(bundle.workflow_path, "Workflow source path")
-        if not all(isinstance(item, bytes) for item in (bundle.prompt_bytes, bundle.closeout_bytes, bundle.workflow_bytes)):
-            raise ImportSourceError("Prompt, closeout, and workflow fixture sources must be caller-supplied bytes.")
+        if not isinstance(bundle.prompt_bytes, bytes):
+            raise ImportSourceError("Prompt fixture source must be caller-supplied bytes.")
+        if (bundle.closeout_path is None) != (bundle.closeout_bytes is None):
+            raise ImportSourceError("Closeout path and bytes must either both be supplied or both be absent.")
+        if (bundle.workflow_path is None) != (bundle.workflow_bytes is None):
+            raise ImportSourceError("Workflow path and bytes must either both be supplied or both be absent.")
+        closeout_path = (
+            _validate_relative_path(bundle.closeout_path, "Closeout source path")
+            if bundle.closeout_path is not None
+            else None
+        )
+        workflow_path = (
+            _validate_relative_path(bundle.workflow_path, "Workflow source path")
+            if bundle.workflow_path is not None
+            else None
+        )
         try:
             prompt_text = bundle.prompt_bytes.decode("utf-8")
-            closeout_text = bundle.closeout_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ImportSourceError("Prompt or closeout fixture source is not valid UTF-8.") from exc
-        events = _parse_sidecar_bytes(bundle.workflow_bytes, self.identity)
+            raise ImportSourceError("Prompt fixture source is not valid UTF-8.") from exc
+        closeout_text = None
+        if bundle.closeout_bytes is not None:
+            try:
+                closeout_text = bundle.closeout_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ImportSourceError("Closeout fixture source is not valid UTF-8.") from exc
+        events = (
+            _parse_sidecar_bytes(bundle.workflow_bytes, self.identity)
+            if bundle.workflow_bytes is not None
+            else []
+        )
         for event in events:
-            if event["event_type"] == "closeout_submitted" and event.get("evidence_path") != closeout_path:
+            if (
+                closeout_path is not None
+                and event["event_type"] == "closeout_submitted"
+                and event.get("evidence_path") != closeout_path
+            ):
                 raise ImportSourceError("Workflow closeout path does not match the caller-supplied closeout source.")
         dispatch_ledger: dict[str, Any] | None = None
         if bundle.dispatch_bytes is not None:
             if not isinstance(bundle.dispatch_path, str):
-                raise ImportSourceError("Dispatch bytes require a caller-supplied relative source path.")
-            _validate_relative_path(bundle.dispatch_path, "Dispatch source path")
+                raise ImportSourceError("Dispatch bytes require the exact external ledger source path.")
+            dispatch_path = _validate_dispatch_source_path(bundle.dispatch_path, self.identity)
             try:
                 dispatch_payload = json.loads(bundle.dispatch_bytes.decode("utf-8"))
                 dispatch_ledger = architect_dispatches._validate_ledger(
@@ -2414,17 +2457,88 @@ class InformationStore:
                 raise ImportSourceError(f"Dispatch fixture source is malformed: {exc}") from exc
         elif bundle.dispatch_path is not None:
             raise ImportSourceError("Dispatch source path was supplied without dispatch bytes.")
+        else:
+            dispatch_path = None
 
         prompt_hash = _sha256(bundle.prompt_bytes)
-        closeout_hash = _sha256(bundle.closeout_bytes)
         prompt_doc_id = _sha256(
             _json_text([self.identity.repository_id, self.identity.milestone_id, prompt_path]).encode("utf-8")
         )[:32]
-        closeout_doc_id = _sha256(
-            _json_text([self.identity.repository_id, self.identity.milestone_id, closeout_path]).encode("utf-8")
-        )[:32]
         prompt_revision_id = _sha256(f"{prompt_doc_id}:{prompt_hash}".encode("utf-8"))[:32]
-        closeout_revision_id = _sha256(f"{closeout_doc_id}:{closeout_hash}".encode("utf-8"))[:32]
+        closeout_hash = _sha256(bundle.closeout_bytes) if bundle.closeout_bytes is not None else None
+        closeout_doc_id = (
+            _sha256(
+                _json_text([self.identity.repository_id, self.identity.milestone_id, closeout_path]).encode(
+                    "utf-8"
+                )
+            )[:32]
+            if closeout_path is not None
+            else None
+        )
+        closeout_revision_id = (
+            _sha256(f"{closeout_doc_id}:{closeout_hash}".encode("utf-8"))
+            if closeout_doc_id is not None and closeout_hash is not None
+            else None
+        )
+        source_snapshots = [("prompt", prompt_path, bundle.prompt_bytes)]
+        if closeout_path is not None and bundle.closeout_bytes is not None:
+            source_snapshots.append(("closeout", closeout_path, bundle.closeout_bytes))
+        if workflow_path is not None and bundle.workflow_bytes is not None:
+            source_snapshots.append(("workflow", workflow_path, bundle.workflow_bytes))
+        dispatch_hash = None
+        if bundle.dispatch_bytes is not None and bundle.dispatch_path is not None:
+            dispatch_hash = _sha256(bundle.dispatch_bytes)
+            source_snapshots.append(("dispatch", dispatch_path, bundle.dispatch_bytes))
+        matching_dispatches = (
+            [
+                item
+                for item in dispatch_ledger["dispatches"]
+                if item["milestone_id"] == self.identity.milestone_id
+            ]
+            if dispatch_ledger is not None
+            else []
+        )
+        if len(matching_dispatches) > MAX_DISPATCH_COUNT:
+            raise ImportSourceError(f"Fixture dispatch count exceeds {MAX_DISPATCH_COUNT}.")
+        source_manifest = [
+            {
+                "source_kind": kind,
+                "source_path": path,
+                "source_sha256": _sha256(source_bytes),
+                "source_bytes": len(source_bytes),
+                "source_owner": "central_operational" if kind == "dispatch" else "git_owned",
+            }
+            for kind, path, source_bytes in source_snapshots
+        ]
+        receipt_sha256 = _sha256(
+            _json_text(
+                {
+                    "repository_id": self.identity.repository_id,
+                    "milestone_id": self.identity.milestone_id,
+                    "sources": source_manifest,
+                    "event_ids": [event["event_id"] for event in events],
+                    "event_count": len(events),
+                    "dispatch_count": len(matching_dispatches),
+                }
+            ).encode("utf-8")
+        )
+        result = {
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_document_id": prompt_doc_id,
+            "prompt_revision_id": prompt_revision_id,
+            "prompt_sha256": prompt_hash,
+            "closeout_document_id": closeout_doc_id,
+            "closeout_revision_id": closeout_revision_id,
+            "closeout_sha256": closeout_hash,
+            "imported_event_count": len(events),
+            "linked_event_count": 0,
+            "dispatch_count": len(matching_dispatches),
+            "transaction_boundaries": "not_invented",
+            "approved_prompt_revision_id": None,
+            "source_manifest": source_manifest,
+            "import_receipt_sha256": receipt_sha256,
+        }
         connection = self._connection()
         try:
             self._begin_immediate(connection)
@@ -2446,7 +2560,87 @@ class InformationStore:
                 ),
             ).fetchone()
             if any(existing_counts[key] for key in ("documents", "events", "sources")):
-                raise ImportSourceError("V1 fixture import requires an empty disposable milestone store.")
+                stored_sources = [
+                    (row["source_kind"], row["source_path"], row["source_sha256"], bytes(row["source_bytes"]))
+                    for row in connection.execute(
+                        """
+                        SELECT source_kind, source_path, source_sha256, source_bytes
+                        FROM import_source
+                        WHERE repository_id = ? AND milestone_id = ?
+                        ORDER BY source_kind, source_path
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id),
+                    )
+                ]
+                expected_sources = sorted(
+                    (kind, path, _sha256(source_bytes), source_bytes)
+                    for kind, path, source_bytes in source_snapshots
+                )
+                if sorted(stored_sources) != expected_sources:
+                    raise ImportSourceError("Existing import source snapshot differs from the requested retry.")
+                expected_documents = [
+                    (prompt_doc_id, prompt_revision_id, prompt_path, "PROMPT", prompt_text, prompt_hash)
+                ]
+                if (
+                    closeout_doc_id is not None
+                    and closeout_revision_id is not None
+                    and closeout_path is not None
+                    and closeout_text is not None
+                    and closeout_hash is not None
+                ):
+                    expected_documents.append(
+                        (
+                            closeout_doc_id,
+                            closeout_revision_id,
+                            closeout_path,
+                            "CLOSEOUT",
+                            closeout_text,
+                            closeout_hash,
+                        )
+                    )
+                actual_document_count = connection.execute(
+                    "SELECT COUNT(*) FROM document WHERE repository_id = ? AND milestone_id = ?",
+                    (self.identity.repository_id, self.identity.milestone_id),
+                ).fetchone()[0]
+                actual_revision_count = connection.execute(
+                    "SELECT COUNT(*) FROM document_revision WHERE repository_id = ? AND milestone_id = ?",
+                    (self.identity.repository_id, self.identity.milestone_id),
+                ).fetchone()[0]
+                if actual_document_count != len(expected_documents) or actual_revision_count != len(expected_documents):
+                    raise ImportSourceError("Existing import document set differs from the requested retry.")
+                for document_id, revision_id, path, logical_type, content, content_hash in expected_documents:
+                    row = connection.execute(
+                        """
+                        SELECT d.document_id, d.logical_key, d.logical_type, d.source_path,
+                               r.revision_id, r.content, r.content_sha256
+                        FROM document d JOIN document_revision r ON r.document_id = d.document_id
+                        WHERE d.repository_id = ? AND d.milestone_id = ? AND d.logical_key = ?
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id, path),
+                    ).fetchone()
+                    if row is None or tuple(row) != (
+                        document_id,
+                        path,
+                        logical_type,
+                        path,
+                        revision_id,
+                        content,
+                        content_hash,
+                    ):
+                        raise ImportSourceError("Existing imported revision differs from the requested retry.")
+                stored_events = self._load_events(connection)
+                state = connection.execute(
+                    """
+                    SELECT store_revision, event_count, projection_json
+                    FROM workflow_state WHERE repository_id = ? AND milestone_id = ?
+                    """,
+                    (self.identity.repository_id, self.identity.milestone_id),
+                ).fetchone()
+                self._validate_projection(state, stored_events)
+                if stored_events != events:
+                    raise ImportSourceError("Existing imported workflow events differ from the requested retry.")
+                connection.commit()
+                return result
 
             prompt_revision = DocumentRevisionInput(
                 document_id=prompt_doc_id,
@@ -2458,25 +2652,27 @@ class InformationStore:
                 source_kind="v1_import",
                 provenance={"source_path": prompt_path, "source_sha256": prompt_hash},
             )
-            closeout_revision = DocumentRevisionInput(
-                document_id=closeout_doc_id,
-                revision_id=closeout_revision_id,
-                logical_key=closeout_path,
-                logical_type="CLOSEOUT",
-                source_path=closeout_path,
-                content=closeout_text,
-                source_kind="v1_import",
-                provenance={"source_path": closeout_path, "source_sha256": closeout_hash},
-            )
             prompt_item = self._revision_data(prompt_revision)
-            closeout_item = self._revision_data(closeout_revision)
             self._insert_revision(connection, prompt_item)
-            self._insert_revision(connection, closeout_item)
-            for source_kind, source_path, source_bytes in (
-                ("prompt", prompt_path, bundle.prompt_bytes),
-                ("closeout", closeout_path, bundle.closeout_bytes),
-                ("workflow", workflow_path, bundle.workflow_bytes),
+            if (
+                closeout_doc_id is not None
+                and closeout_revision_id is not None
+                and closeout_path is not None
+                and closeout_text is not None
+                and closeout_hash is not None
             ):
+                closeout_revision = DocumentRevisionInput(
+                    document_id=closeout_doc_id,
+                    revision_id=closeout_revision_id,
+                    logical_key=closeout_path,
+                    logical_type="CLOSEOUT",
+                    source_path=closeout_path,
+                    content=closeout_text,
+                    source_kind="v1_import",
+                    provenance={"source_path": closeout_path, "source_sha256": closeout_hash},
+                )
+                self._insert_revision(connection, self._revision_data(closeout_revision))
+            for source_kind, source_path, source_bytes in source_snapshots:
                 source_hash = _sha256(source_bytes)
                 connection.execute(
                     """
@@ -2499,31 +2695,6 @@ class InformationStore:
                         source_path,
                         source_hash,
                         source_bytes,
-                        _now(),
-                    ),
-                )
-            if bundle.dispatch_bytes is not None and bundle.dispatch_path is not None:
-                dispatch_hash = _sha256(bundle.dispatch_bytes)
-                connection.execute(
-                    """
-                    INSERT INTO import_source
-                        (source_id, repository_id, milestone_id, source_kind, source_path,
-                         source_sha256, source_bytes, imported_at)
-                    VALUES (?, ?, ?, 'dispatch', ?, ?, ?, ?)
-                    """,
-                    (
-                        _source_record_id(
-                            self.identity.repository_id,
-                            self.identity.milestone_id,
-                            "dispatch",
-                            bundle.dispatch_path,
-                            dispatch_hash,
-                        ),
-                        self.identity.repository_id,
-                        self.identity.milestone_id,
-                        bundle.dispatch_path,
-                        dispatch_hash,
-                        bundle.dispatch_bytes,
                         _now(),
                     ),
                 )
@@ -2565,13 +2736,6 @@ class InformationStore:
                 ),
             )
             if dispatch_ledger is not None:
-                matching_dispatches = [
-                    item
-                    for item in dispatch_ledger["dispatches"]
-                    if item["milestone_id"] == self.identity.milestone_id
-                ]
-                if len(matching_dispatches) > MAX_DISPATCH_COUNT:
-                    raise ImportSourceError(f"Fixture dispatch count exceeds {MAX_DISPATCH_COUNT}.")
                 for record in matching_dispatches:
                     raw = _json_text(record)
                     connection.execute(
@@ -2619,21 +2783,6 @@ class InformationStore:
                         ),
                     )
 
-            result = {
-                "repository_id": self.identity.repository_id,
-                "milestone_id": self.identity.milestone_id,
-                "prompt_document_id": prompt_doc_id,
-                "prompt_revision_id": prompt_revision_id,
-                "prompt_sha256": prompt_hash,
-                "closeout_document_id": closeout_doc_id,
-                "closeout_revision_id": closeout_revision_id,
-                "closeout_sha256": closeout_hash,
-                "imported_event_count": event_count,
-                "linked_event_count": 0,
-                "dispatch_count": len(matching_dispatches) if dispatch_ledger is not None else 0,
-                "transaction_boundaries": "not_invented",
-                "approved_prompt_revision_id": None,
-            }
             connection.commit()
             return result
         except sqlite3.OperationalError as exc:

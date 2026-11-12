@@ -536,6 +536,73 @@ def list_owner_dispatches(
     return [dict(item) for item in reversed(ledger["dispatches"])]
 
 
+def read_owner_dispatch_ledger_snapshot(
+    repository_root: str | Path,
+    state_root: str | Path,
+    repository_id: str,
+) -> dict[str, Any]:
+    """Read an exact validated dispatch-ledger image without creating lock artifacts."""
+    path = _state_file(repository_root, state_root, repository_id)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {
+            "repository_id": repository_id,
+            "source_path": str(path),
+            "status": "absent",
+            "source_bytes": None,
+            "source_sha256": None,
+            "source_size_bytes": 0,
+            "ledger": _empty_ledger(repository_id),
+        }
+    except OSError as exc:
+        raise ArchitectDispatchError(f"Could not safely open Architect dispatch source: {exc}") from exc
+
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_LEDGER_BYTES:
+            raise ArchitectDispatchError("Architect dispatch source has an unsafe type or exceeds its size limit.")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, MAX_LEDGER_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_LEDGER_BYTES:
+                raise ArchitectDispatchError("Architect dispatch source exceeds its size limit.")
+        source_bytes = b"".join(chunks)
+        try:
+            named = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise ArchitectDispatchError("Architect dispatch source changed while it was read.") from exc
+        if (
+            len(source_bytes) != metadata.st_size
+            or stat.S_ISLNK(named.st_mode)
+            or (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+            != (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns, named.st_ctime_ns)
+        ):
+            raise ArchitectDispatchError("Architect dispatch source changed while it was read.")
+    finally:
+        os.close(descriptor)
+
+    try:
+        payload = json.loads(source_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArchitectDispatchError(f"Architect dispatch source is malformed: {exc}") from exc
+    ledger = _validate_ledger(payload, repository_id)
+    return {
+        "repository_id": repository_id,
+        "source_path": str(path),
+        "status": "present",
+        "source_bytes": source_bytes,
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_size_bytes": len(source_bytes),
+        "ledger": ledger,
+    }
+
+
 def get_dispatch(
     repository_root: str | Path,
     state_root: str | Path,

@@ -5,7 +5,11 @@ from collections.abc import Callable
 from flask import Blueprint, jsonify, render_template, request
 
 from ..information_store import InformationStoreError
-from ..workflow.closeout_publication import CloseoutPublicationError, CloseoutPublicationService
+from ..workflow.closeout_publication import (
+    CloseoutPublicationError,
+    CloseoutPublicationService,
+    FixtureGitReviewHandoffAdapter,
+)
 
 
 def create_fixture_closeout_publication_blueprint(
@@ -92,5 +96,9 @@ def create_fixture_closeout_publication_blueprint(
             integration_status=service.integration_status,
             error=None,
         )
+
+    @blueprint.get("/<publication_id>/handoff")
+    def handoff(publication_id: str):
+        return jsonify(FixtureGitReviewHandoffAdapter(service).prepare(publication_id))
 
     return blueprint

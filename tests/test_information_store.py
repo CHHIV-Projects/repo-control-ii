@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -760,7 +761,7 @@ class InformationStoreTests(unittest.TestCase):
             prompt_bytes=prompt_bytes,
             closeout_bytes=closeout_bytes,
             workflow_bytes=sidecar_bytes,
-            dispatch_path="fixtures/architect_dispatches.json",
+            dispatch_path=str(self.root / self.identity.repository_id / "architect_dispatches.json"),
             dispatch_bytes=dispatch_bytes,
         )
         result = self.store.import_v1_fixture(bundle)
@@ -791,6 +792,13 @@ class InformationStoreTests(unittest.TestCase):
         self.assertEqual(legacy_history[0]["record_kind"], "LEGACY_SNAPSHOT")
         self.assertIsNone(legacy_history[0]["po_confirmed"])
         self.assertEqual(self._counts()["workflow_document_link"], 0)
+        for dispatch_path in (
+            str(self.root / "different-repository-id" / "architect_dispatches.json"),
+            str(Path(self.identity.repository_root) / self.identity.repository_id / "architect_dispatches.json"),
+        ):
+            with self.subTest(dispatch_path=dispatch_path):
+                with self.assertRaises(ImportSourceError):
+                    self.store.import_v1_fixture(replace(bundle, dispatch_path=dispatch_path))
 
     def test_malformed_import_rolls_back_all_fixture_records(self) -> None:
         bundle = V1FixtureBundle(
@@ -806,6 +814,103 @@ class InformationStoreTests(unittest.TestCase):
             self.store.import_v1_fixture(bundle)
         self.assertEqual(self._counts(), before)
         self.assertEqual(self.store.snapshot()["event_count"], 0)
+
+    def test_v1_import_accepts_absent_closeout_and_workflow_without_inventing_sources(self) -> None:
+        bundle = V1FixtureBundle(
+            prompt_path=self.identity.prompt_path,
+            closeout_path=None,
+            workflow_path=None,
+            prompt_bytes=b"# Prompt only\n",
+            closeout_bytes=None,
+            workflow_bytes=None,
+        )
+        first = self.store.import_v1_fixture(bundle)
+        retry = self.store.import_v1_fixture(bundle)
+        self.assertEqual(first, retry)
+        self.assertIsNone(first["closeout_document_id"])
+        self.assertIsNone(first["closeout_revision_id"])
+        self.assertIsNone(first["closeout_sha256"])
+        self.assertEqual(first["imported_event_count"], 0)
+        self.assertEqual(self.store.snapshot()["projection"]["phase"], "PLANNING")
+        self.assertEqual([item["source_kind"] for item in self.store.list_import_sources()], ["prompt"])
+        with self.assertRaisesRegex(ImportSourceError, "snapshot differs"):
+            self.store.import_v1_fixture(replace(bundle, prompt_bytes=b"# Changed prompt\n"))
+
+    def test_v1_import_is_idempotent_for_exact_sources_and_refuses_changed_snapshots(self) -> None:
+        events = _closeout_history()
+        ledger = {
+            "schema_version": lifecycle.WORKFLOW_LEDGER_SCHEMA_VERSION,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+            "events": events,
+        }
+        workflow_bytes = lifecycle._render_sidecar(ledger).encode("utf-8")
+        bundle = V1FixtureBundle(
+            prompt_path=self.identity.prompt_path,
+            closeout_path=FIXTURE_CLOSEOUT_PATH,
+            workflow_path="fixtures/workflow.md",
+            prompt_bytes=b"# Prompt\n",
+            closeout_bytes=b"# Closeout\n",
+            workflow_bytes=workflow_bytes,
+        )
+        first = self.store.import_v1_fixture(bundle)
+        self.assertEqual(self.store.import_v1_fixture(bundle), first)
+        before = self.store.snapshot()
+        sources = self.store.list_import_sources()
+        with self.assertRaisesRegex(ImportSourceError, "snapshot differs"):
+            self.store.import_v1_fixture(replace(bundle, closeout_bytes=b"# Changed closeout\n"))
+        self.assertEqual(self.store.snapshot(), before)
+        self.assertEqual(self.store.list_import_sources(), sources)
+        self.assertEqual(self.store.snapshot()["events"], events)
+
+    def test_disposable_information_store_online_backup_restore_preserves_snapshot(self) -> None:
+        prompt = self._create_prompt("# Backup prompt\n")
+        event = _event(
+            [],
+            event_type="decision_recorded",
+            summary="Disposable backup fixture event",
+            actor_role="coder",
+            event_fields={"binding": False},
+        )
+        self.store.append_workflow_batch(
+            request_id="backup-fixture-event",
+            expected_repository_id=self.identity.repository_id,
+            expected_milestone_id=self.identity.milestone_id,
+            expected_selection_id=self.identity.selection_id,
+            expected_selection_revision=self.identity.selection_revision,
+            expected_prompt_revision_id=None,
+            expected_store_revision=0,
+            events=[event],
+        )
+        before = self.store.snapshot()
+        backup_path = self.root / "backup.sqlite3"
+        source = sqlite3.connect(f"{self.database_path.as_uri()}?mode=ro", uri=True)
+        destination = sqlite3.connect(backup_path)
+        try:
+            destination.execute("PRAGMA journal_mode = WAL")
+            source.backup(destination)
+            destination.commit()
+        finally:
+            destination.close()
+            source.close()
+        integrity_connection = sqlite3.connect(backup_path)
+        try:
+            integrity = integrity_connection.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            integrity_connection.close()
+        self.assertEqual(integrity, "ok")
+        restored = InformationStore.open_disposable(
+            backup_path,
+            self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        self.assertEqual(restored.identity, self.identity)
+        self.assertEqual(restored.snapshot(), before)
+        self.assertEqual(
+            restored.get_revision(prompt["document_id"], prompt["revision_id"])["content"],
+            "# Backup prompt\n",
+        )
 
 
 if __name__ == "__main__":
