@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import sqlite3
 import tempfile
 import time
@@ -866,24 +868,45 @@ class InformationStoreTests(unittest.TestCase):
 
     def test_disposable_information_store_online_backup_restore_preserves_snapshot(self) -> None:
         prompt = self._create_prompt("# Backup prompt\n")
-        event = _event(
-            [],
-            event_type="decision_recorded",
-            summary="Disposable backup fixture event",
-            actor_role="coder",
-            event_fields={"binding": False},
+        events = _closeout_history()
+        self.store.select_approved_prompt_revision(
+            request_id="backup-fixture-approval",
+            expected_store_revision=0,
+            document_id=prompt["document_id"],
+            revision_id=prompt["revision_id"],
+            content_sha256=prompt["content_sha256"],
+            prompt_approved_event=events[0],
+            trusted_fixture_po_confirmation=True,
         )
         self.store.append_workflow_batch(
-            request_id="backup-fixture-event",
+            request_id="backup-fixture-start",
             expected_repository_id=self.identity.repository_id,
             expected_milestone_id=self.identity.milestone_id,
             expected_selection_id=self.identity.selection_id,
             expected_selection_revision=self.identity.selection_revision,
-            expected_prompt_revision_id=None,
-            expected_store_revision=0,
-            events=[event],
+            expected_prompt_revision_id=prompt["revision_id"],
+            expected_store_revision=1,
+            events=[events[1]],
+        )
+        dispatch_id = "d" * 32
+        self.store.create_pending_dispatch(
+            dispatch_id=dispatch_id,
+            dispatch_type="INSTRUCTION",
+            body="Disposable backup dispatch.",
+        )
+        dispatch = self.store.record_dispatch_decision(
+            dispatch_id=dispatch_id,
+            history_id="e" * 32,
+            status="APPROVED",
+            actor_role="product_owner",
+            actor_attribution="Reported fixture PO",
+            trusted_fixture_po_confirmation=True,
+            approved_milestone_id=self.identity.milestone_id,
+            recorded_at="2026-01-01T00:00:00+00:00",
         )
         before = self.store.snapshot()
+        prompt_links = self.store.list_workflow_document_links(prompt["document_id"], prompt["revision_id"])
+        dispatch_history = self.store.list_dispatch_history(dispatch_id)
         backup_path = self.root / "backup.sqlite3"
         source = sqlite3.connect(f"{self.database_path.as_uri()}?mode=ro", uri=True)
         destination = sqlite3.connect(backup_path)
@@ -897,9 +920,13 @@ class InformationStoreTests(unittest.TestCase):
         integrity_connection = sqlite3.connect(backup_path)
         try:
             integrity = integrity_connection.execute("PRAGMA integrity_check").fetchone()[0]
+            application_id = integrity_connection.execute("PRAGMA application_id").fetchone()[0]
+            user_version = integrity_connection.execute("PRAGMA user_version").fetchone()[0]
         finally:
             integrity_connection.close()
         self.assertEqual(integrity, "ok")
+        self.assertEqual(application_id, APPLICATION_ID)
+        self.assertEqual(user_version, SCHEMA_VERSION)
         restored = InformationStore.open_disposable(
             backup_path,
             self.identity,
@@ -907,10 +934,51 @@ class InformationStoreTests(unittest.TestCase):
         )
         self.assertEqual(restored.identity, self.identity)
         self.assertEqual(restored.snapshot(), before)
+        self.assertEqual(restored.get_revision(prompt["document_id"], prompt["revision_id"])["content"], "# Backup prompt\n")
         self.assertEqual(
-            restored.get_revision(prompt["document_id"], prompt["revision_id"])["content"],
-            "# Backup prompt\n",
+            restored.list_workflow_document_links(prompt["document_id"], prompt["revision_id"]),
+            prompt_links,
         )
+        self.assertEqual(restored.get_dispatch(dispatch_id), dispatch)
+        self.assertEqual(restored.list_dispatch_history(dispatch_id), dispatch_history)
+
+    def test_disposable_database_owner_and_restrictive_mode_preflight(self) -> None:
+        database_stat = self.database_path.stat()
+        directory_stat = self.database_path.parent.stat()
+        os.chmod(self.database_path.parent, 0o700)
+        os.chmod(self.database_path, 0o600)
+        self.addCleanup(os.chmod, self.database_path.parent, stat.S_IMODE(directory_stat.st_mode))
+        self.addCleanup(os.chmod, self.database_path, stat.S_IMODE(database_stat.st_mode))
+        self.assertEqual(self.database_path.stat().st_uid, os.getuid())
+        self.assertEqual(stat.S_IMODE(self.database_path.parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.database_path.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.geteuid() == 0, "Permission-denial probe requires an unprivileged test process.")
+    def test_disposable_database_permission_failure_is_explicit(self) -> None:
+        restricted_root = self.root / "restricted"
+        restricted_root.mkdir(mode=0o700)
+        database_path = restricted_root / "restricted.sqlite3"
+        store = InformationStore.initialize_disposable(
+            database_path,
+            self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        original_mode = stat.S_IMODE(restricted_root.stat().st_mode)
+        try:
+            os.chmod(restricted_root, original_mode & ~0o222)
+            with self.assertRaises((PermissionError, sqlite3.OperationalError)):
+                store.create_immutable_revision(
+                    DocumentRevisionInput(
+                        document_id="permission-denied",
+                        revision_id="permission-denied-revision",
+                        logical_key="fixtures/permission-denied.md",
+                        logical_type="OTHER",
+                        source_path="fixtures/permission-denied.md",
+                        content="permission probe",
+                    )
+                )
+        finally:
+            os.chmod(restricted_root, original_mode)
 
 
 if __name__ == "__main__":

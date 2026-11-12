@@ -7,13 +7,14 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from .document_library import (
     DocumentRecord,
     GitFileProvider,
     GitRepositoryContext,
     ProviderSnapshot,
+    SourceEnumerationError,
 )
 from .information_store import (
     ImportSourceError,
@@ -23,8 +24,8 @@ from .information_store import (
     _parse_sidecar_bytes,
 )
 from .scanner.util import make_repository_id
-from .web.repository_registry import RepositoryEntry
-from .workflow.architect_dispatches import read_owner_dispatch_ledger_snapshot
+from .web.repository_registry import RepositoryEntry, RepositoryRegistry
+from .workflow.architect_dispatches import ArchitectDispatchError, read_owner_dispatch_ledger_snapshot
 from .workflow.lifecycle import WorkflowRecordError, _reduce_events
 
 
@@ -157,7 +158,7 @@ class RepositoryInventory:
             "exclusions": list(self.exclusions),
             "warnings": [*self.provider_snapshot.warnings, *self.warnings],
             "coverage_limits": [
-                "Only the selected registry repository is inventoried; other configured repositories are not inspected.",
+                "Only repositories explicitly supplied to this inventory run are inspected.",
                 "Git records represent the observed working tree, not historical committed blob contents.",
                 "Committed history not exposed by the allowlisted document provider is not inventoried.",
                 "Only document types accepted by the existing DocumentLibrary provider are included.",
@@ -168,6 +169,60 @@ class RepositoryInventory:
     @property
     def documents(self) -> tuple[DocumentRecord, ...]:
         return self.provider_snapshot.records
+
+
+@dataclass(frozen=True)
+class RegisteredRepositoryInventory:
+    authorized_repository_keys: tuple[str, ...]
+    inventories: tuple[RepositoryInventory, ...]
+    exclusions: tuple[dict[str, str], ...] = ()
+
+    def report(self) -> dict[str, Any]:
+        repositories = [inventory.report() for inventory in self.inventories]
+        category_counts: dict[str, int] = {}
+        source_owner_counts = {"git_owned": 0, "central_operational": 0}
+        sidecar_counts = {"total": 0, "with_events": 0, "without_events": 0, "unparsed_or_unknown": 0}
+        for repository in repositories:
+            for category, count in repository["category_counts"].items():
+                category_counts[category] = category_counts.get(category, 0) + count
+            for owner, count in repository["source_owner_counts"].items():
+                source_owner_counts[owner] = source_owner_counts.get(owner, 0) + count
+            for key in sidecar_counts:
+                sidecar_counts[key] += repository["workflow_sidecar_counts"][key]
+        return {
+            "schema_version": 1,
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "authorized_repository_keys": list(self.authorized_repository_keys),
+            "accessible_repository_count": len(repositories),
+            "excluded_repository_count": len(self.exclusions),
+            "repository_count": len(repositories) + len(self.exclusions),
+            "document_count": sum(item["document_count"] for item in repositories),
+            "document_bytes": sum(item["document_bytes"] for item in repositories),
+            "provider_bytes_read": sum(item["provider_bytes_read"] for item in repositories),
+            "category_counts": dict(sorted(category_counts.items())),
+            "source_owner_counts": dict(sorted(source_owner_counts.items())),
+            "workflow_sidecar_counts": sidecar_counts,
+            "dispatch_record_count": sum(len(item["dispatch_records"]) for item in repositories),
+            "source_inventory_sha256": _sha256(
+                _canonical_json(
+                    [
+                        {
+                            "repository_id": item["repository_id"],
+                            "source_inventory_sha256": item["source_inventory_sha256"],
+                        }
+                        for item in repositories
+                    ]
+                )
+            ),
+            "repositories": repositories,
+            "exclusions": list(self.exclusions),
+            "coverage_limits": [
+                "Only the explicitly authorized keys from the server-validated repository registry are inspected.",
+                "Git records represent observed working-tree bytes, not historical committed blob contents.",
+                "Committed history not exposed by the allowlisted document provider remains NOT VERIFIED.",
+                "A repository excluded for a read or validation failure is NOT VERIFIED, not an empty corpus.",
+            ],
+        }
 
 
 def _source_class(record: DocumentRecord) -> str:
@@ -300,10 +355,6 @@ def inventory_selected_repository(
     )
     exclusions = (
         {
-            "source": "other configured repositories",
-            "reason": "Not inspected; M010.008 grants no authority to inventory another repository.",
-        },
-        {
             "source": "Git history beyond the current working tree",
             "reason": "The selected provider exposes allowlisted working-tree snapshots, not a complete historical Git object inventory.",
         },
@@ -315,6 +366,55 @@ def inventory_selected_repository(
         dispatch_snapshot=dispatch_snapshot,
         exclusions=exclusions,
         warnings=tuple(warnings),
+    )
+
+
+def inventory_registered_repositories(
+    registry: RepositoryRegistry,
+    *,
+    authorized_repository_keys: Sequence[str],
+    current_milestone_ids: Mapping[str, str | None] | None,
+    dispatch_state_root: str | Path,
+) -> RegisteredRepositoryInventory:
+    """Inventory an explicit set of already-registered roots without changing selection."""
+    keys = tuple(authorized_repository_keys)
+    if not keys or len(set(keys)) != len(keys):
+        raise MigrationRehearsalError("Authorized repository keys must be a non-empty unique sequence.")
+    configured = {entry.key: entry for entry in registry.entries}
+    unknown = sorted(set(keys) - configured.keys())
+    if unknown:
+        raise MigrationRehearsalError(
+            f"Repository keys are not in the validated registry: {', '.join(unknown)}."
+        )
+    milestones = dict(current_milestone_ids or {})
+    if set(milestones) - set(keys):
+        raise MigrationRehearsalError("Current milestone bindings may only name explicitly authorized repositories.")
+    inventories: list[RepositoryInventory] = []
+    exclusions: list[dict[str, str]] = []
+    for key in keys:
+        repository = configured[key]
+        try:
+            inventory = inventory_selected_repository(
+                repository,
+                current_milestone_id=milestones.get(key),
+                dispatch_state_root=dispatch_state_root,
+            )
+        except (OSError, ArchitectDispatchError, MigrationRehearsalError, SourceEnumerationError) as exc:
+            exclusions.append(
+                {
+                    "repository_key": key,
+                    "repository_id": repository.repository_id,
+                    "repository_root": str(repository.path),
+                    "status": "NOT_VERIFIED",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+        inventories.append(inventory)
+    return RegisteredRepositoryInventory(
+        authorized_repository_keys=keys,
+        inventories=tuple(inventories),
+        exclusions=tuple(exclusions),
     )
 
 
@@ -648,6 +748,65 @@ def rehearse_milestone_imports(
             "central_operational": "External dispatch ledger bytes are copied from the read-only validated snapshot; imported decisions do not grant authorization.",
         },
         "authority_changed": False,
+    }
+
+
+def rehearse_registered_repository_imports(
+    inventory: RegisteredRepositoryInventory,
+    destination_root: str | Path,
+) -> dict[str, Any]:
+    """Rehearse each accessible repository in a separate disposable subdirectory."""
+    if not inventory.inventories:
+        raise MigrationRehearsalError("No accessible authorized repository inventory is available to import.")
+    repositories = [item.repository for item in inventory.inventories]
+    first_root = repositories[0].path
+    root = _validate_rehearsal_root(destination_root, first_root)
+    for repository in repositories[1:]:
+        if (
+            root == repository.path
+            or root.is_relative_to(repository.path)
+            or repository.path.is_relative_to(root)
+        ):
+            raise MigrationRehearsalError("Rehearsal databases must remain outside every registered repository.")
+    reports: list[dict[str, Any]] = []
+    for repository_inventory in inventory.inventories:
+        repository = repository_inventory.repository
+        repository_destination = root / _sha256(repository.repository_id.encode("utf-8"))[:24]
+        repository_destination.mkdir(mode=0o700, exist_ok=False)
+        reports.append(
+            {
+                **repository_inventory.report(),
+                "rehearsal": rehearse_milestone_imports(
+                    repository_inventory,
+                    repository_destination,
+                ),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "authorized_repository_keys": list(inventory.authorized_repository_keys),
+        "accessible_repository_count": len(inventory.inventories),
+        "excluded_repository_count": len(inventory.exclusions),
+        "repositories": reports,
+        "exclusions": list(inventory.exclusions),
+        "document_count": sum(item["document_count"] for item in reports),
+        "document_bytes": sum(item["document_bytes"] for item in reports),
+        "imported_milestone_count": sum(
+            item["rehearsal"]["imported_milestone_count"] for item in reports
+        ),
+        "imported_source_count": sum(
+            item["rehearsal"]["imported_source_count"] for item in reports
+        ),
+        "imported_event_count": sum(
+            item["rehearsal"]["imported_event_count"] for item in reports
+        ),
+        "dispatch_record_count": sum(len(item["dispatch_records"]) for item in reports),
+        "mismatch_count": sum(item["rehearsal"]["mismatch_count"] for item in reports),
+        "import_refusal_count": sum(
+            item["rehearsal"]["import_refusal_count"] for item in reports
+        ),
+        "authority_changed": False,
+        "disposable_databases_created_under_temporary_root": True,
     }
 
 

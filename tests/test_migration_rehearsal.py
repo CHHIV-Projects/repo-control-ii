@@ -6,11 +6,15 @@ import unittest
 from pathlib import Path
 
 from repoctl.migration_rehearsal import (
+    MigrationRehearsalError,
+    inventory_registered_repositories,
     inventory_selected_repository,
     rehearse_milestone_imports,
+    rehearse_registered_repository_imports,
 )
 from repoctl.scanner.util import make_repository_id
-from repoctl.web.repository_registry import RepositoryEntry
+from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
+from repoctl.document_library import SourceEnumerationError
 from repoctl.workflow import lifecycle
 from tests.test_sqlite_workflow_poc import _closeout_history
 
@@ -123,6 +127,118 @@ class MigrationRehearsalTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "separate disposable temp directory"):
             rehearse_milestone_imports(inventory, self.repository_root)
+
+    def test_registered_repository_inventory_imports_explicit_roots_without_selection_change(self) -> None:
+        second_root = self.root / "second-repository"
+        (second_root / "docs/context").mkdir(parents=True)
+        (second_root / "docs/milestones").mkdir(parents=True)
+        (second_root / "docs/context/project_context.md").write_text(
+            "# Second repository\n",
+            encoding="utf-8",
+        )
+        (second_root / "docs/milestones/M999.001_fixture_prompt.md").write_text(
+            "# Second prompt\n",
+            encoding="utf-8",
+        )
+        second = RepositoryEntry(
+            key="fixture-second",
+            name="Second fixture",
+            path=second_root.resolve(),
+            repository_id=make_repository_id(second_root.resolve()),
+            milestone_root="docs/milestones",
+            documents={"context": "docs/context/project_context.md"},
+        )
+        registry = RepositoryRegistry((self.repository, second), default_key=self.repository.key)
+        selected_before = registry.active()
+        inventory = inventory_registered_repositories(
+            registry,
+            authorized_repository_keys=(self.repository.key, second.key),
+            current_milestone_ids={self.repository.key: "M999.001"},
+            dispatch_state_root=self.dispatch_state_root,
+        )
+        self.assertEqual(registry.active(), selected_before)
+        report = inventory.report()
+        self.assertEqual(report["accessible_repository_count"], 2)
+        self.assertEqual(report["excluded_repository_count"], 0)
+        self.assertEqual(report["repository_count"], 2)
+        self.assertEqual(report["category_counts"]["canonical_milestone_prompt"], 3)
+        self.assertEqual(
+            {item["repository_key"] for item in report["repositories"]},
+            {self.repository.key, second.key},
+        )
+        self.assertTrue(
+            all(
+                item["source_provenance"]["working_tree"] is True
+                and item["source_provenance"]["commit_membership"] == "not established"
+                for repository_report in report["repositories"]
+                for item in repository_report["documents"]
+            )
+        )
+
+        destination = self.root / "registered-disposable"
+        destination.mkdir()
+        result = rehearse_registered_repository_imports(inventory, destination)
+        self.assertEqual(result["imported_milestone_count"], 3)
+        self.assertEqual(result["imported_source_count"], 7)
+        self.assertEqual(result["mismatch_count"], 0)
+        self.assertFalse(result["authority_changed"])
+        database_paths = [
+            Path(item["database_path"])
+            for repository_report in result["repositories"]
+            for item in repository_report["rehearsal"]["imports"]
+        ]
+        self.assertEqual(len(database_paths), 3)
+        self.assertEqual(len(set(database_paths)), 3)
+        self.assertTrue(all(path.is_relative_to(destination) for path in database_paths))
+        self.assertEqual(registry.active(), selected_before)
+
+    def test_registered_inventory_rejects_unregistered_and_duplicate_authorizations(self) -> None:
+        registry = RepositoryRegistry((self.repository,), default_key=self.repository.key)
+        with self.assertRaisesRegex(MigrationRehearsalError, "unique sequence"):
+            inventory_registered_repositories(
+                registry,
+                authorized_repository_keys=(self.repository.key, self.repository.key),
+                current_milestone_ids=None,
+                dispatch_state_root=self.dispatch_state_root,
+            )
+        with self.assertRaisesRegex(MigrationRehearsalError, "not in the validated registry"):
+            inventory_registered_repositories(
+                registry,
+                authorized_repository_keys=("not-registered",),
+                current_milestone_ids=None,
+                dispatch_state_root=self.dispatch_state_root,
+            )
+
+    def test_registered_inventory_marks_unreadable_root_not_verified_and_continues(self) -> None:
+        second = RepositoryEntry(
+            key="fixture-second",
+            name="Second fixture",
+            path=self.repository_root,
+            repository_id="different-id",
+            milestone_root="docs/milestones",
+            documents={"context": "docs/context/project_context.md"},
+        )
+        registry = RepositoryRegistry((self.repository, second), default_key=self.repository.key)
+        from unittest.mock import patch
+
+        original = inventory_selected_repository
+
+        def fail_second(repository, **kwargs):
+            if repository.key == second.key:
+                raise SourceEnumerationError("fixture permission denied")
+            return original(repository, **kwargs)
+
+        with patch("repoctl.migration_rehearsal.inventory_selected_repository", side_effect=fail_second):
+            inventory = inventory_registered_repositories(
+                registry,
+                authorized_repository_keys=(self.repository.key, second.key),
+                current_milestone_ids=None,
+                dispatch_state_root=self.dispatch_state_root,
+            )
+        self.assertEqual(len(inventory.inventories), 1)
+        self.assertEqual(len(inventory.exclusions), 1)
+        self.assertEqual(inventory.exclusions[0]["status"], "NOT_VERIFIED")
+        self.assertIn("permission denied", inventory.exclusions[0]["reason"])
 
 
 if __name__ == "__main__":

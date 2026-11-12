@@ -1987,6 +1987,64 @@ class InformationStore:
             connection.close()
         return self.get_revision(document_id, row["revision_id"])
 
+    def list_workflow_document_links(
+        self,
+        document_id: str,
+        revision_id: str,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(document_id, str) or not document_id:
+            raise ValueError("Document ID is required.")
+        if not isinstance(revision_id, str) or not revision_id:
+            raise ValueError("Revision ID is required.")
+        connection = self._connection(read_only=True)
+        try:
+            self._verify_identity(connection, self.identity)
+            rows = connection.execute(
+                """
+                SELECT link.event_id, link.document_id, link.revision_id,
+                       link.content_sha256, link.link_role, link.evidence,
+                       revision.content_sha256 AS revision_sha256
+                FROM workflow_document_link AS link
+                JOIN document_revision AS revision
+                  ON revision.repository_id = link.repository_id
+                 AND revision.milestone_id = link.milestone_id
+                 AND revision.document_id = link.document_id
+                 AND revision.revision_id = link.revision_id
+                WHERE link.repository_id = ? AND link.milestone_id = ?
+                  AND link.document_id = ? AND link.revision_id = ?
+                ORDER BY link.event_id, link.link_role
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    document_id,
+                    revision_id,
+                ),
+            ).fetchall()
+            revision = connection.execute(
+                """
+                SELECT content_sha256 FROM document_revision
+                WHERE repository_id = ? AND milestone_id = ?
+                  AND document_id = ? AND revision_id = ?
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    document_id,
+                    revision_id,
+                ),
+            ).fetchone()
+            if revision is None:
+                raise RevisionConflictError("Exact document revision was not found.")
+            if any(row["content_sha256"] != row["revision_sha256"] for row in rows):
+                raise IntegrityFailureError("Workflow document link hash does not match its exact revision.")
+            return [
+                {key: row[key] for key in ("event_id", "document_id", "revision_id", "content_sha256", "link_role", "evidence")}
+                for row in rows
+            ]
+        finally:
+            connection.close()
+
     def get_closeout_publication_evidence(
         self,
         document_id: str,
