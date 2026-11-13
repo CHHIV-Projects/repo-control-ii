@@ -33,17 +33,58 @@
         {% endif %}
       </dl>
       <pre class="dispatch-body">{{ dispatch["body"] }}</pre>
+      {% if information_store_mode and dispatch.get("needs_reconciliation") %}
+        <p>Imported status is not proof of a historical Product Owner decision. Make a new {% if information_store_fixture %}fixture {% endif %}decision after reviewing this exact guidance.</p>
+        {% for action, label in [("reconcile-approve", "Confirm guidance now"), ("reconcile-reject", "Reject guidance now")] %}
+          <form method="post" action="{{ url_for('resolve_architect_dispatch', dispatch_id=dispatch['dispatch_id'], action=action) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+            <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+            <input type="hidden" name="reconciliation_fingerprint" value="{{ dispatch['reconciliation_fingerprint'] }}">
+            <input type="hidden" name="reconciliation_history_id" value="{{ dispatch['reconciliation_history_id'] }}">
+            <label>
+              <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
+              Confirm this new {% if information_store_fixture %}fixture-only {% endif %}Product Owner decision.
+            </label>
+            <button type="submit">{{ label }}</button>
+          </form>
+        {% endfor %}
+      {% endif %}
       {% if dispatch["status"] == "PENDING" %}
         <form method="post" action="{{ url_for('resolve_architect_dispatch', dispatch_id=dispatch['dispatch_id'], action='approve') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
           <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
-          <button type="submit">{{ "Approve & Save Prompt" if dispatch["type"] == "PROMPT" else "Approve & Send" }}</button>
+          {% if information_store_mode %}
+            <input type="hidden" name="decision_fingerprint" value="{{ dispatch['decision_fingerprint'] }}">
+            <label>
+              <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
+              {% if information_store_fixture %}Confirm this fixture-only decision as Product Owner; it grants no production authorization.{% else %}Confirm this decision as Product Owner.{% endif %}
+            </label>
+          {% endif %}
+          <button type="submit">
+            {% if information_store_mode and information_store_fixture %}
+              Record Fixture Decision
+            {% elif information_store_mode %}
+              Record Product Owner Decision
+            {% elif dispatch["type"] == "PROMPT" %}
+              Approve & Save Prompt
+            {% else %}
+              Approve & Send
+            {% endif %}
+          </button>
         </form>
         <form method="post" action="{{ url_for('resolve_architect_dispatch', dispatch_id=dispatch['dispatch_id'], action='reject') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
           <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+          {% if information_store_fixture %}
+            <input type="hidden" name="decision_fingerprint" value="{{ dispatch['decision_fingerprint'] }}">
+            <label>
+              <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
+              {% if information_store_fixture %}Confirm this fixture-only decision as Product Owner; it grants no production authorization.{% else %}Confirm this decision as Product Owner.{% endif %}
+            </label>
+          {% endif %}
           <button type="submit">Reject</button>
         </form>
       {% endif %}

@@ -32,6 +32,8 @@ class RuntimeCompatibilityError(RuntimeError):
 def require_event_runtime_compatibility(
     event_type: str,
     runtime_url: str | None = None,
+    *,
+    expected_information_store_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     event_requirements = EVENT_CAPABILITY_REQUIREMENTS.get(event_type)
     if event_requirements is None:
@@ -154,6 +156,16 @@ def require_event_runtime_compatibility(
             f"mismatches {json.dumps(mismatches, sort_keys=True)}. "
             f"No {event_type} event was written. Ask the Product Owner to review, deploy, and verify "
             "the compatible runtime; the Coder will not restart it.",
+        )
+
+    if (
+        expected_information_store_binding is not None
+        and payload.get("information_store_binding") != expected_information_store_binding
+    ):
+        raise RuntimeCompatibilityError(
+            "runtime_authority_mismatch",
+            "The running Repo Control reader is not bound to the same selected InformationStore "
+            "and exact prompt revision. No workflow event was written.",
         )
 
     return {

@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Protocol, Sequence
 
@@ -673,7 +674,7 @@ class GitFileProvider:
 
 
 class SQLiteRevisionProvider:
-    """Read-only adapter over an explicitly opened disposable InformationStore."""
+    """Read-only adapter over an explicitly bound InformationStore."""
 
     def __init__(self, store: InformationStore, *, repository_name: str | None = None) -> None:
         self.store = store
@@ -685,76 +686,55 @@ class SQLiteRevisionProvider:
     def enumerate_records(self) -> ProviderSnapshot:
         records: list[DocumentRecord] = []
         bytes_scanned = 0
-        document_cursor = 0
-        while True:
-            document_page = self.store.list_documents(after_order=document_cursor)
-            for document in document_page["documents"]:
-                revision_cursor = 0
-                while True:
-                    revision_page = self.store.list_revisions(
-                        document["document_id"],
-                        after_order=revision_cursor,
-                    )
-                    for revision in revision_page["revisions"]:
-                        detail = self.store.get_revision(document["document_id"], revision["revision_id"])
-                        content = detail["content"]
-                        content_hash = _sha256(content.encode("utf-8"))
-                        if content_hash != revision["content_sha256"]:
-                            raise SourceEnumerationError(
-                                f"SQLite fixture revision {revision['revision_id']!r} changed during enumeration."
-                            )
-                        bytes_scanned += len(content.encode("utf-8"))
-                        public_document_id = _stable_id(
-                            "sqlite-document",
-                            self.store.identity.repository_id,
-                            self.store.identity.milestone_id,
-                            document["document_id"],
-                        )
-                        public_revision_id = f"sqlite-revision:{revision['revision_id']}"
-                        source_identity = (
-                            f"{self.provider_id}:{document['document_id']}:{revision['revision_id']}"
-                        )
-                        status = revision["status"]
-                        records.append(
-                            DocumentRecord(
-                                provider_id=self.provider_id,
-                                source_identity=source_identity,
-                                repository_id=self.store.identity.repository_id,
-                                repository_key=self.store.identity.repository_key,
-                                repository_name=self.repository_name,
-                                document_id=public_document_id,
-                                revision_id=public_revision_id,
-                                logical_type=detail["logical_type"],
-                                name=PurePosixPath(detail["logical_key"]).name,
-                                path=detail["source_path"],
-                                milestone_id=self.store.identity.milestone_id,
-                                content_sha256=content_hash,
-                                source_kind="sqlite_fixture",
-                                authority_classification="disposable_fixture",
-                                authority_note=(
-                                    "Disposable SQLite fixture data; stored approval or actor labels do not confer "
-                                    "managed authority."
-                                ),
-                                revision_status=status,
-                                approval_state="fixture_approved" if status == "approved" else status,
-                                version_kind="immutable_fixture_revision",
-                                version_provenance={
-                                    "revision_source_kind": revision["source_kind"],
-                                    "created_at": revision["created_at"],
-                                    "fixture_provenance": detail["provenance"],
-                                },
-                                content=content,
-                                title=detail["logical_key"],
-                            )
-                        )
-                    next_revision = revision_page["next_cursor"]
-                    if next_revision is None:
-                        break
-                    revision_cursor = next_revision
-            next_document = document_page["next_cursor"]
-            if next_document is None:
-                break
-            document_cursor = next_document
+        authority = self.store.snapshot()["authority"]
+        if authority not in {"disposable_fixture_only", "sqlite_managed"}:
+            raise SourceEnumerationError("A prepared store is not an active document authority.")
+        fixture = authority == "disposable_fixture_only"
+        for revision in self.store.list_repository_revisions():
+            content = revision["content"]
+            content_hash = revision["content_sha256"]
+            bytes_scanned += len(content.encode("utf-8"))
+            public_document_id = _stable_id(
+                "sqlite-document",
+                self.store.identity.repository_id,
+                revision["milestone_id"],
+                revision["document_id"],
+            )
+            status = revision["status"]
+            records.append(
+                DocumentRecord(
+                    provider_id=self.provider_id,
+                    source_identity=f"{self.provider_id}:{revision['document_id']}:{revision['revision_id']}",
+                    repository_id=self.store.identity.repository_id,
+                    repository_key=self.store.identity.repository_key,
+                    repository_name=self.repository_name,
+                    document_id=public_document_id,
+                    revision_id=f"sqlite-revision:{revision['revision_id']}",
+                    logical_type=revision["logical_type"],
+                    name=PurePosixPath(revision["logical_key"]).name,
+                    path=revision["source_path"],
+                    milestone_id=revision["milestone_id"],
+                    content_sha256=content_hash,
+                    source_kind="sqlite_fixture" if fixture else "sqlite_managed",
+                    authority_classification="disposable_fixture" if fixture else "managed_revision",
+                    authority_note=(
+                        "Disposable SQLite fixture data; stored approval or actor labels do not confer "
+                        "managed authority."
+                        if fixture else
+                        "Revision from the configured SQLite authority; reported actor identity is not authenticated."
+                    ),
+                    revision_status=status,
+                    approval_state="fixture_approved" if fixture and status == "approved" else status,
+                    version_kind="immutable_fixture_revision" if fixture else "immutable_revision",
+                    version_provenance={
+                        "revision_source_kind": revision["source_kind"],
+                        "created_at": revision["created_at"],
+                        "fixture_provenance" if fixture else "provenance": revision["provenance"],
+                    },
+                    content=content,
+                    title=revision["logical_key"],
+                )
+            )
         records.sort(key=_record_sort_key)
         return ProviderSnapshot(
             provider_id=self.provider_id,
@@ -879,6 +859,195 @@ class DocumentLibrary:
             raise InvalidCursorError("Continuation cursor signature is invalid or belongs to another library.")
         return unsigned
 
+    def _historical_catalog(
+        self,
+        repository: RepositoryEntry,
+        selected_milestone_id: str,
+    ) -> tuple[list[tuple[DocumentRecord, dict[str, Any]]], str, int, list[str]]:
+        has_git_history = any(
+            isinstance(provider, GitFileProvider)
+            and any(
+                source.repository.repository_id == repository.repository_id
+                and source.repository.path == repository.path
+                for source in provider.sources
+            )
+            for provider in self.providers
+        )
+        if not has_git_history:
+            raise SourceEnumerationError(
+                "Historical search requires an explicitly configured Git historical-evidence provider."
+            )
+        records, fingerprint, bytes_scanned, _candidate_count, warnings = self._catalog()
+        historical: list[tuple[DocumentRecord, dict[str, Any]]] = []
+        for record in records:
+            if record.repository_id != repository.repository_id:
+                continue
+            try:
+                info = architect_contract._historical_path_info(repository, record.path, selected_milestone_id)
+            except architect_contract.ArchitectContractError as exc:
+                if exc.code in {"historical_path_not_allowed", "unsupported_historical_document_type"}:
+                    continue
+                raise
+            if info["is_current"]:
+                continue
+            raw = record.content.encode("utf-8")
+            if len(raw) > architect_contract.MAX_REPOSITORY_DOCUMENT_FILE_BYTES:
+                raise DocumentTooLargeError("Historical source exceeds the complete-content size limit.")
+            if architect_contract._PRIVATE_KEY_MARKER.search(record.content):
+                raise SourceEnumerationError("Historical source contains private-key material.")
+            historical.append((record, info))
+        historical.sort(key=lambda item: (item[0].path, item[0].document_id, item[0].revision_id))
+        return historical, fingerprint, bytes_scanned, warnings
+
+    def search_historical(
+        self,
+        repository: RepositoryEntry,
+        selected_milestone_id: str,
+        *,
+        query: str | None,
+        milestone_id: str | None,
+        artifact_type: str | None,
+        category: str | None,
+        limit: int | None,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        page_size = architect_contract._history_filters(query, milestone_id, artifact_type, category, limit)
+        records, fingerprint, bytes_scanned, warnings = self._historical_catalog(repository, selected_milestone_id)
+        request = {
+            "repository_id": repository.repository_id,
+            "selected_milestone_id": selected_milestone_id,
+            "query": query,
+            "milestone_id": milestone_id,
+            "artifact_type": artifact_type,
+            "category": category,
+            "limit": page_size,
+        }
+        request_hash = _sha256(_canonical_json(request))
+        offset = 0
+        if cursor is not None:
+            payload = self._decode_cursor(cursor)
+            if payload.get("type") != "history" or payload.get("request") != request_hash:
+                raise InvalidCursorError("Historical cursor does not match the query and filters.")
+            if payload.get("catalog") != fingerprint:
+                raise StaleCursorError("Historical sources changed; restart the search.")
+            offset = payload.get("offset")
+            if type(offset) is not int or offset < 0:
+                raise InvalidCursorError("Historical cursor offset is invalid.")
+        tokens = architect_contract._history_query_tokens(query) if query is not None else []
+        matches = [
+            (record, info) for record, info in records
+            if (milestone_id is None or info["milestone_id"] == milestone_id)
+            and (artifact_type is None or info["artifact_type"] == artifact_type)
+            and (category is None or info["category"] == category)
+            and all(token in f"{record.path} {info['title']} {info['milestone_id'] or ''} {record.content}".casefold()
+                    for token in tokens)
+        ]
+        if offset > len(matches) or (cursor is not None and offset == len(matches)):
+            raise StaleCursorError("Historical cursor is outside the current result set.")
+        selected = matches[offset:offset + page_size]
+        next_offset = offset + len(selected)
+        has_more = next_offset < len(matches)
+        next_cursor = (
+            self._encode_cursor({
+                "type": "history", "request": request_hash, "catalog": fingerprint, "offset": next_offset,
+            }) if has_more else None
+        )
+        results = [
+            {
+                **{key: value for key, value in info.items() if key != "is_current"},
+                "file_size_bytes": len(record.content.encode("utf-8")),
+                "source_type": "historical_evidence",
+                "authority_classification": "historical_evidence",
+                "is_current_authority": False,
+                "document_id": record.document_id,
+                "revision_id": record.revision_id,
+                "content_sha256": record.content_sha256,
+                "source_kind": record.source_kind,
+                "version_kind": record.version_kind,
+                "version_provenance": record.version_provenance,
+            }
+            for record, info in selected
+        ]
+        return {
+            "query": query,
+            "filters": {"milestone_id": milestone_id, "artifact_type": artifact_type, "category": category},
+            "ordering": "repository_relative_path_ascending",
+            "results": results,
+            "returned_count": len(results),
+            "total_count": len(matches),
+            "omitted_count": 0,
+            "total_count_complete": not warnings,
+            "limited": False,
+            "truncated": has_more,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+            "candidates_considered": len(records),
+            "files_scanned": len(records) if query is not None else 0,
+            "bytes_scanned": bytes_scanned,
+            "skipped_count": 0,
+            "warnings": warnings,
+            "source_coverage": "configured_document_providers",
+        }
+
+    def read_historical(
+        self,
+        repository: RepositoryEntry,
+        selected_milestone_id: str,
+        path: str,
+        *,
+        document_id: str | None = None,
+        revision_id: str | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        if (document_id is None) != (revision_id is None):
+            raise ValueError("Historical reads require both document ID and revision ID, or neither.")
+        info = architect_contract._historical_path_info(repository, path, selected_milestone_id)
+        if info["is_current"]:
+            raise architect_contract.ArchitectContractError(
+                "current_artifact_not_historical", "Read the selected milestone through its current tools.", 409
+            )
+        records, _fingerprint, _bytes_scanned, _warnings = self._historical_catalog(
+            repository, selected_milestone_id
+        )
+        matches = [
+            record for record, _info in records
+            if record.path == path and (document_id is None or (
+                record.document_id == document_id and record.revision_id == revision_id
+            ))
+        ]
+        if not matches:
+            raise DocumentNotFoundError("The exact historical source was not found in configured providers.")
+        if len(matches) != 1:
+            raise DuplicateSourceIdentityError(
+                "The historical path has multiple revisions; supply its exact document and revision IDs."
+            )
+        record = matches[0]
+        byte_count = len(record.content.encode("utf-8"))
+        page = self._read_record_page(record, cursor=cursor, page_bytes=MAX_DOCUMENT_PAGE_BYTES)
+        return {
+            "source_type": "historical_evidence",
+            **{key: value for key, value in info.items() if key != "is_current"},
+            "repository_key": repository.key,
+            "repository_id": repository.repository_id,
+            "document_id": record.document_id,
+            "revision_id": record.revision_id,
+            "content_sha256": record.content_sha256,
+            "file_size_bytes": byte_count,
+            "bytes_returned": len(page["content"].encode("utf-8")),
+            "character_count": len(page["content"]),
+            "truncated": not page["complete"],
+            "byte_offset": page["byte_offset"],
+            "next_byte_offset": page["next_byte_offset"],
+            "next_cursor": page["next_cursor"],
+            "working_tree_source": record.source_kind,
+            "authority_classification": "historical_evidence",
+            "authority_note": "Historical evidence only; not current governing or lifecycle authority.",
+            "is_current_authority": False,
+            "observed_at": datetime.now(UTC).isoformat(),
+            "version_provenance": record.version_provenance,
+            "content": page["content"],
+        }
+
     def search(
         self,
         *,
@@ -999,9 +1168,19 @@ class DocumentLibrary:
         cursor: str | None = None,
         page_bytes: int = MAX_DOCUMENT_PAGE_BYTES,
     ) -> dict[str, Any]:
+        record = self._resolve(document_id, revision_id)
+        return self._read_record_page(record, cursor=cursor, page_bytes=page_bytes)
+
+    def _read_record_page(
+        self,
+        record: DocumentRecord,
+        *,
+        cursor: str | None,
+        page_bytes: int,
+    ) -> dict[str, Any]:
         if type(page_bytes) is not int or not 1 <= page_bytes <= MAX_DOCUMENT_PAGE_BYTES:
             raise ValueError(f"Document page size must be between 1 and {MAX_DOCUMENT_PAGE_BYTES} bytes.")
-        record = self._resolve(document_id, revision_id)
+        document_id, revision_id = record.document_id, record.revision_id
         content_bytes = record.content.encode("utf-8")
         request_fingerprint = _sha256(
             _canonical_json([document_id, revision_id, record.content_sha256, page_bytes])

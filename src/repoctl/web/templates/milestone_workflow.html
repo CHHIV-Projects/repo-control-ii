@@ -34,6 +34,47 @@
     <p id="milestone-refresh-notice" class="warning" role="status" hidden></p>
   </article>
 
+  {% if workflow.unverified_prompt %}
+    <article class="card warning spaced-top">
+      <h3>Imported prompt requires a new {% if information_store_fixture %}fixture {% endif %}decision</h3>
+      <p>The historical workflow does not establish which prompt bytes were approved at the time.
+        No workflow action is available until the Product Owner reviews this exact current revision.
+        This new confirmation does not change the lifecycle or verify historical bytes.</p>
+      <p><strong>Revision:</strong> <code>{{ workflow.unverified_prompt.revision_id }}</code></p>
+      <p><strong>SHA-256:</strong> <code>{{ workflow.unverified_prompt.content_sha256 }}</code></p>
+      <pre>{{ workflow.unverified_prompt.content }}</pre>
+      <form method="post" action="{{ url_for('confirm_imported_prompt') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+        <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+        <input type="hidden" name="selection_id" value="{{ information_store_selection.selection_id }}">
+        <input type="hidden" name="selection_revision" value="{{ information_store_selection.selection_revision }}">
+        <input type="hidden" name="store_revision" value="{{ workflow.store_revision }}">
+        <input type="hidden" name="document_id" value="{{ workflow.unverified_prompt.document_id }}">
+        <input type="hidden" name="revision_id" value="{{ workflow.unverified_prompt.revision_id }}">
+        <input type="hidden" name="content_sha256" value="{{ workflow.unverified_prompt.content_sha256 }}">
+        <input type="hidden" name="request_id" value="{{ workflow.unverified_prompt.request_id }}">
+        <label>
+          <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
+          I reviewed these exact bytes and confirm this new {% if information_store_fixture %}fixture-only {% endif %}Product Owner decision.
+        </label>
+        <button type="submit">Confirm imported prompt revision</button>
+      </form>
+    </article>
+  {% endif %}
+
+  {% if workflow.unverified_guidance %}
+    <article class="card warning spaced-top">
+      <h3>Imported guidance needs Product Owner reconciliation</h3>
+      <p>These imported approval snapshots do not establish an explicit decision history. Closure is blocked until their provenance is resolved.</p>
+      <ul>
+        {% for dispatch in workflow.unverified_guidance %}
+          <li>{{ dispatch.dispatch_id }} · {{ dispatch.dispatch_type }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+  {% endif %}
+
   <article class="card spaced-top">
     <h3>Latest workflow events</h3>
     {% if workflow.latest_events %}
@@ -50,7 +91,7 @@
     {% endif %}
   </article>
 
-  {% if workflow.outstanding_dispatches %}
+  {% if workflow.outstanding_dispatches and not workflow.unverified_prompt %}
     <article class="card warning spaced-top">
       <h3>Approved Architect guidance is newer than this closeout</h3>
       <p>Accept &amp; Close is guarded because the latest submitted closeout predates the following approved guidance. Review it before continuing.</p>
@@ -75,6 +116,7 @@
           <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
           <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
           <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+          <input type="hidden" name="expected_prompt_identity" value="{{ workflow.prompt_identity }}">
           <input type="hidden" name="expected_phase" value="REVIEW">
           <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
           <input type="hidden" name="event_type" value="accept_and_close">
@@ -87,6 +129,10 @@
             <input type="checkbox" name="closure_guard_confirmed" value="yes" required>
             I reviewed the listed dispatches and explicitly choose to close without an amended closeout.
           </label>
+          {% if information_store_mode and not information_store_fixture %}
+            <label><input type="checkbox" name="po_confirmation" value="confirmed" required>
+              I confirm this Product Owner workflow action.</label>
+          {% endif %}
           <input type="hidden" name="summary" value="{{ workflow.closure_confirmation.summary }}">
           <button type="submit">Confirm override and close</button>
           <a class="button secondary" href="{{ url_for('milestone_page') }}">Cancel and review milestone</a>
@@ -95,7 +141,7 @@
     </article>
   {% endif %}
 
-  {% if workflow.phase != "CLOSED" and not workflow.closure_confirmation %}
+  {% if workflow.phase != "CLOSED" and not workflow.closure_confirmation and not workflow.unverified_prompt %}
     {% set primary_action = workflow.ui_events[0][0] if workflow.ui_events else "" %}
     {% set submitted_event = request.form.get("event_type", primary_action if primary_action in ["approve_and_start", "resolve_and_resume", "accept_and_close"] else "") %}
     {% set submitted_related = request.form.get("related_event_id", "") %}
@@ -116,6 +162,9 @@
         <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
         <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
         <input type="hidden" name="expected_prompt_identity" value="{{ workflow.prompt_identity }}">
+        {% if information_store_mode %}
+          <input type="hidden" name="expected_closeout_identity" value="{{ workflow.closeout_identity or '' }}">
+        {% endif %}
         <input type="hidden" name="expected_phase" value="{{ workflow.phase }}">
         <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
 
@@ -182,12 +231,16 @@
           <label for="lock-in-summary">Optional binding lock-in (leave blank for none)</label>
           <textarea id="lock-in-summary" name="lock_in_summary" maxlength="2000">{{ request.form.get("lock_in_summary", "") }}</textarea>
         </div>
+        {% if information_store_mode and not information_store_fixture %}
+          <label><input type="checkbox" name="po_confirmation" value="confirmed" required>
+            I confirm this Product Owner workflow action.</label>
+        {% endif %}
         <button type="submit" id="workflow-submit">{% if submitted_event %}{% for event_type, event_label in workflow.ui_events %}{% if event_type == submitted_event %}{{ event_label }}{% endif %}{% endfor %}{% else %}Record workflow event{% endif %}</button>
       </form>
     </article>
   {% endif %}
 
-  {% if workflow.phase == "CLOSED" %}
+  {% if workflow.phase == "CLOSED" and not workflow.unverified_prompt %}
     <article class="card spaced-top">
       <h3>Reopen milestone</h3>
       <p><strong>Repository:</strong> {{ repository_name }}</p>
@@ -201,6 +254,7 @@
         <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
         <input type="hidden" name="milestone_id" value="{{ selection.selection.milestone_id }}">
         <input type="hidden" name="prompt_path" value="{{ selection.selection.prompt_path }}">
+        <input type="hidden" name="expected_prompt_identity" value="{{ workflow.prompt_identity }}">
         <input type="hidden" name="expected_phase" value="CLOSED">
         <input type="hidden" name="expected_event_count" value="{{ workflow.event_count }}">
         <label for="reopen-target-phase">Target phase</label>

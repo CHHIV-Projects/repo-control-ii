@@ -54,7 +54,7 @@ _MILESTONE_HISTORY_FILENAME = re.compile(
     r"[a-z0-9]+(?:_[a-z0-9]+)*_(prompt|workflow|closeout)\.md$"
 )
 _ARCHIVE_MILESTONE_ID = re.compile(
-    r"^((?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*))_"
+    r"^((?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]+(?:\.[0-9]+)*))_"
 )
 _HISTORY_TOKEN = re.compile(r"[\w-]+", re.UNICODE)
 _DOCUMENT_EXTENSIONS = frozenset({".md", ".txt", ".rst"})
@@ -617,6 +617,7 @@ def read_selected_milestone_document_page(
     *,
     start_byte: int = 0,
     source_fingerprint: str | None = None,
+    approved_prompt_content: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(start_byte, int) or isinstance(start_byte, bool) or start_byte < 0:
         raise ArchitectContractError("invalid_document_offset", "The page offset must be a non-negative integer.", 400)
@@ -643,7 +644,10 @@ def read_selected_milestone_document_page(
     if not isinstance(prompt_path, str) or not isinstance(milestone_id, str):
         raise ArchitectContractError("invalid_milestone_selection", "The selected milestone identity is invalid.", 409)
     document_path = _selected_milestone_document_path(document_path, prompt_path)
-    prompt_content = _read_content(repository, prompt_path, "milestone_prompt")["content"]
+    prompt_content = (
+        _read_content(repository, prompt_path, "milestone_prompt")["content"]
+        if approved_prompt_content is None else approved_prompt_content
+    )
     prompt = PurePosixPath(prompt_path)
     workflow_path = prompt.with_name(
         prompt.name.removesuffix("_prompt.md") + "_workflow.md"
@@ -1364,7 +1368,7 @@ def _history_filters(
     if query is not None:
         _history_query_tokens(query)
     if milestone_id is not None and not re.fullmatch(
-        r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)",
+        r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]+(?:\.[0-9]+)*)",
         milestone_id,
     ):
         raise ArchitectContractError(

@@ -23,6 +23,7 @@ from repoctl.mcp.architect_adapter import (
     validate_tool_call,
     validate_submission_call,
 )
+from repoctl.mcp import architect_adapter
 
 
 class TestArchitectMcpInventory(unittest.TestCase):
@@ -49,6 +50,11 @@ class TestArchitectMcpInventory(unittest.TestCase):
         "architect_submit_response_draft",
         "repo_intelligence",
     }
+
+    def test_module_entrypoint_uses_canonical_authority_selection(self):
+        with patch("repoctl.cli.main", return_value=0) as main:
+            self.assertEqual(architect_adapter.main(["--repo-control-url", "http://127.0.0.1:8765"]), 0)
+        main.assert_called_once_with(["mcp-architect", "--repo-control-url", "http://127.0.0.1:8765"])
 
     def test_inventory_exact_match(self):
         advertised_names = {t["name"] for t in TOOL_INVENTORY}

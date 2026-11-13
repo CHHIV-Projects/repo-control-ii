@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from typing import Any, Protocol
 
 from .analysis.manager import AnalysisError, analyze_comparison
 from .compare.manager import compare_snapshots
@@ -11,13 +12,63 @@ from .context.generator import build_and_publish_context
 from .scanner.core import run_scan, run_scan_with_artifacts
 from .scanner.git_ops import ScanError
 from .snapshot.manager import create_snapshot
-from .web.app import run_web_server
+from .web.app import InformationStoreClientProvider, run_web_server
 from .workflow.commit_execution import execute_prepared_commit
 from .workflow.commit_plan import prepare_commit
 from .workflow.errors import WorkflowReasonError
 from .workflow.stage_execution import execute_prepared_stage
 from .workflow.stage_plan import prepare_stage
 from .workflow.status import WorkflowError, generate_milestone_status
+
+
+class _InformationStoreCoderClients(InformationStoreClientProvider, Protocol):
+
+    def list_documents(self, *, after_order: int = 0) -> dict[str, Any]: ...
+
+    def get_dispatch(self, dispatch_id: str) -> dict[str, Any]: ...
+
+    def get_revision(self, document_id: str, revision_id: str) -> dict[str, Any]: ...
+
+    def read_revision_page(
+        self,
+        document_id: str,
+        revision_id: str,
+        *,
+        byte_offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> dict[str, Any]: ...
+
+    def append_coder_event(
+        self,
+        *,
+        event_type: str,
+        summary: str,
+        event_fields: dict[str, Any] | None = None,
+        expected_store_revision: int | None = None,
+        expected_prompt_revision_id: str | None = None,
+        expected_guidance_sha256: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def submit_coder_closeout(
+        self,
+        *,
+        summary: str,
+        document_id: str,
+        revision_id: str,
+        content_sha256: str,
+        expected_prompt_revision_id: str,
+        expected_store_revision: int,
+    ) -> dict[str, Any]: ...
+
+    def submit_coder_closeout_draft(
+        self,
+        *,
+        summary: str,
+        content: str,
+        content_sha256: str,
+        expected_prompt_revision_id: str,
+        expected_store_revision: int,
+    ) -> dict[str, Any]: ...
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="http://127.0.0.1:8765",
         help="Base URL for Repo Control web server (default: http://127.0.0.1:8765)",
     )
+    mcp_parser.add_argument("--state-root", help="Repo Control state root (default: managed central state root)")
 
     milestone_parser = subparsers.add_parser("milestone", help="Milestone workflow commands")
     milestone_subparsers = milestone_parser.add_subparsers(dest="milestone_command", required=True)
@@ -155,6 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
     coder_verify_parser.add_argument("--expected-repository-id", required=True)
     coder_verify_parser.add_argument("--expected-repository-root", required=True)
     coder_verify_parser.add_argument("--expected-milestone-id", required=True)
+    coder_verify_parser.add_argument("--expected-selection-id")
+    coder_verify_parser.add_argument("--expected-selection-revision", type=int)
+    coder_verify_parser.add_argument("--expected-prompt-document-id")
+    coder_verify_parser.add_argument("--expected-prompt-revision-id")
+    coder_verify_parser.add_argument("--expected-prompt-sha256")
+    coder_verify_parser.add_argument(
+        "--allow-materialized-prompt",
+        action="store_true",
+        help="Apply the exact approved-prompt dirty-path preflight for the bound InformationStore",
+    )
     coder_verify_parser.add_argument(
         "--acknowledge-git-boundary",
         action="store_true",
@@ -337,18 +399,302 @@ def build_parser() -> argparse.ArgumentParser:
     coder_closeout_parser.add_argument(
         "--summary", default="Closeout submitted for review", help="Closeout submission summary"
     )
+    coder_closeout_parser.add_argument("--document-id", help="Exact InformationStore closeout document ID")
+    coder_closeout_parser.add_argument("--revision-id", help="Exact InformationStore closeout revision ID")
+    coder_closeout_parser.add_argument("--content-sha256", help="Exact InformationStore closeout content hash")
+    coder_closeout_parser.add_argument(
+        "--draft-file",
+        help="Explicitly import the selected canonical closeout file as an immutable revision before submission",
+    )
     coder_closeout_parser.add_argument("--repository", help="Path inside target Git repository")
     coder_closeout_parser.add_argument("--state-root", help="Explicit state root override")
     coder_closeout_parser.add_argument(
         "--milestone-root", help="Compatibility assertion; must match the centrally configured milestone root"
     )
 
+    authority_parser = subparsers.add_parser(
+        "store-authority", help="PO/operator-only offline SQLite cutover preparation and recovery"
+    )
+    authority_actions = authority_parser.add_subparsers(dest="authority_action", required=True)
+    prepare = authority_actions.add_parser("prepare", help="Import all registered v1 sources while quiesced")
+    prepare.add_argument("--registry", required=True)
+    prepare.add_argument("--state-root", required=True)
+    prepare.add_argument("--destination", required=True)
+    prepare.add_argument("--writers-quiesced", action="store_true")
+    bind = authority_actions.add_parser("bind-selection", help="Bind an exact reviewed v1 selection")
+    bind.add_argument("--registry", required=True)
+    bind.add_argument("--state-root", required=True)
+    bind.add_argument("--database", required=True)
+    bind.add_argument("--binding-json", required=True)
+    bind.add_argument("--po-confirm", action="store_true")
+    for action in ("preview", "activate", "abort"):
+        command = authority_actions.add_parser(action)
+        command.add_argument("--registry", required=True)
+        command.add_argument("--state-root", required=True)
+        command.add_argument("--database", required=True)
+        command.add_argument("--generation", required=True)
+        if action != "preview":
+            command.add_argument("--expected-plan-sha256", required=True)
+            command.add_argument("--po-confirm", action="store_true")
+            command.add_argument("--writers-quiesced", action="store_true")
+        if action == "activate":
+            command.add_argument("--source-parity-confirmed", action="store_true")
+    for action in ("preview-selection-recovery", "recover-selection"):
+        command = authority_actions.add_parser(action)
+        command.add_argument("--registry", required=True)
+        command.add_argument("--state-root", required=True)
+        command.add_argument("--repository-key", required=True)
+        if action == "recover-selection":
+            command.add_argument("--expected-plan-sha256", required=True)
+            command.add_argument("--po-confirm", action="store_true")
+
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_store_authority_command(args: argparse.Namespace) -> int:
+    import sqlite3
+    from dataclasses import asdict
+
+    from .information_store import InformationStore, InformationStoreError, StoreIdentity
+    from .migration_rehearsal import MigrationRehearsalError, prepare_managed_repository_imports
+    from .scanner.core import StateArtifactLockError, state_artifact_lock
+    from .store_authority import (
+        StoreAuthorityError,
+        abort_prepared_authority,
+        activate_prepared_authority,
+        load_store_authority,
+        preview_prepared_authority,
+    )
+    from .web.repository_registry import RepositoryRegistry
+    from .workflow.coder_interface import CENTRAL_REPOSITORY_REGISTRY_PATH
+
+    try:
+        registry_path = Path(args.registry).expanduser().resolve(strict=True)
+        if registry_path != CENTRAL_REPOSITORY_REGISTRY_PATH.resolve(strict=True):
+            raise StoreAuthorityError("Operator commands require the canonical central registry.")
+        if args.authority_action == "prepare":
+            result = prepare_managed_repository_imports(
+                RepositoryRegistry.from_toml(registry_path),
+                args.destination,
+                state_root=args.state_root,
+                writers_quiesced=args.writers_quiesced,
+            )
+        elif args.authority_action == "bind-selection":
+            binding = json.loads(args.binding_json)
+            identity_fields = {
+                "repository_id", "repository_key", "repository_root", "milestone_id", "prompt_path",
+                "selection_id", "selection_revision",
+            }
+            if not isinstance(binding, dict) or set(binding) != identity_fields | {"v1_selection_sha256"}:
+                raise StoreAuthorityError("Selection binding must be the exact JSON object from the import report.")
+            identity = StoreIdentity(**{key: binding[key] for key in identity_fields})
+            registry = RepositoryRegistry.from_toml(registry_path)
+            matches = [
+                entry for entry in registry.entries
+                if (entry.repository_id, entry.key, str(entry.path))
+                == (identity.repository_id, identity.repository_key, identity.repository_root)
+            ]
+            if len(matches) != 1:
+                raise StoreAuthorityError("Selection binding does not match the canonical registry.")
+            store = InformationStore.bind_prepared_v1_selection(
+                args.database,
+                identity,
+                selection_state_root=args.state_root,
+                expected_v1_sha256=binding["v1_selection_sha256"],
+                cutover_confirmed=args.po_confirm,
+            )
+            result = {"selection": asdict(store.identity), "database_identity": store.database_identity()}
+        elif args.authority_action == "preview":
+            result = preview_prepared_authority(args.database, args.state_root, registry_path, args.generation)
+        elif args.authority_action == "activate":
+            configuration = activate_prepared_authority(
+                args.database, args.state_root, registry_path, args.generation,
+                expected_plan_sha256=args.expected_plan_sha256,
+                po_confirmed=args.po_confirm,
+                writers_quiesced=args.writers_quiesced,
+                source_parity_confirmed=args.source_parity_confirmed,
+            )
+            result = {
+                "status": "active",
+                "generation": configuration.generation,
+                "configuration_sha256": configuration.configuration_sha256,
+            }
+        elif args.authority_action == "abort":
+            abort_prepared_authority(
+                args.database, args.state_root, registry_path, args.generation,
+                expected_plan_sha256=args.expected_plan_sha256,
+                po_confirmed=args.po_confirm,
+                writers_quiesced=args.writers_quiesced,
+            )
+            result = {"status": "aborted_before_first_write"}
+        else:
+            registry = RepositoryRegistry.from_toml(registry_path)
+            matches = [entry for entry in registry.entries if entry.key == args.repository_key]
+            if len(matches) != 1:
+                raise StoreAuthorityError("Recovery requires one exact registered repository.")
+            entry = matches[0]
+            with state_artifact_lock(Path(args.state_root)):
+                configuration = load_store_authority(args.state_root)
+                if configuration is None or configuration.registry_path != registry_path:
+                    raise StoreAuthorityError("The selected authority does not use this canonical registry.")
+                plan = InformationStore.preview_managed_selection_recovery(
+                    configuration,
+                    repository_id=entry.repository_id,
+                    repository_key=entry.key,
+                    repository_root=str(entry.path),
+                )
+                if args.authority_action == "preview-selection-recovery":
+                    result = plan
+                else:
+                    if plan["plan_sha256"] != args.expected_plan_sha256:
+                        raise StoreAuthorityError("Selection recovery preflight changed; review and retry.")
+                    recovered = InformationStore.recover_managed_selection_mirror(
+                        configuration,
+                        expected_external=StoreIdentity(**plan["external"]),
+                        expected_mirror=StoreIdentity(**plan["mirror"]),
+                        po_recovery_confirmed=args.po_confirm,
+                    )
+                    result = {"status": "recovered", "selection": asdict(recovered.identity)}
+    except (
+        StoreAuthorityError, InformationStoreError, MigrationRehearsalError,
+        StateArtifactLockError, OSError, sqlite3.Error, ValueError,
+    ) as exc:
+        print(f"store-authority {args.authority_action} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    information_store_clients: _InformationStoreCoderClients | None = None,
+) -> int:
+    if information_store_clients is None:
+        from .scanner.core import DEFAULT_STATE_ROOT
+        from .store_authority import StoreAuthorityError, load_store_authority
+
+        args = build_parser().parse_args(argv)
+        requested_root = Path(getattr(args, "state_root", None) or DEFAULT_STATE_ROOT).expanduser().resolve()
+        default_root = DEFAULT_STATE_ROOT.expanduser().resolve()
+        if args.command == "store-authority":
+            if requested_root != default_root:
+                try:
+                    if load_store_authority(default_root) is not None:
+                        raise StoreAuthorityError("A different central state root already selects SQLite authority.")
+                except StoreAuthorityError as exc:
+                    print(f"InformationStore authority unavailable: {exc}", file=sys.stderr)
+                    return 2
+            return _main(argv)
+        try:
+            default_configuration = load_store_authority(default_root)
+            if default_configuration is not None and requested_root != default_root:
+                print("SQLite authority is selected; a different state root cannot be used as a fallback.", file=sys.stderr)
+                return 2
+            configuration = (
+                default_configuration if requested_root == default_root else load_store_authority(requested_root)
+            )
+        except StoreAuthorityError as exc:
+            print(f"InformationStore authority unavailable: {exc}", file=sys.stderr)
+            return 2
+        if configuration is None:
+            return _main(argv)
+        if args.command == "web":
+            return _main(argv)
+        if args.command not in {
+            "scan", "context", "snapshot", "compare", "analyze", "milestone",
+            "coder-context", "coder-verify", "coder-read-milestone-document", "coder-status",
+            "coder-read-dispatch", "coder-question", "coder-bug", "coder-bug-fixed", "coder-test",
+            "coder-closeout", "coder-intelligence", "coder-intelligence-rate", "coder-intelligence-refresh",
+            "mcp-architect",
+        }:
+            print(f"{args.command} has no managed InformationStore adapter; legacy fallback is disabled.", file=sys.stderr)
+            return 2
+        from .information_store import InformationStoreError
+        from .workflow.coder_interface import (
+            CENTRAL_REPOSITORY_REGISTRY_PATH,
+            CoderInterfaceError,
+            resolve_repository_entry,
+        )
+        from .workflow.information_store_fixture import (
+            FixtureIntegrationError,
+            create_managed_information_store_clients,
+        )
+
+        try:
+            if configuration.registry_path != CENTRAL_REPOSITORY_REGISTRY_PATH.resolve():
+                raise CoderInterfaceError("SQLite authority does not use the canonical central registry.")
+            entry = resolve_repository_entry(
+                getattr(args, "repository", None), getattr(args, "milestone_root", None),
+            )
+            information_store_clients = create_managed_information_store_clients(configuration, entry)
+        except (CoderInterfaceError, FixtureIntegrationError, InformationStoreError, StoreAuthorityError, ValueError) as exc:
+            print(f"InformationStore authority unavailable: {exc}", file=sys.stderr)
+            return 2
+    arguments = argv if argv is not None else sys.argv[1:]
+    if arguments and arguments[0] in {"web", "mcp-architect"}:
+        return _main(argv, information_store_clients=information_store_clients)
+    from .information_store import InformationStoreError
+    from .workflow.information_store_fixture import FixtureIntegrationError
+
+    scope = information_store_clients.selection_scope()
+    try:
+        scope.__enter__()
+    except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+        print(f"InformationStore selection unavailable: {exc}", file=sys.stderr)
+        return 2
+    try:
+        return _main(argv, information_store_clients=information_store_clients)
+    finally:
+        scope.__exit__(None, None, None)
+
+
+def _main(
+    argv: list[str] | None = None,
+    *,
+    information_store_clients: _InformationStoreCoderClients | None = None,
+) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "store-authority":
+        return _run_store_authority_command(args)
+
+    if information_store_clients is not None and args.command not in {
+        "scan",
+        "context",
+        "snapshot",
+        "compare",
+        "analyze",
+        "milestone",
+        "web",
+        "mcp-architect",
+        "coder-context",
+        "coder-verify",
+        "coder-read-milestone-document",
+        "coder-status",
+        "coder-read-dispatch",
+        "coder-question",
+        "coder-bug",
+        "coder-bug-fixed",
+        "coder-test",
+        "coder-closeout",
+        "coder-intelligence",
+        "coder-intelligence-rate",
+        "coder-intelligence-refresh",
+    }:
+        print(
+            f"{args.command} has no InformationStore adapter; legacy fallback is disabled.",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        information_store_clients is not None
+        and args.command == "milestone"
+        and args.milestone_command != "status"
+    ):
+        print("Only read-only Git status is available through the managed CLI; use Product Owner Git Review.", file=sys.stderr)
+        return 2
 
     if args.command == "coder-bootstrap-preview":
         from .bootstrap_preview import TRUSTED_PYTHON, build_bootstrap_preview, format_bootstrap_preview
@@ -492,6 +838,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_registry_path=args.repository_registry,
                 host=args.host,
                 port=args.port,
+                information_store_clients=information_store_clients,
             )
         except ValueError as exc:
             print(f"web failed: {exc}", file=sys.stderr)
@@ -508,7 +855,10 @@ def main(argv: list[str] | None = None) -> int:
         from .mcp.architect_adapter import serve_stdio
 
         try:
-            serve_stdio(repo_control_url=args.repo_control_url)
+            serve_stdio(
+                repo_control_url=args.repo_control_url,
+                information_store_clients=information_store_clients,
+            )
             return 0
         except Exception as exc:
             print(f"mcp-architect failed: {exc}", file=sys.stderr)
@@ -714,15 +1064,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"reused_existing: {result['reused_existing']}")
         return 0
 
+    intelligence_binding: dict[str, str] = {}
+    if information_store_clients is not None and args.command in {
+        "coder-intelligence", "coder-intelligence-rate", "coder-intelligence-refresh",
+    }:
+        from .information_store import InformationStoreError
+        from .store_authority import StoreAuthorityError, authority_binding_digest
+        from .workflow.information_store_fixture import FixtureIntegrationError
+
+        try:
+            intelligence_binding["authority_binding"] = authority_binding_digest(
+                information_store_clients.runtime_binding()
+            )
+        except (InformationStoreError, StoreAuthorityError, FixtureIntegrationError, OSError, ValueError) as exc:
+            print(f"coder intelligence binding failed: {exc}", file=sys.stderr)
+            return 2
+
     if args.command in {"coder-intelligence", "coder-intelligence-rate"}:
         from .intelligence import client
         from .intelligence.provider import IntelligenceError
         from .intelligence.service import QUERY_PROPERTIES, encoded
         try:
             if args.command == "coder-intelligence":
-                result = client.query({key: getattr(args, key) for key in QUERY_PROPERTIES})
+                result = client.query({key: getattr(args, key) for key in QUERY_PROPERTIES}, **intelligence_binding)
             else:
-                result = client.rate(args.use_id, args.rating, None if args.inspected is None else args.inspected == "yes")
+                result = client.rate(
+                    args.use_id, args.rating, None if args.inspected is None else args.inspected == "yes",
+                    **intelligence_binding,
+                )
         except IntelligenceError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -741,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             entry = resolve_repository_entry()
-            status = get_coder_status(repository_path=entry.path)
+            status = get_coder_status(repository_path=entry.path, information_store_clients=information_store_clients)
             workflow = status["workflow"]
             if (
                 status["repository"]["repository_id"] != entry.repository_id
@@ -760,8 +1129,12 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_repository_id=entry.repository_id,
                 milestone_id=status["milestone"]["id"],
                 prompt_path=status["prompt"]["path"],
-                prompt_identity=status["prompt"]["identity"],
+                prompt_identity=(
+                    information_store_clients.coder_snapshot()["prompt"]["content_sha256"]
+                    if information_store_clients is not None else status["prompt"]["identity"]
+                ),
                 event_count=workflow["event_count"],
+                **intelligence_binding,
             )
         except (CoderInterfaceError, IntelligenceError) as exc:
             print(f"coder intelligence refresh failed: {exc}", file=sys.stderr)
@@ -781,6 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder context failed: {exc}", file=sys.stderr)
@@ -810,6 +1184,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder document read failed: {exc}", file=sys.stderr)
@@ -829,6 +1204,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder dispatch read failed: {exc}", file=sys.stderr)
@@ -848,6 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder status failed: {exc}", file=sys.stderr)
@@ -880,6 +1257,13 @@ def main(argv: list[str] | None = None) -> int:
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
                 runtime_url=args.runtime_url,
+                information_store_clients=information_store_clients,
+                expected_selection_id=args.expected_selection_id,
+                expected_selection_revision=args.expected_selection_revision,
+                expected_prompt_document_id=args.expected_prompt_document_id,
+                expected_prompt_revision_id=args.expected_prompt_revision_id,
+                expected_prompt_sha256=args.expected_prompt_sha256,
+                allow_materialized_prompt=args.allow_materialized_prompt,
             )
         except CoderInterfaceError as exc:
             print(f"coder verification failed: {exc}", file=sys.stderr)
@@ -1218,6 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder question failed: {exc}", file=sys.stderr)
@@ -1249,6 +1634,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder bug failed: {exc}", file=sys.stderr)
@@ -1275,6 +1661,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder bug fix recording failed: {exc}", file=sys.stderr)
@@ -1306,6 +1693,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
             )
         except CoderInterfaceError as exc:
             print(f"coder test failed: {exc}", file=sys.stderr)
@@ -1335,6 +1723,11 @@ def main(argv: list[str] | None = None) -> int:
                 repository_path=args.repository,
                 state_root=args.state_root,
                 milestone_root=args.milestone_root,
+                information_store_clients=information_store_clients,
+                document_id=args.document_id,
+                revision_id=args.revision_id,
+                content_sha256=args.content_sha256,
+                draft_file=args.draft_file,
             )
         except CoderInterfaceError as exc:
             print(f"coder closeout failed: {exc}", file=sys.stderr)
@@ -1348,6 +1741,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"milestone_id:  {result['milestone_id']}")
         print(f"lifecycle:     {result['phase_before']} -> {result['phase_after']}")
         print(f"evidence_path: {result['evidence_path']}")
+        if information_store_clients is not None:
+            print(f"document_id:   {result['document_id']}")
+            print(f"revision_id:   {result['revision_id']}")
+            print(f"content_sha256: {result['content_sha256']}")
         print(f"next_action:   {result['next_action']}")
         return 0
 

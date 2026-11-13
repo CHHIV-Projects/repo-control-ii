@@ -19,6 +19,7 @@
         <p>Closeout: Not present</p>
       {% endif %}
     </article>
+    {% if not information_store_mode %}
     <article class="card spaced-top">
       <h3>Handoff packets</h3>
       <p class="muted">Packets are read-only derived views. Generation does not record a workflow event or change milestone, selection, or Git state.</p>
@@ -59,6 +60,7 @@
         <script src="{{ url_for('static', filename='handoff.js') }}" defer></script>
       {% endif %}
     </article>
+    {% endif %}
     {% if workflow %}
       {% if workflow.status == "invalid" %}
         <article class="card spaced-top">
@@ -114,6 +116,10 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
         <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+        {% if information_store_mode %}
+          <input type="hidden" name="expected_selection_id" value="{{ information_store_selection.selection_id }}">
+          <input type="hidden" name="expected_selection_revision" value="{{ information_store_selection.selection_revision }}">
+        {% endif %}
         <label for="milestone-candidate">Select or reselect a milestone prompt</label>
         <select id="milestone-candidate" name="milestone_id" required>
           <option value="" disabled{% if selection.status != "selected" %} selected{% endif %}>Choose a milestone</option>

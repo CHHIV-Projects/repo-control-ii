@@ -8,6 +8,7 @@ import re
 import stat
 import tempfile
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -20,6 +21,7 @@ from ..information_store import (
     RevisionConflictError,
     StoreIdentity,
 )
+from ..scanner.core import state_artifact_lock
 from .git_actions import GitActionError, inspect_publication_target
 
 
@@ -69,6 +71,16 @@ class FixturePublicationContext:
     test_only: bool
 
 
+@dataclass(frozen=True)
+class ManagedPublicationContext:
+    repository_id: str
+    repository_key: str
+    repository_root: str
+    milestone_id: str
+    milestone_root: str
+    worktree_root: str | Path
+
+
 class PublicationGitObserver(Protocol):
     status: str
 
@@ -108,16 +120,17 @@ class NotConnectedGitReviewObserver:
 
 
 class CloseoutPublicationService:
-    """Fixture-only accepted-closeout publisher; it has no Git mutation API."""
+    """Accepted-closeout publisher with no Git mutation API."""
 
     def __init__(
         self,
         store: InformationStore,
-        context: FixturePublicationContext,
+        context: FixturePublicationContext | ManagedPublicationContext,
         git_observer: PublicationGitObserver,
     ) -> None:
-        if context.test_only is not True:
-            raise CloseoutPublicationError("Closeout publication is restricted to explicit test fixtures.")
+        self.fixture_only = isinstance(context, FixturePublicationContext)
+        if isinstance(context, FixturePublicationContext) and context.test_only is not True:
+            raise CloseoutPublicationError("Fixture publication requires explicit test-only context.")
         self.store = store
         self.context = context
         self.identity: StoreIdentity = store.identity
@@ -128,8 +141,9 @@ class CloseoutPublicationService:
             or context.milestone_id != self.identity.milestone_id
         ):
             raise IdentityMismatchError("Publication context does not match the fixture store identity.")
-        if store.snapshot()["authority"] != "disposable_fixture_only":
-            raise CloseoutPublicationError("Publication requires a disposable InformationStore fixture.")
+        expected_authority = "disposable_fixture_only" if self.fixture_only else "sqlite_managed"
+        if store.snapshot()["authority"] != expected_authority:
+            raise CloseoutPublicationError("Publication context does not match the active store authority.")
         self.worktree_root = self._validate_worktree_root(context.worktree_root)
         self.target_path = self._canonical_target_path(self.identity, context.milestone_root)
         self._validate_target_parent()
@@ -226,12 +240,25 @@ class CloseoutPublicationService:
         publication_id: str,
         preview_fingerprint: str,
         *,
-        fixture_po_confirmation: bool,
+        fixture_po_confirmation: bool = False,
+        managed_po_confirmation: bool = False,
     ) -> dict[str, Any]:
-        if fixture_po_confirmation is not True:
+        if (
+            self.fixture_only and (fixture_po_confirmation is not True or managed_po_confirmation is not False)
+        ) or (
+            not self.fixture_only and (managed_po_confirmation is not True or fixture_po_confirmation is not False)
+        ):
             raise PublicationNotAcceptedError(
-                "Explicit test-fixture PO confirmation is required to materialize the closeout."
+                "Explicit Product Owner confirmation for this authority is required to materialize the closeout."
             )
+        guard = (
+            state_artifact_lock(self.store.selection_state_root)
+            if self.store.selection_state_root is not None else nullcontext()
+        )
+        with guard:
+            return self._materialize(publication_id, preview_fingerprint)
+
+    def _materialize(self, publication_id: str, preview_fingerprint: str) -> dict[str, Any]:
         record = self.store.get_document_publication(publication_id=publication_id)
         if record is None:
             raise RevisionConflictError("Publication operation was not found.")
@@ -440,12 +467,14 @@ class CloseoutPublicationService:
             if item["decision_type"] == "APPROVED"
             and item["actor_role"] == "product_owner"
             and item["po_confirmed"] == 1
-            and item["source_kind"] == "trusted_fixture"
+            and item["source_kind"] == ("trusted_fixture" if self.fixture_only else "po_browser")
             and item["payload"].get("event_id") == acceptance["event_id"]
-            and item["payload"].get("fixture_confirmation") is True
+            and item["payload"].get(
+                "fixture_confirmation" if self.fixture_only else "browser_confirmation"
+            ) is True
         ]
         if not decisions:
-            raise PublicationNotAcceptedError("Acceptance lacks an explicit trusted fixture PO decision.")
+            raise PublicationNotAcceptedError("Acceptance lacks an explicit trusted Product Owner decision.")
         submitted_events = [
             (index, event)
             for index, event in enumerate(events)
@@ -663,8 +692,12 @@ class CloseoutPublicationService:
         if candidate.is_symlink() or not candidate.is_dir():
             raise CloseoutPublicationError("Caller-supplied fixture worktree must be an existing real directory.")
         resolved = candidate.resolve(strict=True)
-        temporary_root = Path(tempfile.gettempdir()).resolve(strict=True)
         registered_root = Path(self.identity.repository_root).expanduser().resolve(strict=False)
+        if not self.fixture_only:
+            if resolved != registered_root or candidate != resolved:
+                raise CloseoutPublicationError("Managed publication requires the exact registered worktree.")
+            return resolved
+        temporary_root = Path(tempfile.gettempdir()).resolve(strict=True)
         if (
             not resolved.is_relative_to(temporary_root)
             or resolved == registered_root
@@ -783,12 +816,10 @@ class CloseoutPublicationService:
             os.close(root_fd)
 
 
-class FixtureGitReviewHandoffAdapter:
-    """Prepare a read-only pointer from a materialized fixture to the existing Git Review UI."""
+class GitReviewHandoffAdapter:
+    """Prepare a read-only pointer from a materialized closeout to the existing Git Review UI."""
 
     def __init__(self, service: CloseoutPublicationService) -> None:
-        if service.context.test_only is not True:
-            raise CloseoutPublicationError("Git Review handoff adapter is fixture-only.")
         self.service = service
 
     def prepare(self, publication_id: str) -> dict[str, Any]:
@@ -846,6 +877,13 @@ class FixtureGitReviewHandoffAdapter:
             "automatic_stage_or_commit": False,
             "existing_git_review_remains_mutation_authority": True,
         }
+
+
+class FixtureGitReviewHandoffAdapter(GitReviewHandoffAdapter):
+    def __init__(self, service: CloseoutPublicationService) -> None:
+        if not service.fixture_only:
+            raise CloseoutPublicationError("Fixture Git Review handoff requires a fixture publisher.")
+        super().__init__(service)
 
 
 def _fingerprint(value: dict[str, Any]) -> str:

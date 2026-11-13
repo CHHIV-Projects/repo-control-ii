@@ -1219,6 +1219,46 @@ def _new_event(
     }
 
 
+def build_next_event(
+    events: list[dict[str, Any]],
+    *,
+    event_type: str,
+    summary: str,
+    actor_role: str,
+    po_approved: bool = False,
+    event_fields: dict[str, Any] | None = None,
+    actor_attribution: str | None = None,
+) -> dict[str, Any]:
+    """Build and validate one event with the existing lifecycle reducer."""
+    state = _reduce_events(events)
+    event = _new_event(
+        event_type=event_type,
+        summary=summary,
+        actor_role=actor_role,
+        po_approved=po_approved,
+        phase=state["phase"],
+        waiting_category=state["waiting_category"],
+        waiting_reason=state["waiting_reason"],
+        event_fields=event_fields or {},
+        actor_attribution=actor_attribution,
+    )
+    phase_after, category_after, reason_after = _apply_event(
+        state["phase"],
+        state["waiting_category"],
+        state["waiting_reason"],
+        event,
+        events,
+    )
+    event.update(
+        phase_after=phase_after,
+        waiting_category_after=category_after,
+        waiting_reason_after=reason_after,
+    )
+    _validate_event_shape(event)
+    _reduce_events([*events, event])
+    return event
+
+
 def _write_ledger(path: Path, content: str) -> None:
     if len(content.encode("utf-8")) > _MAX_SIDECAR_BYTES:
         raise WorkflowRecordError("Workflow sidecar exceeds the 5 MB safety limit.")

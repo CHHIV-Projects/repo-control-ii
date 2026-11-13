@@ -257,12 +257,17 @@ def _render_manifest(raw: dict[str, Any], release: str, hashes: dict[str, str]) 
 def _prompt_marker(
     repository_root: Path,
     candidate: dict[str, Any],
+    *,
+    prompt_content: bytes | None = None,
 ) -> dict[str, Any] | None:
     prompt_relative = _relative_path(candidate.get("prompt_path"), "milestone prompt path")
-    prompt_path = repository_root.joinpath(*PurePosixPath(prompt_relative).parts)
-    if prompt_path.is_symlink() or not prompt_path.resolve(strict=True).is_relative_to(repository_root):
-        raise ProcedureReleaseError("Active milestone prompt is missing or unsafe.")
-    content = prompt_path.read_bytes()
+    if prompt_content is None:
+        prompt_path = repository_root.joinpath(*PurePosixPath(prompt_relative).parts)
+        if prompt_path.is_symlink() or not prompt_path.resolve(strict=True).is_relative_to(repository_root):
+            raise ProcedureReleaseError("Active milestone prompt is missing or unsafe.")
+        content = prompt_path.read_bytes()
+    else:
+        content = prompt_content
     if len(content) > _MAX_PROMPT_BYTES:
         raise ProcedureReleaseError("Active milestone prompt exceeds the release-authorization size limit.")
     try:
@@ -435,6 +440,7 @@ def inspect_procedure_release_preparation(
     *,
     repository_key: str | None = None,
     repository_id: str | None = None,
+    prompt_content: bytes | None = None,
 ) -> dict[str, Any]:
     root = Path(bundle_root).resolve()
     repo_root = Path(repository_root).resolve(strict=True)
@@ -447,7 +453,7 @@ def inspect_procedure_release_preparation(
             "reason": str(exc),
         }
     try:
-        marker = _prompt_marker(repo_root, candidate)
+        marker = _prompt_marker(repo_root, candidate, prompt_content=prompt_content)
     except (OSError, RuntimeError, ProcedureReleaseError) as marker_error:
         try:
             load_bundle(root)

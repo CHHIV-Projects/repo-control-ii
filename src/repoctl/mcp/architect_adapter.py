@@ -12,12 +12,16 @@ import logging
 import re
 import sys
 import time
-from typing import Any, BinaryIO, TextIO
+from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from ..intelligence.service import IntelligenceError, QUERY_PROPERTIES, encoded, normalize
+from ..store_authority import authority_binding_digest
+
+if TYPE_CHECKING:
+    from ..web.app import InformationStoreClientProvider
 
 ADAPTER_VERSION = "0.1.0"
 DEFAULT_REPO_CONTROL_URL = "http://127.0.0.1:8765"
@@ -252,7 +256,7 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                 },
                 "milestone_id": {
                     "type": "string",
-                    "pattern": r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)$",
+                    "pattern": r"^(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]+(?:\.[0-9]+)*)$",
                 },
                 "artifact_type": {
                     "type": "string",
@@ -295,6 +299,9 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                     "maxLength": 512,
                     "description": "Exact repository-relative historical path returned by repo_history_search.",
                 },
+                "document_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "revision_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "cursor": {"type": "string", "minLength": 1, "maxLength": MAX_HISTORY_CURSOR_LENGTH},
                 "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
                 "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
             },
@@ -437,6 +444,33 @@ class AdapterValidationError(ValueError):
     """Raised when incoming tool call arguments fail validation."""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _managed_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+def _validate_managed_url(base_url: str) -> None:
+    parsed = urllib.parse.urlsplit(base_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AdapterValidationError("Managed clients require a literal loopback HTTP service URL.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise AdapterValidationError("Managed service port is invalid.") from exc
+
+
 def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, str]]:
     """Validate tool call arguments strictly against allowlists and return endpoint path + query params."""
     if not isinstance(tool_name, str) or tool_name not in TOOL_MAP:
@@ -540,7 +574,7 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         if "milestone_id" in arguments:
             value = arguments["milestone_id"]
             if not isinstance(value, str) or not re.fullmatch(
-                r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]{3}(?:\.[0-9]+)*)",
+                r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2}|[0-9]+(?:\.[0-9]+)*)",
                 value,
             ):
                 raise AdapterValidationError("milestone_id must use a supported historical milestone form")
@@ -582,11 +616,21 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         path = arguments["path"]
         if not isinstance(path, str) or not 1 <= len(path) <= 512:
             raise AdapterValidationError("path must be a non-empty repository-relative path <= 512 characters")
-        return "/api/architect/v1/history/document", {
+        history_params = {
             "path": path,
             "expected_repository_key": query_params["expected_repository_key"],
             "expected_generation": query_params["expected_generation"],
         }
+        if ("document_id" in arguments) != ("revision_id" in arguments):
+            raise AdapterValidationError("document_id and revision_id must be supplied together")
+        for key in ("document_id", "revision_id", "cursor"):
+            if key in arguments:
+                value = arguments[key]
+                limit = MAX_HISTORY_CURSOR_LENGTH if key == "cursor" else 256
+                if not isinstance(value, str) or not 1 <= len(value) <= limit:
+                    raise AdapterValidationError(f"{key} must be a non-empty string <= {limit} characters")
+                history_params[key] = value
+        return "/api/architect/v1/history/document", history_params
     elif tool_name == "repo_dispatches":
         if "milestone_id" in arguments:
             value = arguments["milestone_id"]
@@ -730,6 +774,7 @@ def execute_get(
     path: str,
     query_params: dict[str, str],
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    authority_binding: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Execute fixed HTTP GET request to Repo Control loopback endpoint."""
     url = urllib.parse.urljoin(base_url, path)
@@ -741,11 +786,24 @@ def execute_get(
         headers={"Accept": "application/json", "User-Agent": f"repo-control-architect-adapter/{ADAPTER_VERSION}"},
         method="GET",
     )
+    if authority_binding is not None:
+        req.add_header("X-Repoctl-Authority-Binding", authority_binding)
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = _managed_opener().open if authority_binding is not None else urllib.request.urlopen
+        with opener(req, timeout=timeout) as resp:
+            if authority_binding is not None and resp.headers.get("X-Repoctl-Authority-Binding") != authority_binding:
+                return 502, {
+                    "error": {
+                        "code": "information_store_binding_mismatch",
+                        "message": "The service did not confirm the requested InformationStore authority binding.",
+                    }
+                }
             status_code = resp.status
-            if path == "/api/architect/v1/intelligence":
+            if path in {
+                "/api/architect/v1/intelligence", "/api/architect/v1/store-bound/intelligence",
+                "/api/coder/v1/store-bound/intelligence",
+            }:
                 raw = resp.read(65537)
                 if len(raw) > 65536:
                     return 502, {"error": {"code": "intelligence_response_oversized", "message": "Upstream exceeded the intelligence byte cap."}}
@@ -793,6 +851,7 @@ def execute_post(
     path: str,
     payload: dict[str, Any],
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    authority_binding: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Execute a fixed, typed JSON POST to a proposal-submission endpoint."""
     url = urllib.parse.urljoin(base_url, path)
@@ -807,8 +866,18 @@ def execute_post(
         },
         method="POST",
     )
+    if authority_binding is not None:
+        req.add_header("X-Repoctl-Authority-Binding", authority_binding)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = _managed_opener().open if authority_binding is not None else urllib.request.urlopen
+        with opener(req, timeout=timeout) as resp:
+            if authority_binding is not None and resp.headers.get("X-Repoctl-Authority-Binding") != authority_binding:
+                return 502, {
+                    "error": {
+                        "code": "information_store_binding_mismatch",
+                        "message": "The service did not confirm the requested InformationStore authority binding.",
+                    }
+                }
             body = resp.read(1_048_577)
             if len(body) > 1_048_576:
                 return 502, {
@@ -901,6 +970,7 @@ def handle_rpc_request(
     req: dict[str, Any],
     base_url: str,
     err_stream: TextIO = sys.stderr,
+    information_store_clients: InformationStoreClientProvider | None = None,
 ) -> dict[str, Any] | None:
     """Handle a single MCP JSON-RPC 2.0 request."""
     req_id = req.get("id")
@@ -991,7 +1061,28 @@ def handle_rpc_request(
                 },
             }
 
-        if submission_payload is None:
+        if information_store_clients is not None:
+            from ..information_store import InformationStoreError
+            from ..workflow.information_store_fixture import FixtureIntegrationError
+
+            try:
+                _validate_managed_url(base_url)
+                with information_store_clients.selection_scope():
+                    binding = authority_binding_digest(information_store_clients.runtime_binding())
+                path = path.replace("/api/architect/v1/", "/api/architect/v1/store-bound/", 1)
+                if submission_payload is None:
+                    status_code, response_data = execute_get(
+                        base_url, path, query_params, authority_binding=binding,
+                    )
+                else:
+                    status_code, response_data = execute_post(
+                        base_url, path, submission_payload, authority_binding=binding,
+                    )
+            except (AdapterValidationError, InformationStoreError, FixtureIntegrationError, OSError, ValueError) as exc:
+                status_code, response_data = 503, {
+                    "error": {"code": "information_store_binding_unavailable", "message": str(exc)}
+                }
+        elif submission_payload is None:
             status_code, response_data = execute_get(base_url, path, query_params)
         else:
             status_code, response_data = execute_post(base_url, path, submission_payload)
@@ -1056,6 +1147,7 @@ def serve_stdio(
     in_stream: TextIO = sys.stdin,
     out_stream: TextIO = sys.stdout,
     err_stream: TextIO = sys.stderr,
+    information_store_clients: InformationStoreClientProvider | None = None,
 ) -> None:
     """Serve stdio MCP protocol until EOF."""
     err_stream.write(
@@ -1082,24 +1174,21 @@ def serve_stdio(
             out_stream.flush()
             continue
 
-        resp = handle_rpc_request(req, base_url=repo_control_url, err_stream=err_stream)
+        resp = handle_rpc_request(
+            req,
+            base_url=repo_control_url,
+            err_stream=err_stream,
+            information_store_clients=information_store_clients,
+        )
         if resp is not None:
             out_stream.write(json.dumps(resp) + "\n")
             out_stream.flush()
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse
+    from ..cli import main as repoctl_main
 
-    parser = argparse.ArgumentParser(description="Repo Control Architect MCP adapter")
-    parser.add_argument(
-        "--repo-control-url",
-        default=DEFAULT_REPO_CONTROL_URL,
-        help="Base URL for Repo Control web server (default: http://127.0.0.1:8765)",
-    )
-    args = parser.parse_args(argv)
-    serve_stdio(repo_control_url=args.repo_control_url)
-    return 0
+    return repoctl_main(["mcp-architect", *(sys.argv[1:] if argv is None else argv)])
 
 
 if __name__ == "__main__":

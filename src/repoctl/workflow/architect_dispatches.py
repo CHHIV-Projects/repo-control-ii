@@ -392,16 +392,12 @@ def _dispatch_cursor(
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def list_dispatch_page(
-    repository_root: str | Path,
-    state_root: str | Path,
-    repository_id: str,
-    *,
-    milestone_id: str | None = None,
-    status: str | None = None,
-    limit: int = MAX_READ_LIMIT,
-    cursor: str | None = None,
-) -> dict[str, Any]:
+def _validate_dispatch_page_request(
+    milestone_id: str | None,
+    status: str | None,
+    limit: int,
+    cursor: str | None,
+) -> None:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_READ_LIMIT:
         raise ArchitectDispatchError(f"Dispatch read limit must be between 1 and {MAX_READ_LIMIT}.")
     if status is not None and status not in _STATUSES:
@@ -415,12 +411,18 @@ def list_dispatch_page(
     ):
         raise ArchitectDispatchError("Dispatch cursor is invalid.")
 
-    path = _state_file(repository_root, state_root, repository_id)
-    with state_artifact_lock(state_root):
-        ledger = _read_ledger(path, repository_id)
-    snapshot = hashlib.sha256(
-        json.dumps(ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+
+def page_dispatch_records(
+    records: list[dict[str, Any]],
+    *,
+    repository_id: str,
+    milestone_id: str | None,
+    status: str | None,
+    limit: int,
+    cursor: str | None,
+    snapshot: str,
+) -> dict[str, Any]:
+    _validate_dispatch_page_request(milestone_id, status, limit, cursor)
     offset = 0
     if cursor is not None:
         try:
@@ -442,12 +444,6 @@ def list_dispatch_page(
             raise ArchitectDispatchError("Dispatch cursor is stale or does not match these filters.")
         offset = decoded["offset"]
 
-    records = [
-        item
-        for item in reversed(ledger["dispatches"])
-        if (milestone_id is None or item["milestone_id"] == milestone_id)
-        and (status is None or item["status"] == status)
-    ]
     if offset > len(records):
         raise ArchitectDispatchError("Dispatch cursor is stale or outside this result set.")
 
@@ -484,6 +480,35 @@ def list_dispatch_page(
         "complete": not has_more,
         "next_cursor": next_cursor,
     }
+
+
+def list_dispatch_page(
+    repository_root: str | Path,
+    state_root: str | Path,
+    repository_id: str,
+    *,
+    milestone_id: str | None = None,
+    status: str | None = None,
+    limit: int = MAX_READ_LIMIT,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    _validate_dispatch_page_request(milestone_id, status, limit, cursor)
+    path = _state_file(repository_root, state_root, repository_id)
+    with state_artifact_lock(state_root):
+        ledger = _read_ledger(path, repository_id)
+    snapshot = hashlib.sha256(
+        json.dumps(ledger, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    records = [
+        item
+        for item in reversed(ledger["dispatches"])
+        if (milestone_id is None or item["milestone_id"] == milestone_id)
+        and (status is None or item["status"] == status)
+    ]
+    return page_dispatch_records(
+        records, repository_id=repository_id, milestone_id=milestone_id, status=status,
+        limit=limit, cursor=cursor, snapshot=snapshot,
+    )
 
 
 def list_outstanding_guidance(

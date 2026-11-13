@@ -45,9 +45,30 @@ def validate_fixture_prompt_preflight(
     *,
     fixture_only: bool,
 ) -> dict[str, object]:
-    """Evaluate the future exact-prompt exception without changing current preflight."""
     if fixture_only is not True:
         raise PromptPreflightError("This prompt-preflight contract is restricted to disposable fixtures.")
+    return _validate_prompt_preflight(expected, observed, dirty_entries, authority="fixture_only")
+
+
+def validate_managed_prompt_preflight(
+    expected: PromptRevisionBinding,
+    observed: PromptPreflightObservation,
+    dirty_entries: Sequence[Mapping[str, str]],
+    *,
+    managed_authority: bool,
+) -> dict[str, object]:
+    if managed_authority is not True:
+        raise PromptPreflightError("Managed prompt preflight requires the verified SQLite authority.")
+    return _validate_prompt_preflight(expected, observed, dirty_entries, authority="sqlite_managed")
+
+
+def _validate_prompt_preflight(
+    expected: PromptRevisionBinding,
+    observed: PromptPreflightObservation,
+    dirty_entries: Sequence[Mapping[str, str]],
+    *,
+    authority: str,
+) -> dict[str, object]:
     if expected != observed.binding:
         raise PromptPreflightError("Observed repository, milestone, selection, or prompt revision does not match.")
     if (
@@ -107,7 +128,7 @@ def validate_fixture_prompt_preflight(
 
     return {
         "accepted": True,
-        "authority": "fixture_only",
+        "authority": authority,
         "source_mode": observed.source_mode,
         "repository_id": expected.repository_id,
         "milestone_id": expected.milestone_id,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime
 import hashlib
 import json
@@ -8,13 +8,21 @@ import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
 from flask import (
-    Flask, Response, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for,
+    Blueprint, Flask, Response, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for,
 )
 from werkzeug.exceptions import HTTPException
+
+if TYPE_CHECKING:
+    from ..workflow.closeout_publication import (
+        CloseoutPublicationService,
+        FixturePublicationContext,
+        ManagedPublicationContext,
+        PublicationGitObserver,
+    )
 
 from ..analysis.manager import AnalysisError, analyze_comparison
 from ..compare.manager import compare_snapshots
@@ -57,7 +65,14 @@ from ..workflow.git_history import (
     inspect_file_history,
     inspect_history,
 )
-from ..workflow.handoff_packets import HandoffPacketError, generate_handoff_packet
+from ..workflow.handoff_packets import (
+    MAX_SOURCE_BYTES,
+    HandoffPacketError,
+    _PRIVATE_KEY_MARKER,
+    _open_conditions,
+    generate_handoff_packet,
+)
+from ..workflow.authority import get_authorization_status, is_correction_mode
 from ..workflow.architect_dispatches import (
     MAX_BODY_BYTES as MAX_ARCHITECT_DISPATCH_BODY_BYTES,
     MAX_READ_LIMIT as MAX_ARCHITECT_DISPATCH_READ_LIMIT,
@@ -86,15 +101,22 @@ from ..workflow.lifecycle import (
     workflow_runtime_capabilities,
     waiting_resolution,
 )
-from ..workflow.context_verification import VERIFICATION_RECORD_SCHEMA_VERSION
+from ..workflow.context_verification import VERIFICATION_RECORD_SCHEMA_VERSION, build_verification_coverage
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .architect_contract import (
     MAX_HISTORY_CURSOR_LENGTH,
     MAX_PACKET_BYTES,
     ArchitectContractError,
+    _bounded_events,
+    _event_view,
+    _git_view,
+    _document_inventory,
+    _read_content,
+    _read_repository_document,
+    _repository_document_path,
     build_architect_response,
 )
-from .repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
+from .repository_registry import DOCUMENT_ROLES, RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
 from .views import (
     comparison_id_choices,
     file_reason,
@@ -115,6 +137,153 @@ from .views import (
 
 ALLOWED_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 MAX_CONTEXT_QUERY_CHARS = 400
+
+
+class _InformationStoreIdentity(Protocol):
+    repository_id: str
+    repository_key: str
+    repository_root: str
+    milestone_id: str
+    prompt_path: str
+    selection_id: str
+    selection_revision: int
+
+
+class InformationStoreClientProvider(Protocol):
+    identity: _InformationStoreIdentity
+    authority: str
+    fixture_only: bool
+
+    def create_browser_blueprint(self, *, name: str) -> Blueprint: ...
+
+    def create_publication_service(
+        self,
+        context: FixturePublicationContext | ManagedPublicationContext,
+        git_observer: PublicationGitObserver,
+    ) -> CloseoutPublicationService: ...
+
+    def coder_snapshot(self) -> dict[str, Any]: ...
+
+    def runtime_binding(self) -> dict[str, Any]: ...
+
+    def browser_snapshot(self) -> dict[str, Any]: ...
+
+    def selection_scope(self) -> AbstractContextManager[None]: ...
+
+    def browser_candidates(self) -> dict[str, Any]: ...
+
+    def confirm_imported_prompt(
+        self,
+        *,
+        request_id: str,
+        expected_store_revision: int,
+        document_id: str,
+        revision_id: str,
+        content_sha256: str,
+        fixture_po_confirmation: bool = False,
+        managed_po_confirmation: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def switch_milestone(
+        self,
+        milestone_id: str,
+        *,
+        expected_selection_id: str,
+        expected_selection_revision: int,
+    ) -> dict[str, Any]: ...
+
+    def switch_repository(self, repository: RepositoryEntry) -> None: ...
+
+    def search_historical(self, repository: RepositoryEntry, **filters: Any) -> dict[str, Any]: ...
+
+    def read_historical(
+        self,
+        repository: RepositoryEntry,
+        path: str,
+        *,
+        document_id: str | None = None,
+        revision_id: str | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def get_revision(self, document_id: str, revision_id: str) -> dict[str, Any]: ...
+
+    def read_selected_milestone_document_page(
+        self,
+        document_path: str,
+        *,
+        start_byte: int = 0,
+        source_fingerprint: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def record_browser_action(
+        self,
+        *,
+        action: str,
+        summary: str,
+        expected_phase: str,
+        expected_event_count: int,
+        expected_prompt_identity: str,
+        fields: dict[str, Any],
+        fixture_po_confirmation: bool = False,
+        managed_po_confirmation: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def create_architect_dispatch(
+        self,
+        *,
+        dispatch_type: str,
+        milestone_id: str,
+        body: str,
+        milestone_root: str,
+        title: str | None = None,
+        related_event_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def list_architect_dispatches(
+        self,
+        *,
+        milestone_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]: ...
+
+    def list_architect_dispatch_page(
+        self,
+        *,
+        milestone_id: str | None = None,
+        status: str | None = None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def list_unverified_architect_guidance(self) -> list[dict[str, Any]]: ...
+
+    def reconcile_imported_guidance(
+        self,
+        *,
+        dispatch_id: str,
+        history_id: str,
+        status: str,
+        expected_fingerprint: str,
+        fixture_po_confirmation: bool = False,
+        managed_po_confirmation: bool = False,
+    ) -> dict[str, Any]: ...
+
+    def get_dispatch(self, dispatch_id: str) -> dict[str, Any]: ...
+
+    def record_architect_dispatch_decision(
+        self,
+        *,
+        dispatch_id: str,
+        status: str,
+        fixture_po_confirmation: bool = False,
+        managed_po_confirmation: bool = False,
+        milestone_root: str | None = None,
+        expected_fingerprint: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
 _PHASE_ACTIONS = {
     "PLANNING": ("prompt_approved", "decision_recorded", "lock_in_approved", "git_disposition_recorded"),
     "READY": ("implementation_started", "decision_recorded", "lock_in_approved", "git_disposition_recorded"),
@@ -248,6 +417,7 @@ def _decorate_milestone_workflow(
             workflow.get("phase", ""),
             str(workflow.get("event_count", 0)),
             ",".join(event_type for event_type, _ in workflow["ui_events"]),
+            str(bool(workflow.get("unverified_prompt"))),
         )
     )
     workflow["default_summaries"] = {
@@ -423,6 +593,7 @@ def create_web_app(
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
+    information_store_clients: InformationStoreClientProvider | None = None,
 ) -> Flask:
     bound_host = _validate_host(host)
     if port < 1 or port > 65535:
@@ -437,6 +608,28 @@ def create_web_app(
     )
     initial_repository = registry.active()
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
+    if information_store_clients is None:
+        from ..store_authority import load_store_authority
+        from ..workflow.information_store_fixture import create_managed_information_store_clients
+
+        configuration = load_store_authority(effective_state_root)
+        if configuration is not None:
+            if (
+                repository_registry_path is None
+                or Path(repository_registry_path).expanduser().resolve() != configuration.registry_path
+            ):
+                raise ValueError("The configured SQLite authority requires its guarded central registry.")
+            information_store_clients = create_managed_information_store_clients(configuration, initial_repository)
+    if information_store_clients is not None:
+        identity = information_store_clients.identity
+        if (
+            identity.repository_id != initial_repository.repository_id
+            or identity.repository_key != initial_repository.key
+            or Path(identity.repository_root).resolve() != initial_repository.path.resolve()
+        ):
+            raise ValueError(
+                "The injected InformationStore authority does not match the app's selected repository."
+            )
     git_actions = PreparedGitActions()
     repository_action_lock = _RepositoryActionLock()
 
@@ -458,10 +651,125 @@ def create_web_app(
     app.config["BOUND_HOST"] = bound_host
     app.config["BOUND_PORT"] = port
     app.config["RUNTIME_INSTANCE_ID"] = secrets.token_hex(16)
+    app.config["INFORMATION_STORE_AUTHORITY"] = (
+        information_store_clients.authority if information_store_clients is not None else "legacy_files"
+    )
+    if information_store_clients is not None:
+        app.extensions["repoctl_information_store_clients"] = information_store_clients
+        app.register_blueprint(
+            information_store_clients.create_browser_blueprint(name="information_store_documents"),
+            url_prefix="/document-library",
+        )
 
     @app.before_request
     def _bind_active_repository() -> None:
         g.active_repository, g.repository_registry_generation = registry.snapshot()
+        if information_store_clients is None:
+            from ..store_authority import StoreAuthorityError, load_store_authority
+
+            try:
+                configured_authority = load_store_authority(effective_state_root)
+            except StoreAuthorityError as exc:
+                raise WebUIError("information_store_authority_unavailable", str(exc), status_code=503) from exc
+            if configured_authority is not None:
+                raise WebUIError(
+                    "information_store_restart_required",
+                    "SQLite authority is selected; this legacy reader must be restarted before use.",
+                    status_code=503,
+                )
+        if information_store_clients is not None:
+            from ..information_store import InformationStoreError
+            from ..workflow.information_store_fixture import FixtureIntegrationError
+
+            scope = information_store_clients.selection_scope()
+            try:
+                scope.__enter__()
+            except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                raise WebUIError("information_store_selection_unavailable", str(exc), status_code=503) from exc
+            g.information_store_selection_scope = scope
+            identity = information_store_clients.identity
+            if (
+                identity.repository_id != g.active_repository.repository_id
+                or identity.repository_key != g.active_repository.key
+                or Path(identity.repository_root).resolve() != g.active_repository.path.resolve()
+            ):
+                raise WebUIError(
+                    "information_store_repository_mismatch",
+                    "The injected InformationStore authority does not match the active repository.",
+                    status_code=503,
+                )
+            endpoint = request.endpoint or ""
+            information_store_endpoints = {
+                "architect_prompt",
+                "architect_workflow",
+                "architect_evidence",
+                "architect_status",
+                "architect_milestone",
+                "architect_closeout",
+                "architect_milestone_document",
+                "architect_history_search",
+                "architect_history_document",
+                "architect_documents",
+                "architect_document",
+                "architect_repository_document",
+                "architect_git",
+                "architect_review",
+                "architect_submit_prompt",
+                "architect_submit_instruction",
+                "architect_submit_response",
+                "architect_dispatches",
+                "architect_bound",
+                "architect_dispatches_page",
+                "resolve_architect_dispatch",
+                "coder_bound",
+                "repository_intelligence_api",
+                "coder_intelligence_refresh_api",
+                "coder_intelligence_rating",
+                "intelligence_page",
+                "intelligence_value_guide",
+                "intelligence_build",
+                "intelligence_rating",
+                "git_review_page",
+                "git_action_prepare",
+                "git_action_confirm",
+                "git_action_cancel",
+                "select_repository",
+                "dashboard",
+                "refresh_status",
+                "context_page",
+                "generate_context",
+                "snapshots_page",
+                "create_snapshot_action",
+                "comparisons_page",
+                "create_comparison_action",
+                "analysis_page",
+                "analysis_run_action",
+                "workflow_page",
+                "repo_control_user_guide",
+                "procedure_updates_page",
+                "procedure_overlay_review",
+                "procedure_overlay_initialize",
+                "procedure_apply_review",
+                "procedure_apply_confirm",
+                "procedure_recovery_review",
+                "procedure_recover_confirm",
+                "milestone_page",
+                "milestone_workflow_fragment",
+                "select_milestone",
+                "confirm_imported_prompt",
+                "record_milestone_workflow_event",
+                "reopen_milestone",
+            }
+            if (
+                endpoint not in {"health_check", "static", *information_store_endpoints}
+                and not endpoint.startswith("information_store_documents.")
+                and not endpoint.startswith("managed_closeout_publication.")
+            ):
+                raise WebUIError(
+                    "information_store_route_unavailable",
+                    "This route has no adapter for the selected InformationStore authority; legacy fallback is disabled.",
+                    status_code=503,
+                )
         registry_path = app.config["REPOSITORY_REGISTRY_PATH"]
         g.central_registry_stale = False
         if registry_path is not None:
@@ -480,6 +788,26 @@ def create_web_app(
                     "The central registry changed after this service started. Mutations are disabled until the Product Owner reviews and restarts the service.",
                     status_code=503,
                 )
+        if information_store_clients is not None and request.endpoint in {
+            "procedure_updates_page", "procedure_overlay_review", "procedure_overlay_initialize",
+            "procedure_apply_review", "procedure_apply_confirm", "procedure_recovery_review",
+            "procedure_recover_confirm",
+        }:
+            scope = state_artifact_lock(effective_state_root)
+            try:
+                scope.__enter__()
+            except StateArtifactLockError as exc:
+                raise WebUIError("procedure_authority_unavailable", str(exc), status_code=503) from exc
+            g.procedure_authority_scope = scope
+
+    @app.teardown_request
+    def _release_information_store_selection(_error: BaseException | None) -> None:
+        procedure_scope = g.pop("procedure_authority_scope", None)
+        if procedure_scope is not None:
+            procedure_scope.__exit__(None, None, None)
+        scope = g.pop("information_store_selection_scope", None)
+        if scope is not None:
+            scope.__exit__(None, None, None)
 
     def current_repository() -> RepositoryEntry:
         return g.active_repository
@@ -492,6 +820,27 @@ def create_web_app(
         )
 
         active = registry.active()
+        if information_store_clients is not None:
+            from ..information_store import InformationStoreError
+            from ..workflow.information_store_fixture import FixtureIntegrationError
+
+            try:
+                data = information_store_clients.browser_snapshot()
+                workflow = data["workflow"]
+                if workflow["unverified_prompt"] is not None or workflow["unverified_guidance"]:
+                    raise FixtureIntegrationError(
+                        "Imported prompt or guidance requires explicit Product Owner reconciliation."
+                    )
+                return inspect_procedure_release_preparation(
+                    active.path,
+                    data["candidate"],
+                    workflow,
+                    repository_key=active.key,
+                    repository_id=active.repository_id,
+                    prompt_content=data["prompt"]["content"].encode("utf-8"),
+                )
+            except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                return {"status": "UNAVAILABLE", "authorized": False, "reason": str(exc)}
         try:
             entry, candidate, workflow = resolve_coder_release_preparation_context(
                 repository_path=active.path,
@@ -525,6 +874,9 @@ def create_web_app(
             )
 
     def prepare_milestone_start_baseline() -> dict[str, Any] | None:
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
         action = request.form.get("event_type", "")
         if action not in {"approve_and_start", "implementation_started"}:
             return None
@@ -544,11 +896,16 @@ def create_web_app(
                     "Repository selection changed; reload the milestone page before starting."
                 )
             try:
-                selection = load_milestone_selection(
-                    repository.path,
-                    effective_state_root,
-                    repository.milestone_root,
-                )
+                if information_store_clients is not None:
+                    store_view = information_store_clients.browser_snapshot()
+                    selection = {"status": "selected", "selection": store_view["candidate"]}
+                    workflow = store_view["workflow"]
+                else:
+                    selection = load_milestone_selection(
+                        repository.path,
+                        effective_state_root,
+                        repository.milestone_root,
+                    )
                 if (
                     selection["status"] != "selected"
                     or selection["selection"]["milestone_id"] != request.form.get("milestone_id")
@@ -557,13 +914,16 @@ def create_web_app(
                     raise RefreshAuthorizationError(
                         "Selected milestone or prompt changed; reload before starting."
                     )
-                workflow = load_milestone_workflow(
-                    repository.path,
-                    effective_state_root,
-                    repository.milestone_root,
-                    selection["selection"],
-                )
-            except (MilestoneArtifactError, WorkflowRecordError) as exc:
+                if information_store_clients is None:
+                    workflow = load_milestone_workflow(
+                        repository.path,
+                        effective_state_root,
+                        repository.milestone_root,
+                        selection["selection"],
+                    )
+            except (
+                MilestoneArtifactError, WorkflowRecordError, InformationStoreError, FixtureIntegrationError,
+            ) as exc:
                 raise RefreshAuthorizationError(
                     f"Cannot verify the selected milestone before graph preparation: {exc}"
                 ) from exc
@@ -645,6 +1005,9 @@ def create_web_app(
             "repository_choices": registry.entries,
             "active_repository_key": active_repository.key,
             "repository_registry_generation": g.repository_registry_generation,
+            "managed_publication_available": (
+                information_store_clients is not None and not information_store_clients.fixture_only
+            ),
             "bound_host": bound_host,
             "bound_port": port,
         }
@@ -873,6 +1236,17 @@ def create_web_app(
         return values[0]
 
     def architect_endpoint(resource: str, role: str | None = None) -> Response:
+        from ..document_library import (
+            DocumentNotFoundError,
+            DocumentTooLargeError,
+            DuplicateSourceIdentityError,
+            InvalidCursorError,
+            SourceEnumerationError,
+            StaleCursorError,
+        )
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
         allowed_parameters = {
             "expected_repository_key",
             "expected_generation",
@@ -882,7 +1256,7 @@ def create_web_app(
         elif resource == "history_search":
             allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit", "cursor"})
         elif resource == "history_document":
-            allowed_parameters.add("path")
+            allowed_parameters.update({"path", "document_id", "revision_id", "cursor"})
         elif resource == "milestone_document":
             allowed_parameters.update({"path", "expected_milestone_id", "start_byte", "source_fingerprint"})
         else:
@@ -940,9 +1314,31 @@ def create_web_app(
             )
             history_cursor = (
                 architect_query_value("cursor", maximum_length=MAX_HISTORY_CURSOR_LENGTH)
-                if resource == "history_search"
+                if resource in {"history_search", "history_document"}
                 else None
             )
+            history_document_id = (
+                architect_query_value("document_id", maximum_length=256)
+                if resource == "history_document" else None
+            )
+            history_revision_id = (
+                architect_query_value("revision_id", maximum_length=256)
+                if resource == "history_document" else None
+            )
+            if (history_document_id is None) != (history_revision_id is None):
+                raise ArchitectContractError(
+                    "invalid_historical_revision",
+                    "Historical document and revision IDs must be supplied together.",
+                    400,
+                )
+            if information_store_clients is None and (history_document_id is not None or (
+                resource == "history_document" and history_cursor is not None
+            )):
+                raise ArchitectContractError(
+                    "unsupported_historical_revision",
+                    "Exact historical revision IDs require a configured document provider.",
+                    400,
+                )
             if history_limit_text is None:
                 history_limit = None
             else:
@@ -1000,26 +1396,349 @@ def create_web_app(
                         "The active repository changed during this request; refresh status and retry.",
                         409,
                     )
-                payload = build_architect_response(
-                    repository=current_repository(),
-                    registry_generation=g.repository_registry_generation,
-                    state_root=effective_state_root,
-                    resource=resource,
-                    role=role,
-                    document_path=document_path,
-                    history_query=history_query,
-                    history_milestone_id=history_milestone_id,
-                    history_artifact_type=history_artifact_type,
-                    history_category=history_category,
-                    history_limit=history_limit,
-                    history_cursor=history_cursor,
-                    history_cursor_secret=app.config["SECRET_KEY"],
-                    expected_repository_key=expected_repository_key,
-                    expected_generation=expected_generation,
-                    expected_milestone_id=expected_milestone_id,
-                    document_start_byte=document_start_byte,
-                    document_source_fingerprint=document_source_fingerprint,
-                )
+                if information_store_clients is not None and resource in {
+                    "status", "milestone", "prompt", "workflow", "closeout", "evidence", "milestone_document",
+                    "documents", "repository_document",
+                    "git", "review", "history_search", "history_document",
+                }:
+                    identity = information_store_clients.identity
+                    if expected_repository_key is not None and expected_repository_key != identity.repository_key:
+                        raise ArchitectContractError(
+                            "stale_repository_selection",
+                            "The active repository differs from the expected repository key.",
+                            409,
+                        )
+                    if expected_generation is not None and expected_generation != g.repository_registry_generation:
+                        raise ArchitectContractError(
+                            "stale_repository_generation",
+                            "The repository registry generation changed; refresh status before retrying.",
+                            409,
+                        )
+                    if expected_milestone_id is not None and expected_milestone_id != identity.milestone_id:
+                        raise ArchitectContractError(
+                            "stale_milestone_selection",
+                            "The selected milestone differs from the expected milestone ID.",
+                            409,
+                        )
+                    selected = information_store_clients.browser_snapshot()
+                    prompt = selected["prompt"]
+                    snapshot = selected["snapshot"]
+                    events = snapshot["events"]
+                    if resource == "git":
+                        data = _git_view(current_repository())
+                    elif resource in {"history_search", "history_document"}:
+                        if not expected_repository_key or expected_generation is None:
+                            raise ArchitectContractError(
+                                "invalid_precondition",
+                                "Historical reads require expected repository and generation.",
+                                400,
+                            )
+                        if resource == "history_search":
+                            data = information_store_clients.search_historical(
+                                current_repository(),
+                                query=history_query,
+                                milestone_id=history_milestone_id,
+                                artifact_type=history_artifact_type,
+                                category=history_category,
+                                limit=history_limit,
+                                cursor=history_cursor,
+                            )
+                        else:
+                            if document_path is None:
+                                raise ArchitectContractError(
+                                    "invalid_history_path", "A historical artifact path is required.", 400
+                                )
+                            data = information_store_clients.read_historical(
+                                current_repository(),
+                                document_path,
+                                document_id=history_document_id,
+                                revision_id=history_revision_id,
+                                cursor=history_cursor,
+                            )
+                    elif resource == "documents":
+                        repository = current_repository()
+                        inventory = _document_inventory(repository)
+                        if role is None:
+                            data = {"source_type": "repository_registry", "documents": inventory}
+                        else:
+                            if role not in DOCUMENT_ROLES:
+                                raise ArchitectContractError(
+                                    "unsupported_document_role", "Unsupported governing-document role.", 404
+                                )
+                            configured_path = repository.documents.get(role)
+                            if not configured_path:
+                                raise ArchitectContractError(
+                                    "document_role_not_configured",
+                                    f"Governing-document role {role!r} is not configured for this repository.",
+                                    404,
+                                )
+                            data = next(item for item in inventory if item["role"] == role)
+                            data["content"] = _read_content(repository, configured_path, "governing_document")
+                    elif resource == "repository_document":
+                        if not expected_repository_key or expected_generation is None:
+                            raise ArchitectContractError(
+                                "invalid_precondition",
+                                "This repository-scoped read requires expected repository and generation.",
+                                400,
+                            )
+                        repository = current_repository()
+                        safe_path = _repository_document_path(document_path)
+                        data = {
+                            "repository": {"key": repository.key, "repository_id": repository.repository_id},
+                            **_read_repository_document(repository, safe_path),
+                        }
+                    elif resource == "prompt":
+                        content = prompt["content"]
+                        size = len(content.encode("utf-8"))
+                        if size > MAX_SOURCE_BYTES:
+                            raise ArchitectContractError(
+                                "source_oversized",
+                                f"Selected prompt exceeds the {MAX_SOURCE_BYTES}-byte content limit.",
+                                413,
+                            )
+                        if _PRIVATE_KEY_MARKER.search(content):
+                            raise ArchitectContractError(
+                                "unsafe_source", "Selected prompt contains private-key material.", 422
+                            )
+                        data = {
+                            "source_type": "milestone_prompt",
+                            "source_path": identity.prompt_path,
+                            "size_bytes": size,
+                            "truncated": False,
+                            "content": content,
+                            "document_id": prompt["document_id"],
+                            "revision_id": prompt["revision_id"],
+                            "content_sha256": prompt["content_sha256"],
+                            "authority": snapshot["authority"],
+                            "revision_status": (
+                                "approved" if snapshot["prompt_revision_id"] == prompt["revision_id"] else "draft"
+                            ),
+                        }
+                    elif resource == "milestone_document":
+                        if not expected_repository_key or expected_generation is None or not expected_milestone_id:
+                            raise ArchitectContractError(
+                                "invalid_precondition",
+                                "Selected-milestone document reads require expected repository, generation, "
+                                "and milestone identity.",
+                                400,
+                            )
+                        data = information_store_clients.read_selected_milestone_document_page(
+                            document_path,
+                            start_byte=document_start_byte,
+                            source_fingerprint=document_source_fingerprint,
+                        )
+                    else:
+                        source = {"source_type": "information_store_workflow", "path": None}
+                        if resource == "evidence":
+                            data = {
+                                "source": source,
+                                "reported_vs_machine_observed": "reported",
+                                **_bounded_events([
+                                    event for event in events
+                                    if event["event_type"] == "test_result_recorded"
+                                ]),
+                            }
+                        else:
+                            projection = snapshot["projection"]
+                            phase = projection["phase"]
+                            workflow = {"phase": phase, "event_history": events}
+                            authorization = get_authorization_status(phase, is_correction_mode(workflow))
+                            if snapshot["unverified_guidance"]:
+                                authorization = {
+                                    **authorization,
+                                    "authorized": False,
+                                    "message": (
+                                        "NO — imported approved guidance lacks explicit decision evidence; "
+                                        "Product Owner reconciliation is required."
+                                    ),
+                                }
+                            workflow_data = {
+                                "source": source,
+                                "phase": phase,
+                                "waiting_reason": projection["waiting_reason"],
+                                "waiting_category": projection["waiting_category"],
+                                "event_count": len(events),
+                                "events": _bounded_events(events),
+                                "binding_lock_ins": _bounded_events([
+                                    event for event in events
+                                    if event["event_type"] == "lock_in_approved" and event.get("binding") is True
+                                ]),
+                                "open_conditions": _bounded_events(_open_conditions(workflow)),
+                                "next_authorized_action": authorization["message"],
+                            }
+                            if resource == "workflow":
+                                data = workflow_data
+                            else:
+                                closeout_path = identity.prompt_path.removesuffix("_prompt.md") + "_closeout.md"
+                                closeout = selected["closeout"]
+                                if closeout is None:
+                                    closeout_data = {
+                                        "status": "required_missing" if phase == "REVIEW" else "absent",
+                                        "path": closeout_path,
+                                        "size_bytes": None,
+                                        "required_in_review": phase == "REVIEW",
+                                        "lifecycle_phase": phase,
+                                        "content": None,
+                                        "source_type": "milestone_closeout",
+                                    }
+                                else:
+                                    closeout_page = information_store_clients.read_selected_milestone_document_page(
+                                        closeout_path
+                                    )
+                                    closeout_data = {
+                                        "status": "present",
+                                        "path": closeout_path,
+                                        "size_bytes": closeout_page["file_size_bytes"],
+                                        "required_in_review": True,
+                                        "lifecycle_phase": phase,
+                                        "source_type": "milestone_closeout",
+                                        "document_id": closeout_page["document_id"],
+                                        "revision_id": closeout_page["revision_id"],
+                                        "revision_status": closeout_page["revision_status"],
+                                        "content_sha256": closeout_page["sha256"],
+                                        "content": None,
+                                    }
+                                    if closeout_page["file_size_bytes"] <= MAX_SOURCE_BYTES:
+                                        revision = information_store_clients.get_revision(
+                                            closeout_page["document_id"], closeout_page["revision_id"]
+                                        )
+                                        closeout_data["content"] = {
+                                            "source_type": "milestone_closeout",
+                                            "source_path": closeout_path,
+                                            "size_bytes": closeout_page["file_size_bytes"],
+                                            "truncated": False,
+                                            "content": revision["content"],
+                                        }
+                                    else:
+                                        closeout_data["content_paging"] = {
+                                            "endpoint": "/api/architect/v1/milestone-document",
+                                            "start_byte": 0,
+                                            "page_limit_bytes": closeout_page["page_limit_bytes"],
+                                            "required_source_fingerprint": "returned by the first page",
+                                        }
+                                latest_lock_in = next(
+                                    (event for event in reversed(events)
+                                     if event["event_type"] == "lock_in_approved" and event.get("binding") is True),
+                                    None,
+                                )
+                                milestone_data = {
+                                    "id": identity.milestone_id,
+                                    "phase": phase,
+                                    "waiting_reason": projection["waiting_reason"],
+                                    "waiting_category": projection["waiting_category"],
+                                    "prompt": {
+                                        "path": identity.prompt_path,
+                                        "status": "present",
+                                        "size_bytes": len(prompt["content"].encode("utf-8")),
+                                        "source_type": "milestone_prompt",
+                                        "document_id": prompt["document_id"],
+                                        "revision_id": prompt["revision_id"],
+                                        "content_sha256": prompt["content_sha256"],
+                                    },
+                                    "closeout": {**closeout_data, "content": None},
+                                    "workflow": {
+                                        "path": None,
+                                        "status": "present",
+                                        "size_bytes": None,
+                                        "source_type": "information_store_workflow",
+                                    },
+                                    "event_count": len(events),
+                                    "latest_binding_lock_in": _event_view(latest_lock_in) if latest_lock_in else None,
+                                    "open_conditions": workflow_data["open_conditions"],
+                                    "lifecycle_phase": phase,
+                                    "next_authorized_action": authorization["message"],
+                                    "lifecycle_source": source,
+                                }
+                                if resource == "closeout":
+                                    data = closeout_data
+                                elif resource == "milestone":
+                                    data = milestone_data
+                                elif resource == "review":
+                                    repository = current_repository()
+                                    data = {
+                                        "repository": {
+                                            "key": repository.key,
+                                            "name": repository.name,
+                                            "path": str(repository.path),
+                                        },
+                                        "milestone": milestone_data,
+                                        "binding_lock_ins": workflow_data["binding_lock_ins"],
+                                        "test_evidence": {
+                                            "reported_vs_machine_observed": "reported",
+                                            **_bounded_events([
+                                                event for event in events
+                                                if event["event_type"] == "test_result_recorded"
+                                            ]),
+                                        },
+                                        "git": _git_view(repository),
+                                        "context_verification_coverage": build_verification_coverage(events, None),
+                                        "governing_documents": _document_inventory(repository),
+                                        "source_references": [
+                                            {
+                                                "source_type": "information_store_prompt_revision",
+                                                "path": identity.prompt_path,
+                                                "revision_id": prompt["revision_id"],
+                                            },
+                                            {"source_type": "information_store_workflow", "path": None},
+                                            *(
+                                                [{
+                                                    "source_type": "information_store_closeout_revision",
+                                                    "path": closeout_path,
+                                                    "revision_id": closeout_data["revision_id"],
+                                                }]
+                                                if closeout_data["status"] == "present" else []
+                                            ),
+                                        ],
+                                    }
+                                else:
+                                    data = {
+                                        "service": "repo-control",
+                                        "status": "available",
+                                        "milestone_selected": True,
+                                        "milestone": milestone_data,
+                                    }
+                    repository = current_repository()
+                    payload = {
+                        "contract_version": "1",
+                        "repository": {
+                            "key": repository.key,
+                            "name": repository.name,
+                            "path": str(repository.path),
+                            "repository_id": repository.repository_id,
+                            "registry_generation": g.repository_registry_generation,
+                        },
+                        "selection": {
+                            "status": "selected",
+                            "milestone_id": identity.milestone_id,
+                            "prompt_path": identity.prompt_path,
+                        },
+                        "source_scope": {
+                            "repository_key": identity.repository_key,
+                            "milestone_id": identity.milestone_id,
+                        },
+                        "data": data,
+                    }
+                else:
+                    payload = build_architect_response(
+                        repository=current_repository(),
+                        registry_generation=g.repository_registry_generation,
+                        state_root=effective_state_root,
+                        resource=resource,
+                        role=role,
+                        document_path=document_path,
+                        history_query=history_query,
+                        history_milestone_id=history_milestone_id,
+                        history_artifact_type=history_artifact_type,
+                        history_category=history_category,
+                        history_limit=history_limit,
+                        history_cursor=history_cursor,
+                        history_cursor_secret=app.config["SECRET_KEY"],
+                        expected_repository_key=expected_repository_key,
+                        expected_generation=expected_generation,
+                        expected_milestone_id=expected_milestone_id,
+                        document_start_byte=document_start_byte,
+                        document_source_fingerprint=document_source_fingerprint,
+                    )
                 if resource == "status":
                     payload["data"]["runtime_capabilities"] = {
                         "capability_schema_version": 1,
@@ -1049,6 +1768,38 @@ def create_web_app(
                     "error": {"code": exc.code, "message": str(exc)},
                 },
                 exc.status_code,
+            )
+        except (InformationStoreError, FixtureIntegrationError) as exc:
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "information_store_unavailable", "message": str(exc)},
+                },
+                503,
+            )
+        except (
+            InvalidCursorError,
+            StaleCursorError,
+            DocumentNotFoundError,
+            DuplicateSourceIdentityError,
+            DocumentTooLargeError,
+            SourceEnumerationError,
+        ) as exc:
+            if isinstance(exc, InvalidCursorError):
+                code, status = "invalid_history_cursor", 400
+            elif isinstance(exc, StaleCursorError):
+                code, status = "stale_history_cursor", 409
+            elif isinstance(exc, DocumentNotFoundError):
+                code, status = "historical_document_not_found", 404
+            elif isinstance(exc, DuplicateSourceIdentityError):
+                code, status = "ambiguous_historical_revision", 409
+            elif isinstance(exc, DocumentTooLargeError):
+                code, status = "source_oversized", 413
+            else:
+                code, status = "historical_source_unavailable", 503
+            return _architect_json_response(
+                {"contract_version": "1", "error": {"code": code, "message": str(exc)}},
+                status,
             )
 
     @app.get("/api/architect/v1/status")
@@ -1221,11 +1972,30 @@ def create_web_app(
                         "Repository selection changed; Coder graph publication is no longer authorized."
                     )
                 try:
-                    selection = load_milestone_selection(
-                        repository.path,
-                        effective_state_root,
-                        repository.milestone_root,
-                    )
+                    if information_store_clients is not None:
+                        data = information_store_clients.browser_snapshot()
+                        selection = {"status": "selected", "selection": data["candidate"]}
+                        workflow = dict(data["workflow"])
+                        workflow["prompt_identity"] = data["prompt"]["content_sha256"]
+                        if (
+                            data["snapshot"]["prompt_revision_id"] != data["prompt"]["revision_id"]
+                            or workflow["unverified_guidance"]
+                        ):
+                            raise RefreshAuthorizationError(
+                                "Selected prompt or imported guidance is not explicitly confirmed."
+                            )
+                    else:
+                        selection = load_milestone_selection(
+                            repository.path,
+                            effective_state_root,
+                            repository.milestone_root,
+                        )
+                        workflow = load_milestone_workflow(
+                            repository.path,
+                            effective_state_root,
+                            repository.milestone_root,
+                            selection["selection"],
+                        ) if selection["status"] == "selected" else None
                     if (
                         selection["status"] != "selected"
                         or selection["selection"]["milestone_id"] != payload["milestone_id"]
@@ -1234,17 +2004,13 @@ def create_web_app(
                         raise RefreshAuthorizationError(
                             "Selected Coder milestone changed; refresh was not authorized."
                         )
-                    workflow = load_milestone_workflow(
-                        repository.path,
-                        effective_state_root,
-                        repository.milestone_root,
-                        selection["selection"],
-                    )
                 except (MilestoneArtifactError, WorkflowRecordError) as exc:
                     raise RefreshAuthorizationError(
                         f"Cannot verify Coder milestone authorization: {exc}"
                     ) from exc
                 if (
+                    workflow is None
+                    or
                     workflow["phase"] != "IN_PROGRESS"
                     or workflow["open_blocker"]
                     or workflow["waiting_category"] is not None
@@ -1514,6 +2280,14 @@ def create_web_app(
             raise WebUIError("invalid_procedure_repository", "Select a repository from the configured list.")
         if require_bundle_integrity:
             release_preparation = active_release_preparation()
+            if information_store_clients is not None and release_preparation.get("status") in {
+                "UNAVAILABLE", "INTEGRITY_UNAVAILABLE",
+            }:
+                raise WebUIError(
+                    "procedure_authority_unavailable",
+                    "Procedure Apply requires a verified current InformationStore release context.",
+                    status_code=409,
+                )
             if release_preparation.get("authorized"):
                 raise WebUIError(
                     "procedure_release_preparation_active",
@@ -1883,6 +2657,9 @@ def create_web_app(
         return selection["selection"], workflow
 
     def submit_architect_dispatch(dispatch_type: str) -> Response:
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
         if not request.is_json:
             raise ArchitectContractError("invalid_content_type", "Dispatch submissions require application/json.", 415)
         request_limit = MAX_ARCHITECT_DISPATCH_BODY_BYTES * 2 + 8192
@@ -1929,29 +2706,73 @@ def create_web_app(
             with repository_action_lock:
                 require_current_repository_selection()
                 dispatch_preconditions(payload)
-                if dispatch_type in {"INSTRUCTION", "RESPONSE"}:
-                    _, active_workflow = active_dispatch_milestone(milestone_id)
-                    related_event_id = payload.get("related_event_id")
-                    if dispatch_type == "RESPONSE" and related_event_id is not None and not any(
-                        event.get("event_id") == related_event_id
-                        for event in active_workflow.get("event_history", [])
-                    ):
+                if information_store_clients is not None:
+                    if dispatch_type != "PROMPT" and milestone_id != information_store_clients.identity.milestone_id:
                         raise ArchitectContractError(
-                            "related_event_not_found",
-                            "The related workflow event is not part of the active milestone.",
-                            400,
+                            "stale_milestone_selection",
+                            "The target is not the milestone bound to the selected InformationStore.",
+                            409,
                         )
-                record = submit_dispatch(
-                    current_repository().path,
-                    effective_state_root,
-                    current_repository().repository_id,
-                    dispatch_type=dispatch_type,
-                    milestone_id=milestone_id,
-                    body=payload["body"],
-                    title=payload.get("title"),
-                    related_event_id=payload.get("related_event_id"),
-                    milestone_root=current_repository().milestone_root,
-                )
+                    store_snapshot = information_store_clients.browser_snapshot()["snapshot"]
+                    if dispatch_type in {"INSTRUCTION", "RESPONSE"}:
+                        if store_snapshot["projection"]["phase"] == "CLOSED":
+                            raise ArchitectContractError(
+                                "milestone_closed",
+                                "INSTRUCTION and RESPONSE dispatches require a non-closed active milestone.",
+                                409,
+                            )
+                        related_event_id = payload.get("related_event_id")
+                        if related_event_id is not None and not any(
+                            event.get("event_id") == related_event_id
+                            for event in store_snapshot["events"]
+                        ):
+                            raise ArchitectContractError(
+                                "related_event_not_found",
+                                "The related workflow event is not part of the selected milestone.",
+                                400,
+                            )
+                    try:
+                        stored = information_store_clients.create_architect_dispatch(
+                            dispatch_type=dispatch_type,
+                            milestone_id=milestone_id,
+                            body=payload["body"],
+                            milestone_root=current_repository().milestone_root,
+                            title=payload.get("title"),
+                            related_event_id=payload.get("related_event_id"),
+                        )
+                    except ValueError as exc:
+                        raise ArchitectContractError("invalid_dispatch", str(exc), 400) from exc
+                    except (InformationStoreError, FixtureIntegrationError) as exc:
+                        raise ArchitectContractError("information_store_dispatch_unavailable", str(exc), 503) from exc
+                    record = {
+                        **stored,
+                        "type": stored["dispatch_type"],
+                        "authorization_granted": False,
+                    }
+                else:
+                    if dispatch_type in {"INSTRUCTION", "RESPONSE"}:
+                        _, active_workflow = active_dispatch_milestone(milestone_id)
+                        related_event_id = payload.get("related_event_id")
+                        if dispatch_type == "RESPONSE" and related_event_id is not None and not any(
+                            event.get("event_id") == related_event_id
+                            for event in active_workflow.get("event_history", [])
+                        ):
+                            raise ArchitectContractError(
+                                "related_event_not_found",
+                                "The related workflow event is not part of the active milestone.",
+                                400,
+                            )
+                    record = submit_dispatch(
+                        current_repository().path,
+                        effective_state_root,
+                        current_repository().repository_id,
+                        dispatch_type=dispatch_type,
+                        milestone_id=milestone_id,
+                        body=payload["body"],
+                        title=payload.get("title"),
+                        related_event_id=payload.get("related_event_id"),
+                        milestone_root=current_repository().milestone_root,
+                    )
         except ArchitectContractError:
             raise
         except ArchitectDispatchError:
@@ -1984,6 +2805,9 @@ def create_web_app(
 
     @app.get("/api/architect/v1/dispatches")
     def architect_dispatches():
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
         allowed_parameters = {
             "expected_repository_key",
             "expected_generation",
@@ -2041,7 +2865,7 @@ def create_web_app(
                 raise ArchitectDispatchError(
                     f"Dispatch read limit must be between 1 and {MAX_ARCHITECT_DISPATCH_READ_LIMIT}."
                 )
-            if milestone_values:
+            if milestone_values and information_store_clients is None:
                 list_dispatches(
                     current_repository().path,
                     effective_state_root,
@@ -2057,14 +2881,22 @@ def create_web_app(
             if dispatch_id_values:
                 if cursor_values:
                     raise ArchitectDispatchError("A dispatch ID cannot be combined with a cursor.")
-                records = [
-                    get_dispatch(
-                        current_repository().path,
-                        effective_state_root,
-                        current_repository().repository_id,
-                        dispatch_id_values[0],
-                    )
-                ]
+                if information_store_clients is not None:
+                    stored = information_store_clients.get_dispatch(dispatch_id_values[0])
+                    records = [{**stored, "type": stored["dispatch_type"], "authorization_granted": False}]
+                else:
+                    records = [
+                        get_dispatch(
+                            current_repository().path,
+                            effective_state_root,
+                            current_repository().repository_id,
+                            dispatch_id_values[0],
+                        )
+                    ]
+                if milestone_values and records and records[0]["milestone_id"] != milestone_values[0]:
+                    records = []
+                if status_values and records and records[0]["status"] != status_values[0]:
+                    records = []
                 page = {
                     "total_count": len(records),
                     "returned_count": len(records),
@@ -2073,25 +2905,33 @@ def create_web_app(
                     "complete": True,
                     "next_cursor": None,
                 }
-                if milestone_values and records[0]["milestone_id"] != milestone_values[0]:
-                    records = []
-                if status_values and records and records[0]["status"] != status_values[0]:
-                    records = []
             else:
-                page = list_dispatch_page(
-                    current_repository().path,
-                    effective_state_root,
-                    current_repository().repository_id,
-                    milestone_id=milestone_values[0] if milestone_values else None,
-                    status=status_values[0] if status_values else None,
-                    limit=limit,
-                    cursor=cursor_values[0] if cursor_values else None,
-                )
-                records = page["dispatches"]
+                if information_store_clients is not None:
+                    requested_milestone = milestone_values[0] if milestone_values else None
+                    page = information_store_clients.list_architect_dispatch_page(
+                        milestone_id=requested_milestone,
+                        status=status_values[0] if status_values else None,
+                        limit=limit,
+                        cursor=cursor_values[0] if cursor_values else None,
+                    )
+                    records = page.pop("dispatches")
+                else:
+                    page = list_dispatch_page(
+                        current_repository().path,
+                        effective_state_root,
+                        current_repository().repository_id,
+                        milestone_id=milestone_values[0] if milestone_values else None,
+                        status=status_values[0] if status_values else None,
+                        limit=limit,
+                        cursor=cursor_values[0] if cursor_values else None,
+                    )
+                    records = page["dispatches"]
         except ArchitectDispatchError as exc:
             if "cursor is stale" in str(exc):
                 raise ArchitectContractError("stale_dispatch_cursor", str(exc), 409) from exc
             raise ArchitectContractError("invalid_dispatch_query", str(exc), 400) from exc
+        except (InformationStoreError, FixtureIntegrationError) as exc:
+            raise ArchitectContractError("information_store_dispatch_unavailable", str(exc), 503) from exc
         return _architect_json_response(
             {
                 "contract_version": "1",
@@ -2109,42 +2949,94 @@ def create_web_app(
 
     @app.get("/architect-dispatches")
     def architect_dispatches_page():
-        try:
-            page = list_dispatch_page(
-                current_repository().path,
-                effective_state_root,
-                current_repository().repository_id,
-                limit=MAX_ARCHITECT_DISPATCH_READ_LIMIT,
-                cursor=request.args.get("cursor"),
+        if information_store_clients is not None:
+            from ..information_store import InformationStoreError, dispatch_reconciliation_fingerprint
+            from ..workflow.information_store_fixture import FixtureIntegrationError
+
+            try:
+                page = information_store_clients.list_architect_dispatch_page(
+                    limit=MAX_ARCHITECT_DISPATCH_READ_LIMIT,
+                    cursor=request.args.get("cursor"),
+                )
+                records = page["dispatches"]
+                unverified = {
+                    item["dispatch_id"]
+                    for item in information_store_clients.list_unverified_architect_guidance()
+                }
+            except ArchitectDispatchError as exc:
+                if "cursor is stale" in str(exc):
+                    raise WebUIError(
+                        "stale_dispatch_cursor",
+                        "Dispatches changed while browsing. Restart from the first page.",
+                        status_code=409,
+                    ) from exc
+                raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
+            except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
+            records = [
+                {
+                    **item,
+                    "type": item["dispatch_type"],
+                    "canonical_destination": item["payload"].get("canonical_destination"),
+                    "authorization_granted": False,
+                    "decision_fingerprint": dispatch_reconciliation_fingerprint(item),
+                    "needs_reconciliation": item["dispatch_id"] in unverified,
+                    "reconciliation_fingerprint": (
+                        dispatch_reconciliation_fingerprint(item)
+                        if item["dispatch_id"] in unverified else None
+                    ),
+                    "reconciliation_history_id": (
+                        secrets.token_hex(16) if item["dispatch_id"] in unverified else None
+                    ),
+                }
+                for item in records
+            ]
+            page["dispatches"] = records
+            active_milestone_id = information_store_clients.identity.milestone_id
+        else:
+            try:
+                page = list_dispatch_page(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().repository_id,
+                    limit=MAX_ARCHITECT_DISPATCH_READ_LIMIT,
+                    cursor=request.args.get("cursor"),
+                )
+                records = page["dispatches"]
+                selection = load_milestone_selection(
+                    current_repository().path,
+                    effective_state_root,
+                    current_repository().milestone_root,
+                )
+            except (ArchitectDispatchError, MilestoneArtifactError) as exc:
+                if isinstance(exc, ArchitectDispatchError) and "cursor is stale" in str(exc):
+                    raise WebUIError(
+                        "stale_dispatch_cursor",
+                        "Dispatches changed while browsing. Restart from the first page.",
+                        status_code=409,
+                    ) from exc
+                raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
+            active_milestone_id = (
+                selection["selection"]["milestone_id"] if selection["status"] == "selected" else None
             )
-            records = page["dispatches"]
-            selection = load_milestone_selection(
-                current_repository().path,
-                effective_state_root,
-                current_repository().milestone_root,
-            )
-        except (ArchitectDispatchError, MilestoneArtifactError) as exc:
-            if isinstance(exc, ArchitectDispatchError) and "cursor is stale" in str(exc):
-                raise WebUIError(
-                    "stale_dispatch_cursor",
-                    "Dispatches changed while browsing. Restart from the first page.",
-                    status_code=409,
-                ) from exc
-            raise WebUIError("architect_dispatches_unavailable", str(exc), status_code=503) from exc
-        active_milestone_id = (
-            selection["selection"]["milestone_id"] if selection["status"] == "selected" else None
-        )
         return render_template(
             "architect_dispatches.html",
             dispatches=records,
             dispatch_page=page,
             active_milestone_id=active_milestone_id,
+            information_store_mode=information_store_clients is not None,
+            information_store_fixture=(
+                information_store_clients is not None and information_store_clients.fixture_only
+            ),
         )
 
     @app.post("/architect-dispatches/<dispatch_id>/<action>")
     def resolve_architect_dispatch(dispatch_id: str, action: str):
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
         _require_csrf()
-        if action not in {"approve", "reject"}:
+        if action not in {"approve", "reject", "reconcile-approve", "reconcile-reject"}:
             raise WebUIError("invalid_dispatch_action", "Unknown Architect dispatch action.", status_code=404)
         with repository_action_lock:
             require_current_repository_selection()
@@ -2157,7 +3049,52 @@ def create_web_app(
                     "The active repository changed since this review was rendered. Refresh and review again.",
                     status_code=409,
                 )
-            dispatch_status = "APPROVED" if action == "approve" else "REJECTED"
+            dispatch_status = "APPROVED" if action in {"approve", "reconcile-approve"} else "REJECTED"
+            if information_store_clients is not None:
+                confirmation_field = (
+                    "fixture_po_confirmation" if information_store_clients.fixture_only else "po_confirmation"
+                )
+                if request.form.get(confirmation_field) != "confirmed":
+                    raise WebUIError(
+                        "fixture_po_confirmation_required" if information_store_clients.fixture_only
+                        else "po_confirmation_required",
+                        "Explicit Product Owner confirmation is required for dispatch decisions.",
+                        status_code=403,
+                    )
+                try:
+                    if action.startswith("reconcile-"):
+                        information_store_clients.reconcile_imported_guidance(
+                            dispatch_id=dispatch_id,
+                            history_id=request.form.get("reconciliation_history_id", ""),
+                            status=dispatch_status,
+                            expected_fingerprint=request.form.get("reconciliation_fingerprint", ""),
+                            fixture_po_confirmation=information_store_clients.fixture_only,
+                            managed_po_confirmation=not information_store_clients.fixture_only,
+                        )
+                    else:
+                        information_store_clients.record_architect_dispatch_decision(
+                            dispatch_id=dispatch_id,
+                            status=dispatch_status,
+                            fixture_po_confirmation=information_store_clients.fixture_only,
+                            managed_po_confirmation=not information_store_clients.fixture_only,
+                            milestone_root=current_repository().milestone_root,
+                            expected_fingerprint=request.form.get("decision_fingerprint", ""),
+                        )
+                except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                    raise WebUIError("architect_dispatch_failed", str(exc), status_code=409) from exc
+                flash(
+                    (
+                        "Reported fixture decision recorded; no production authorization was granted."
+                        if information_store_clients.fixture_only
+                        else "Product Owner decision recorded in the configured InformationStore."
+                    ),
+                    "success",
+                )
+                return redirect(url_for("architect_dispatches_page"))
+            if action.startswith("reconcile-"):
+                raise WebUIError(
+                    "invalid_dispatch_action", "Imported-guidance reconciliation requires an InformationStore.", 404
+                )
             active_milestone_id = None
             if dispatch_status == "APPROVED":
                 try:
@@ -2207,6 +3144,11 @@ def create_web_app(
                 "active_repository": active_repository.key,
                 "active_repository_generation": active_generation,
                 "central_registry_stale": g.central_registry_stale,
+                "information_store_authority": app.config["INFORMATION_STORE_AUTHORITY"],
+                "information_store_binding": (
+                    information_store_clients.runtime_binding()
+                    if information_store_clients is not None else None
+                ),
                 "runtime_capabilities": {
                     "capability_schema_version": 1,
                     "instance_id": app.config["RUNTIME_INSTANCE_ID"],
@@ -2225,6 +3167,21 @@ def create_web_app(
         _require_csrf()
         requested_key = request.form.get("repository_key", "")
         with repository_action_lock:
+            if information_store_clients is not None:
+                from ..information_store import InformationStoreError
+                from ..workflow.information_store_fixture import FixtureIntegrationError
+
+                if request.form.get("repository_generation") != str(g.repository_registry_generation):
+                    raise WebUIError(
+                        "stale_repository_selection", "The repository selection changed; refresh and retry.", 409
+                    )
+                target = next((entry for entry in registry.entries if entry.key == requested_key), None)
+                if target is None:
+                    raise WebUIError("invalid_repository_selection", "Select a configured repository.", 400)
+                try:
+                    information_store_clients.switch_repository(target)
+                except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                    raise WebUIError("information_store_repository_unavailable", str(exc), 409) from exc
             try:
                 selected_repository, changed = registry.select(requested_key)
             except RepositoryRegistryError as exc:
@@ -2239,7 +3196,7 @@ def create_web_app(
                 )
             else:
                 flash(f"{selected_repository.name} is already the active repository.", "success")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("milestone_page" if information_store_clients is not None else "dashboard"))
 
     @app.get("/")
     def dashboard():
@@ -2637,6 +3594,25 @@ def create_web_app(
     @app.get("/milestones")
     def milestone_page():
         repository = current_repository()
+        if information_store_clients is not None:
+            data = information_store_clients.browser_snapshot()
+            inventory = information_store_clients.browser_candidates()
+            candidate = data["candidate"]
+            selection = {"status": "selected", "selection": candidate, "reason": None}
+            workflow = _decorate_milestone_workflow(
+                data["workflow"], candidate["milestone_id"], has_closeout=candidate["closeout_exists"]
+            )
+            return render_template(
+                "milestones.html",
+                candidates=inventory["candidates"],
+                inventory_issues=inventory["issues"],
+                selection=selection,
+                milestone_root=repository.milestone_root,
+                workflow=workflow,
+                information_store_mode=True,
+                information_store_fixture=information_store_clients.fixture_only,
+                information_store_selection=information_store_clients.identity,
+            )
         try:
             inventory = discover_milestones(repository.path, repository.milestone_root)
             selection = load_milestone_selection(
@@ -2685,6 +3661,29 @@ def create_web_app(
             or request.args.get("repository_generation") != str(g.repository_registry_generation)
         ):
             return Response("", status=409)
+        if information_store_clients is not None:
+            data = information_store_clients.browser_snapshot()
+            candidate = data["candidate"]
+            if (
+                request.args.get("milestone_id") != candidate["milestone_id"]
+                or request.args.get("prompt_path") != candidate["prompt_path"]
+            ):
+                return Response("", status=409)
+            workflow = _decorate_milestone_workflow(
+                data["workflow"], candidate["milestone_id"], has_closeout=candidate["closeout_exists"]
+            )
+            response = app.make_response(
+                render_template(
+                    "milestone_workflow.html",
+                    workflow=workflow,
+                    selection={"status": "selected", "selection": candidate},
+                    information_store_mode=True,
+                    information_store_fixture=information_store_clients.fixture_only,
+                    information_store_selection=information_store_clients.identity,
+                )
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
         try:
             selection = load_milestone_selection(
                 repository.path,
@@ -2748,6 +3747,38 @@ def create_web_app(
                     "The selected repository changed since this page was rendered. Refresh and select a milestone again.",
                     status_code=409,
                 )
+            if information_store_clients is not None:
+                candidate = information_store_clients.browser_snapshot()["candidate"]
+                requested_milestone = request.form.get("milestone_id", "")
+                submitted_selection_id = request.form.get("expected_selection_id", "")
+                submitted_selection_revision = request.form.get("expected_selection_revision", "")
+                if submitted_selection_id or submitted_selection_revision:
+                    if (
+                        submitted_selection_id != information_store_clients.identity.selection_id
+                        or submitted_selection_revision != str(information_store_clients.identity.selection_revision)
+                    ):
+                        raise WebUIError(
+                            "stale_milestone_selection",
+                            "The milestone selection changed since this page was rendered.",
+                            status_code=409,
+                        )
+                if requested_milestone != candidate["milestone_id"]:
+                    from ..information_store import InformationStoreError
+                    from ..workflow.information_store_fixture import FixtureIntegrationError
+
+                    try:
+                        expected_revision = int(submitted_selection_revision)
+                        candidate = information_store_clients.switch_milestone(
+                            requested_milestone,
+                            expected_selection_id=submitted_selection_id,
+                            expected_selection_revision=expected_revision,
+                        )
+                    except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                        raise WebUIError(
+                            "information_store_selection_unavailable", str(exc), status_code=409
+                        ) from exc
+                flash(f"Selected {candidate['milestone_id']} for {current_repository().name}.", "success")
+                return redirect(url_for("milestone_page"))
             try:
                 candidate = save_milestone_selection(
                     current_repository().path,
@@ -2763,9 +3794,165 @@ def create_web_app(
         )
         return redirect(url_for("milestone_page"))
 
+    @app.post("/milestones/confirm-imported-prompt")
+    def confirm_imported_prompt():
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
+        require_mutation_request()
+        if information_store_clients is None:
+            raise WebUIError("information_store_unavailable", "Prompt reconciliation is unavailable.", 503)
+        with repository_action_lock:
+            require_current_repository_selection()
+            identity = information_store_clients.identity
+            if (
+                request.form.get("repository_key") != current_repository().key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+                or request.form.get("selection_id") != identity.selection_id
+                or request.form.get("selection_revision") != str(identity.selection_revision)
+            ):
+                raise WebUIError("stale_prompt_confirmation", "Selection changed; review the prompt again.", 409)
+            confirmation_field = (
+                "fixture_po_confirmation" if information_store_clients.fixture_only else "po_confirmation"
+            )
+            if request.form.get(confirmation_field) != "confirmed":
+                raise WebUIError(
+                    "fixture_po_confirmation_required" if information_store_clients.fixture_only
+                    else "po_confirmation_required",
+                    "Confirm the new PO decision explicitly.", 403
+                )
+            try:
+                information_store_clients.confirm_imported_prompt(
+                    request_id=request.form.get("request_id", ""),
+                    expected_store_revision=int(request.form.get("store_revision", "")),
+                    document_id=request.form.get("document_id", ""),
+                    revision_id=request.form.get("revision_id", ""),
+                    content_sha256=request.form.get("content_sha256", ""),
+                    fixture_po_confirmation=information_store_clients.fixture_only,
+                    managed_po_confirmation=not information_store_clients.fixture_only,
+                )
+            except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
+                raise WebUIError("invalid_prompt_confirmation", str(exc), 409) from exc
+        flash(
+            "The exact imported prompt revision was confirmed for this fixture; historical bytes remain unverified."
+            if information_store_clients.fixture_only
+            else "The exact imported prompt revision was confirmed; historical bytes remain unverified.",
+            "success",
+        )
+        return redirect(url_for("milestone_page"))
+
+    def record_information_store_workflow_event():
+        from ..information_store import InformationStoreError
+        from ..workflow.information_store_fixture import FixtureIntegrationError
+
+        assert information_store_clients is not None
+        if not information_store_clients.fixture_only and request.form.get("po_confirmation") != "confirmed":
+            raise WebUIError(
+                "po_confirmation_required",
+                "Explicit Product Owner confirmation is required for this workflow action.",
+                403,
+            )
+        intelligence_baseline = prepare_milestone_start_baseline()
+        with repository_action_lock, state_artifact_lock(effective_state_root):
+            require_current_repository_selection()
+            repository = current_repository()
+            if (
+                request.form.get("repository_key") != repository.key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+            ):
+                raise WebUIError("stale_workflow_request", "Repository selection changed; refresh and retry.", 409)
+            try:
+                data = information_store_clients.browser_snapshot()
+                candidate = data["candidate"]
+                workflow = data["workflow"]
+                if (
+                    request.form.get("milestone_id") != candidate["milestone_id"]
+                    or request.form.get("prompt_path") != candidate["prompt_path"]
+                    or request.form.get("expected_phase") != workflow["phase"]
+                    or request.form.get("expected_event_count") != str(workflow["event_count"])
+                    or request.form.get("expected_prompt_identity") != workflow["prompt_identity"]
+                ):
+                    raise WebUIError("stale_workflow_request", "Workflow or prompt changed; refresh and retry.", 409)
+                action = request.form.get("event_type", "")
+                if action in {"approve_and_start", "implementation_started"}:
+                    verify_milestone_start_baseline(repository, intelligence_baseline)
+                outstanding = workflow["outstanding_dispatches"]
+                confirmed = request.form.get("closure_guard_confirmed") == "yes"
+                submitted_ids = request.form.getlist("closure_guard_dispatch_id")
+                reason = request.form.get("closure_override_reason", "").strip()
+                if action == "accept_and_close":
+                    if outstanding and not confirmed:
+                        workflow["closure_confirmation"] = {
+                            "dispatches": outstanding,
+                            "dispatch_ids": [item["dispatch_id"] for item in outstanding],
+                            "summary": request.form.get("summary", ""),
+                            "reason": reason,
+                        }
+                        _decorate_milestone_workflow(
+                            workflow, candidate["milestone_id"], has_closeout=candidate["closeout_exists"]
+                        )
+                        inventory = information_store_clients.browser_candidates()
+                        return render_template(
+                            "milestones.html",
+                            candidates=inventory["candidates"],
+                            inventory_issues=inventory["issues"],
+                            selection={"status": "selected", "selection": candidate},
+                            milestone_root=repository.milestone_root,
+                            workflow=workflow,
+                            information_store_mode=True,
+                            information_store_fixture=information_store_clients.fixture_only,
+                            information_store_selection=information_store_clients.identity,
+                        )
+                    if outstanding and (
+                        submitted_ids != [item["dispatch_id"] for item in outstanding] or not reason
+                    ):
+                        raise WebUIError(
+                            "stale_closure_confirmation",
+                            "Confirm the current guidance and provide a reason before closing.",
+                            409,
+                        )
+                    if not outstanding and (confirmed or submitted_ids or reason):
+                        raise WebUIError(
+                            "stale_closure_confirmation",
+                            "The outstanding-guidance condition changed; refresh and retry.",
+                            409,
+                        )
+                elif confirmed or submitted_ids or reason:
+                    raise WebUIError("invalid_closure_confirmation", "Closure confirmation is not applicable.", 400)
+                summary = request.form.get("summary", "")
+                if action == "resolve_and_resume":
+                    summary = summary.replace("\r\n", "\n").replace("\r", "\n")
+                information_store_clients.record_browser_action(
+                    action=action,
+                    summary=summary,
+                    expected_phase=workflow["phase"],
+                    expected_event_count=workflow["event_count"],
+                    expected_prompt_identity=workflow["prompt_identity"],
+                    fields={
+                        "waiting_category": request.form.get("waiting_category") or None,
+                        "waiting_reason": request.form.get("waiting_reason") or None,
+                        "related_event_id": request.form.get("related_event_id") or None,
+                        "bug_scope": request.form.get("bug_scope") or None,
+                        "evidence_source": request.form.get("evidence_source") or None,
+                        "result": request.form.get("result") or None,
+                        "lock_in_summary": request.form.get("lock_in_summary") or None,
+                        "closure_override_reason": reason or None,
+                        "outstanding_dispatch_ids": submitted_ids if confirmed else None,
+                        "expected_closeout_identity": request.form.get("expected_closeout_identity") or None,
+                    },
+                    fixture_po_confirmation=information_store_clients.fixture_only,
+                    managed_po_confirmation=not information_store_clients.fixture_only,
+                )
+            except (InformationStoreError, FixtureIntegrationError, WorkflowRecordError, ValueError) as exc:
+                raise WebUIError("invalid_information_store_workflow_event", str(exc), 409) from exc
+        flash("Milestone workflow event recorded in the injected InformationStore.", "success")
+        return redirect(url_for("milestone_page"))
+
     @app.post("/milestones/workflow/event")
     def record_milestone_workflow_event():
         require_mutation_request()
+        if information_store_clients is not None:
+            return record_information_store_workflow_event()
         intelligence_baseline = prepare_milestone_start_baseline()
         with repository_action_lock, state_artifact_lock(effective_state_root):
             require_current_repository_selection()
@@ -2995,6 +4182,48 @@ def create_web_app(
     @app.post("/milestones/reopen")
     def reopen_milestone():
         require_mutation_request()
+        if information_store_clients is not None:
+            from ..information_store import InformationStoreError
+            from ..workflow.information_store_fixture import FixtureIntegrationError
+
+            with repository_action_lock, state_artifact_lock(effective_state_root):
+                require_current_repository_selection()
+                repository = current_repository()
+                try:
+                    data = information_store_clients.browser_snapshot()
+                    candidate = data["candidate"]
+                    workflow = data["workflow"]
+                    if (
+                        request.form.get("repository_key") != repository.key
+                        or request.form.get("repository_generation") != str(g.repository_registry_generation)
+                        or request.form.get("milestone_id") != candidate["milestone_id"]
+                        or request.form.get("prompt_path") != candidate["prompt_path"]
+                        or request.form.get("expected_phase") != "CLOSED"
+                        or workflow["phase"] != "CLOSED"
+                        or request.form.get("expected_event_count") != str(workflow["event_count"])
+                        or request.form.get("expected_prompt_identity") != workflow["prompt_identity"]
+                    ):
+                        raise WebUIError("stale_milestone_reopen", "Milestone changed; refresh and retry.", 409)
+                    if request.form.get("confirm_reopen") != "yes":
+                        raise WebUIError(
+                            "reopen_confirmation_required",
+                            "Explicit Product Owner confirmation is required to reopen a milestone.",
+                            400,
+                        )
+                    information_store_clients.record_browser_action(
+                        action="milestone_reopened",
+                        summary=request.form.get("reason", ""),
+                        expected_phase=workflow["phase"],
+                        expected_event_count=workflow["event_count"],
+                        expected_prompt_identity=workflow["prompt_identity"],
+                        fields={"reopen_target_phase": request.form.get("target_phase", "")},
+                        fixture_po_confirmation=information_store_clients.fixture_only,
+                        managed_po_confirmation=not information_store_clients.fixture_only,
+                    )
+                except (InformationStoreError, FixtureIntegrationError, WorkflowRecordError, ValueError) as exc:
+                    raise WebUIError("invalid_milestone_reopen", str(exc), 409) from exc
+            flash("Milestone reopened in the injected InformationStore.", "success")
+            return redirect(url_for("milestone_page"))
         with repository_action_lock, state_artifact_lock(effective_state_root):
             require_current_repository_selection()
             repository = current_repository()
@@ -3217,6 +4446,87 @@ def create_web_app(
         _require_csrf()
         raise WebUIError("legacy_workflow_disabled", "Legacy commit approvals are disabled; use Git Review.", status_code=410)
 
+    if information_store_clients is not None:
+        from werkzeug.exceptions import MethodNotAllowed, NotFound
+        from ..store_authority import authority_binding_digest
+
+        def bound_api(resource: str, namespace: str, allowed: set[str]):
+            assert information_store_clients is not None
+            binding = authority_binding_digest(information_store_clients.runtime_binding())
+            if request.headers.get("X-Repoctl-Authority-Binding") != binding:
+                raise WebUIError(
+                    "information_store_binding_mismatch",
+                    "The client and service do not share the same current authority binding.",
+                    status_code=409,
+                )
+            try:
+                rule, values = app.url_map.bind("localhost").match(
+                    f"/api/{namespace}/v1/{resource}", method=request.method, return_rule=True,
+                )
+            except (MethodNotAllowed, NotFound) as exc:
+                raise WebUIError("bound_route_unavailable", "Unknown bound route.", status_code=404) from exc
+            if rule.endpoint not in allowed:
+                raise WebUIError("bound_route_unavailable", "Unknown bound route.", status_code=404)
+            response = app.make_response(app.view_functions[rule.endpoint](**values))
+            response.headers["X-Repoctl-Authority-Binding"] = binding
+            return response
+
+        @app.route("/api/architect/v1/store-bound/<path:resource>", methods=["GET", "POST"])
+        def architect_bound(resource: str):
+            return bound_api(resource, "architect", {
+                "architect_status", "architect_milestone", "architect_prompt", "architect_workflow",
+                "architect_closeout", "architect_git", "architect_evidence", "architect_documents",
+                "architect_document", "architect_repository_document", "architect_milestone_document",
+                "architect_history_search", "architect_history_document", "architect_review",
+                "repository_intelligence_api", "architect_submit_prompt", "architect_submit_instruction",
+                "architect_submit_response", "architect_dispatches",
+            })
+
+        @app.route("/api/coder/v1/store-bound/<path:resource>", methods=["GET", "POST"])
+        def coder_bound(resource: str):
+            return bound_api(resource, "coder", {
+                "repository_intelligence_api", "coder_intelligence_refresh_api", "coder_intelligence_rating",
+            })
+
+    if information_store_clients is not None and not information_store_clients.fixture_only:
+        from .closeout_publication import create_managed_closeout_publication_blueprint
+        from ..workflow.closeout_publication import ManagedPublicationContext, ReadOnlyGitReviewObserver
+
+        def managed_publication_service() -> CloseoutPublicationService:
+            assert information_store_clients is not None
+            repository = current_repository()
+            return information_store_clients.create_publication_service(
+                ManagedPublicationContext(
+                    repository_id=repository.repository_id,
+                    repository_key=repository.key,
+                    repository_root=str(repository.path),
+                    milestone_id=information_store_clients.identity.milestone_id,
+                    milestone_root=repository.milestone_root,
+                    worktree_root=repository.path,
+                ),
+                ReadOnlyGitReviewObserver(),
+            )
+
+        def guard_publication_mutation() -> None:
+            require_mutation_request()
+            require_current_repository_selection()
+            if (
+                request.form.get("repository_key") != current_repository().key
+                or request.form.get("repository_generation") != str(g.repository_registry_generation)
+            ):
+                raise WebUIError(
+                    "stale_publication_request",
+                    "Repository selection changed; review the publication again.",
+                    status_code=409,
+                )
+
+        app.register_blueprint(
+            create_managed_closeout_publication_blueprint(
+                managed_publication_service, mutation_guard=guard_publication_mutation,
+            ),
+            url_prefix="/closeout-publication",
+        )
+
     return app
 
 
@@ -3227,6 +4537,7 @@ def run_web_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
+    information_store_clients: InformationStoreClientProvider | None = None,
 ) -> None:
     app = create_web_app(
         repository_path=repository_path,
@@ -3234,5 +4545,6 @@ def run_web_server(
         host=host,
         port=port,
         state_root=state_root,
+        information_store_clients=information_store_clients,
     )
     app.run(host=host, port=port, debug=False, use_reloader=False)

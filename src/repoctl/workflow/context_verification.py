@@ -101,6 +101,9 @@ def collect_verification_sources(
     candidate: dict[str, Any],
     workflow: dict[str, Any],
     state_root: str | Path,
+    *,
+    prompt_content: bytes | None = None,
+    approved_dispatches_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from ..procedure_release import inspect_procedure_release_preparation
 
@@ -110,6 +113,7 @@ def collect_verification_sources(
         workflow,
         repository_key=repository.key,
         repository_id=repository.repository_id,
+        prompt_content=prompt_content,
     )
     try:
         from ..procedure_governance import ProcedureGovernanceError, inspect_procedure, load_bundle
@@ -161,21 +165,25 @@ def collect_verification_sources(
 
     from .architect_dispatches import ArchitectDispatchError, list_owner_dispatches
 
-    try:
-        dispatches = list_owner_dispatches(
-            repository.path,
-            state_root,
-            repository.repository_id,
-        )
-        approved_dispatches = normalize_approved_dispatches(
-            dispatches,
-            candidate["milestone_id"],
-        )
-    except ArchitectDispatchError as exc:
-        approved_dispatches = None
-        dispatch_failure_type = type(exc).__name__
-    else:
+    if approved_dispatches_override is not None:
+        approved_dispatches = approved_dispatches_override
         dispatch_failure_type = None
+    else:
+        try:
+            dispatches = list_owner_dispatches(
+                repository.path,
+                state_root,
+                repository.repository_id,
+            )
+            approved_dispatches = normalize_approved_dispatches(
+                dispatches,
+                candidate["milestone_id"],
+            )
+        except ArchitectDispatchError as exc:
+            approved_dispatches = None
+            dispatch_failure_type = type(exc).__name__
+        else:
+            dispatch_failure_type = None
 
     return {
         "procedure": procedure,

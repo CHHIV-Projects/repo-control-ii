@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import stat
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from repoctl import information_store
 from repoctl.information_store import (
     APPLICATION_ID,
     MINIMUM_SQLITE_VERSION,
@@ -31,6 +35,7 @@ from repoctl.information_store import (
     StoreIdentity,
     V1FixtureBundle,
     WorkflowDocumentLink,
+    dispatch_reconciliation_fingerprint,
     sqlite_runtime_status,
 )
 from repoctl.workflow import lifecycle
@@ -148,15 +153,380 @@ class InformationStoreTests(unittest.TestCase):
         controlled_floor = sqlite_runtime_status(MINIMUM_SQLITE_VERSION)
         controlled_backport = sqlite_runtime_status(
             (3, 45, 1),
-            fixed_backport_evidence="verified fixture evidence",
+            fixed_backport_evidence="unverified caller-provided evidence",
         )
         self.assertEqual(actual["sqlite_version_info"], sqlite3.sqlite_version_info)
         self.assertEqual(actual["production_eligible"], tuple(sqlite3.sqlite_version_info) >= MINIMUM_SQLITE_VERSION)
         self.assertFalse(controlled_low["production_eligible"])
         self.assertTrue(controlled_floor["production_eligible"])
-        self.assertEqual(controlled_backport["eligibility_basis"], "explicit_fixed_backport_evidence")
-        self.assertTrue(controlled_backport["production_eligible"])
+        self.assertEqual(controlled_backport["eligibility_basis"], "backport_evidence_unverified")
+        self.assertEqual(controlled_backport["fixed_backport_evidence_status"], "unverified")
+        self.assertFalse(controlled_backport["production_eligible"])
+        with self.assertRaises(ValueError):
+            sqlite_runtime_status((3, 45, 1), fixed_backport_evidence=" ")
         self.assertFalse(self.store.snapshot()["production_eligible"])
+
+    def test_quiesced_central_fixture_keeps_repository_and_milestone_scopes_separate(self) -> None:
+        self._create_prompt()
+        second_identity = replace(
+            self.identity,
+            milestone_id="M999.002",
+            prompt_path="fixtures/second_prompt.md",
+            selection_id="fixture-selection-2",
+            selection_revision=2,
+        )
+        second = self.store.register_disposable_scope(second_identity)
+        with self.assertRaises(IdentityMismatchError):
+            self.store.snapshot()
+        second.create_immutable_revision(DocumentRevisionInput(
+            document_id="second-prompt",
+            revision_id="second-revision",
+            logical_key=second_identity.prompt_path,
+            logical_type="PROMPT",
+            source_path=second_identity.prompt_path,
+            content="# Second milestone\n",
+        ))
+        self.assertEqual(len(second.list_documents()["documents"]), 1)
+        with self.assertRaises(StaleStateError):
+            second.register_disposable_scope(self.identity)
+        with self.assertRaises(IdentityMismatchError):
+            second.register_disposable_scope(replace(second_identity, repository_id="conflicting-id"))
+
+        other_identity = replace(
+            second_identity,
+            repository_id="other-repository-id",
+            repository_key="other-repository",
+            repository_root=str(self.root / "other-repository"),
+            selection_id="other-selection",
+            selection_revision=1,
+        )
+        other = second.register_disposable_scope(other_identity)
+        self.assertEqual(other.list_documents()["documents"], [])
+        self.assertEqual(len(second.list_documents()["documents"]), 1)
+        reopened = other.register_disposable_scope(replace(
+            self.identity, selection_id="fixture-selection-3", selection_revision=3
+        ))
+        self.assertEqual(reopened.get_revision("prompt-document", "prompt-revision-1")["content"], "# Fixture prompt\n")
+        with self.assertRaises(IdentityMismatchError):
+            second.snapshot()
+        with self.assertRaises(IdentityMismatchError):
+            self.store.snapshot()
+
+    def test_external_fixture_selection_change_during_write_rolls_back(self) -> None:
+        state = self.root / "fixture-selection-state"
+        pointer = state / self.identity.repository_id / "milestones" / "selection.json"
+        pointer.parent.mkdir(parents=True)
+        payload = {
+            "schema_version": 1,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+            "selection_id": self.identity.selection_id,
+            "selection_revision": self.identity.selection_revision,
+        }
+        pointer.write_text(json.dumps(payload), encoding="utf-8")
+        bound = InformationStore.open_disposable(
+            self.database_path,
+            self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+            selection_state_root=state,
+        )
+        context = multiprocessing.get_context("fork")
+        change_requested = context.Event()
+        changed = context.Event()
+
+        def replace_selection() -> None:
+            if not change_requested.wait(10):
+                raise RuntimeError("The fixture write did not reach its transaction.")
+            pointer.write_text(json.dumps({**payload, "selection_id": "different-selection"}), encoding="utf-8")
+            changed.set()
+
+        process = context.Process(target=replace_selection)
+        process.start()
+        self.addCleanup(lambda: process.join(timeout=10))
+        original_insert = bound._insert_revision
+
+        def pause_before_commit(connection, item) -> None:
+            original_insert(connection, item)
+            change_requested.set()
+            if not changed.wait(10):
+                raise RuntimeError("The competing fixture process did not update its selection.")
+
+        with patch.object(bound, "_insert_revision", side_effect=pause_before_commit):
+            with self.assertRaisesRegex(StaleStateError, "External fixture selection changed"):
+                bound.create_immutable_revision(DocumentRevisionInput(
+                    document_id="racing-prompt",
+                    revision_id="racing-revision",
+                    logical_key=FIXTURE_PROMPT_PATH,
+                    logical_type="PROMPT",
+                    source_path=FIXTURE_PROMPT_PATH,
+                    content="# Must roll back\n",
+                ))
+        process.join(timeout=10)
+        self.assertEqual(process.exitcode, 0)
+        with sqlite3.connect(self.database_path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM document").fetchone()[0], 0)
+        with self.assertRaises(StaleStateError):
+            bound.snapshot()
+
+    def test_v1_selection_binding_checks_exact_bytes_and_recovers_an_interrupted_fixture_bind(self) -> None:
+        self._create_prompt()
+        state = self.root / "v1-selection-state"
+        pointer = state / self.identity.repository_id / "milestones" / "selection.json"
+        pointer.parent.mkdir(parents=True)
+        original = json.dumps({
+            "schema_version": 1,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+        }, indent=2).encode("utf-8")
+        pointer.write_bytes(original)
+        request = {
+            "selection_state_root": state,
+            "expected_v1_sha256": hashlib.sha256(original).hexdigest(),
+            "allow_unsupported_runtime_for_fixture": True,
+        }
+        with self.assertRaisesRegex(InformationStoreError, "explicit disposable-fixture confirmation"):
+            InformationStore.bind_disposable_v1_selection(
+                self.database_path, self.identity, **request, fixture_cutover_confirmed=False,
+            )
+        with self.assertRaisesRegex(StaleStateError, "bytes changed"):
+            InformationStore.bind_disposable_v1_selection(
+                self.database_path, self.identity, **{**request, "expected_v1_sha256": "0" * 64},
+                fixture_cutover_confirmed=True,
+            )
+        self.assertEqual(pointer.read_bytes(), original)
+        original_writer = information_store._write_fixture_selection
+
+        def fail_after_write(*args) -> None:
+            original_writer(*args)
+            raise OSError("injected fixture bind interruption")
+
+        with patch("repoctl.information_store._write_fixture_selection", side_effect=fail_after_write):
+            with self.assertRaisesRegex(OSError, "injected fixture bind interruption"):
+                InformationStore.bind_disposable_v1_selection(
+                    self.database_path, self.identity, **request, fixture_cutover_confirmed=True,
+                )
+        bound = InformationStore.bind_disposable_v1_selection(
+            self.database_path, self.identity, **request, fixture_cutover_confirmed=True,
+        )
+        self.assertEqual(bound.identity, self.identity)
+        self.assertEqual(bound.snapshot()["event_count"], 0)
+        self.assertEqual(json.loads(pointer.read_bytes())["v1_selection_sha256"], request["expected_v1_sha256"])
+        with self.assertRaises(StaleStateError):
+            InformationStore.bind_disposable_v1_selection(
+                self.database_path, self.identity, **{**request, "expected_v1_sha256": "0" * 64},
+                fixture_cutover_confirmed=True,
+            )
+
+    def test_external_fixture_selection_switch_is_bound_and_stale_clients_fail_closed(self) -> None:
+        self._create_prompt()
+        second_identity = replace(
+            self.identity,
+            milestone_id="M999.002",
+            prompt_path="fixtures/second_prompt.md",
+            selection_id="fixture-selection-2",
+            selection_revision=2,
+        )
+        second = self.store.register_disposable_scope(second_identity)
+        second.create_immutable_revision(DocumentRevisionInput(
+            document_id="second-prompt",
+            revision_id="second-revision",
+            logical_key=second_identity.prompt_path,
+            logical_type="PROMPT",
+            source_path=second_identity.prompt_path,
+            content="# Second milestone\n",
+        ))
+        state = self.root / "switch-state"
+        pointer = state / second_identity.repository_id / "milestones" / "selection.json"
+        pointer.parent.mkdir(parents=True)
+        pointer.write_text(json.dumps({
+            "schema_version": 1,
+            "repository_id": second_identity.repository_id,
+            "milestone_id": second_identity.milestone_id,
+            "prompt_path": second_identity.prompt_path,
+            "selection_id": second_identity.selection_id,
+            "selection_revision": second_identity.selection_revision,
+        }), encoding="utf-8")
+        bound = InformationStore.open_disposable(
+            self.database_path, second_identity,
+            allow_unsupported_runtime_for_fixture=True,
+            selection_state_root=state,
+        )
+        with self.assertRaises(IdentityMismatchError):
+            bound.switch_disposable_selection(
+                "M999.404",
+                expected_selection_id=second_identity.selection_id,
+                expected_selection_revision=second_identity.selection_revision,
+            )
+        first = bound.switch_disposable_selection(
+            self.identity.milestone_id,
+            expected_selection_id=second_identity.selection_id,
+            expected_selection_revision=second_identity.selection_revision,
+        )
+        self.assertEqual(first.identity.selection_revision, 3)
+        self.assertEqual(first.get_revision("prompt-document", "prompt-revision-1")["content"], "# Fixture prompt\n")
+        with self.assertRaises(StaleStateError):
+            bound.snapshot()
+        with self.assertRaises(StaleStateError):
+            bound.switch_disposable_selection(
+                self.identity.milestone_id,
+                expected_selection_id=second_identity.selection_id,
+                expected_selection_revision=second_identity.selection_revision,
+            )
+        reopened = InformationStore.open_disposable_from_external_selection(
+            self.database_path,
+            repository_id=self.identity.repository_id,
+            repository_key=self.identity.repository_key,
+            repository_root=self.identity.repository_root,
+            selection_state_root=state,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        self.assertEqual(reopened.identity, first.identity)
+        self.assertEqual(reopened.snapshot()["event_count"], 0)
+
+    def test_interrupted_fixture_selection_switch_requires_explicit_bound_recovery(self) -> None:
+        self._create_prompt()
+        second_identity = replace(
+            self.identity,
+            milestone_id="M999.002",
+            prompt_path="fixtures/second_prompt.md",
+            selection_id="fixture-selection-2",
+            selection_revision=2,
+        )
+        second = self.store.register_disposable_scope(second_identity)
+        second.create_immutable_revision(DocumentRevisionInput(
+            document_id="second-prompt",
+            revision_id="second-revision",
+            logical_key=second_identity.prompt_path,
+            logical_type="PROMPT",
+            source_path=second_identity.prompt_path,
+            content="# Second milestone\n",
+        ))
+        state = self.root / "interrupted-selection-state"
+        pointer = state / second_identity.repository_id / "milestones" / "selection.json"
+        pointer.parent.mkdir(parents=True)
+        pointer.write_text(json.dumps({
+            "schema_version": 1,
+            "repository_id": second_identity.repository_id,
+            "milestone_id": second_identity.milestone_id,
+            "prompt_path": second_identity.prompt_path,
+            "selection_id": second_identity.selection_id,
+            "selection_revision": second_identity.selection_revision,
+        }), encoding="utf-8")
+        bound = InformationStore.open_disposable(
+            self.database_path, second_identity,
+            allow_unsupported_runtime_for_fixture=True,
+            selection_state_root=state,
+        )
+        from repoctl.information_store import _write_fixture_selection
+
+        def fail_after_pointer_write(*args) -> None:
+            _write_fixture_selection(*args)
+            raise OSError("injected failure before database commit")
+
+        with patch("repoctl.information_store._write_fixture_selection", side_effect=fail_after_pointer_write):
+            with self.assertRaisesRegex(OSError, "injected failure"):
+                bound.switch_disposable_selection(
+                    self.identity.milestone_id,
+                    expected_selection_id=second_identity.selection_id,
+                    expected_selection_revision=second_identity.selection_revision,
+                )
+        published = json.loads(pointer.read_text(encoding="utf-8"))
+        target = replace(
+            self.identity,
+            selection_id=published["selection_id"],
+            selection_revision=published["selection_revision"],
+        )
+        with self.assertRaises(IdentityMismatchError):
+            InformationStore.open_disposable_from_external_selection(
+                self.database_path,
+                repository_id=target.repository_id,
+                repository_key=target.repository_key,
+                repository_root=target.repository_root,
+                selection_state_root=state,
+                allow_unsupported_runtime_for_fixture=True,
+            )
+        recovery = {
+            "expected_external": target,
+            "expected_mirror": second_identity,
+            "selection_state_root": state,
+            "allow_unsupported_runtime_for_fixture": True,
+        }
+        with self.assertRaisesRegex(InformationStoreError, "explicit disposable-fixture confirmation"):
+            InformationStore.recover_disposable_selection_mirror(
+                self.database_path, **recovery, fixture_recovery_confirmed=False,
+            )
+        with self.assertRaises(StaleStateError):
+            InformationStore.recover_disposable_selection_mirror(
+                self.database_path,
+                **{**recovery, "expected_external": replace(target, selection_id="wrong-selection")},
+                fixture_recovery_confirmed=True,
+            )
+        restored = InformationStore.recover_disposable_selection_mirror(
+            self.database_path, **recovery, fixture_recovery_confirmed=True,
+        )
+        self.assertEqual(restored.identity, target)
+        self.assertEqual(restored.get_revision("prompt-document", "prompt-revision-1")["content"], "# Fixture prompt\n")
+        self.assertEqual(restored.snapshot()["event_count"], 0)
+        with self.assertRaises(StaleStateError):
+            bound.snapshot()
+
+    def test_external_fixture_rejects_database_replacement_before_commit(self) -> None:
+        state = self.root / "replacement-selection-state"
+        pointer = state / self.identity.repository_id / "milestones" / "selection.json"
+        pointer.parent.mkdir(parents=True)
+        pointer.write_text(json.dumps({
+            "schema_version": 1,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+            "selection_id": self.identity.selection_id,
+            "selection_revision": self.identity.selection_revision,
+        }), encoding="utf-8")
+        bound = InformationStore.open_disposable(
+            self.database_path, self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+            selection_state_root=state,
+        )
+        replacement = self.root / "replacement.sqlite3"
+        replacement.write_bytes(b"not the bound database")
+        original_insert = bound._insert_revision
+
+        def replace_before_commit(connection, item) -> None:
+            original_insert(connection, item)
+            os.replace(replacement, self.database_path)
+
+        with patch.object(bound, "_insert_revision", side_effect=replace_before_commit):
+            with self.assertRaisesRegex(IdentityMismatchError, "was replaced"):
+                bound.create_immutable_revision(DocumentRevisionInput(
+                    document_id="replaced-prompt",
+                    revision_id="replaced-revision",
+                    logical_key=FIXTURE_PROMPT_PATH,
+                    logical_type="PROMPT",
+                    source_path=FIXTURE_PROMPT_PATH,
+                    content="# Must not be acknowledged\n",
+                ))
+        self.assertEqual(self.database_path.read_bytes(), b"not the bound database")
+
+    def test_operator_runtime_probe_reports_the_linked_library_and_enforces_the_gate(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "ops" / "verify_sqlite_runtime.py"
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        report = json.loads(result.stdout)
+        expected_eligible = tuple(sqlite3.sqlite_version_info) >= MINIMUM_SQLITE_VERSION
+        self.assertEqual(result.returncode, 0 if expected_eligible else 2, result.stderr)
+        self.assertEqual(report["python_executable"], str(Path(sys.executable).resolve()))
+        self.assertEqual(report["sqlite_version_info"], list(sqlite3.sqlite_version_info))
+        self.assertEqual(report["production_eligible"], expected_eligible)
+        self.assertIn("sqlite_source_id", report)
+        self.assertTrue(Path(report["sqlite_extension"]).is_file())
+        if Path("/proc/self/maps").is_file():
+            self.assertIn("libsqlite3", " ".join(report["loaded_sqlite_libraries"]))
 
     def test_runtime_gate_requires_explicit_fixture_override_on_old_runtime(self) -> None:
         if tuple(sqlite3.sqlite_version_info) >= MINIMUM_SQLITE_VERSION:
@@ -202,6 +572,27 @@ class InformationStoreTests(unittest.TestCase):
                 allow_unsupported_runtime_for_fixture=True,
             )
         self.assertFalse(absent_path.exists())
+
+    def test_replaced_database_requires_a_new_binding(self) -> None:
+        original_identity = self.store.database_identity()
+        replacement_path = self.root / "replacement.sqlite3"
+        InformationStore.initialize_disposable(
+            replacement_path,
+            self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        os.replace(replacement_path, self.database_path)
+        with self.assertRaisesRegex(IdentityMismatchError, "replaced"):
+            self.store.snapshot()
+        with self.assertRaisesRegex(IdentityMismatchError, "replaced"):
+            self.store.database_identity()
+        reopened = InformationStore.open_disposable(
+            self.database_path,
+            self.identity,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        self.assertNotEqual(reopened.database_identity(), original_identity)
+        self.assertEqual(reopened.snapshot()["event_count"], 0)
 
     def test_unknown_application_or_schema_id_is_rejected_without_repair(self) -> None:
         for name, app_id, user_version in (
@@ -723,6 +1114,114 @@ class InformationStoreTests(unittest.TestCase):
                 **{**decision, "history_id": "c" * 32, "recorded_at": "2026-01-01T00:00:01+00:00"}
             )
 
+    def test_prompt_dispatch_creates_exact_unselected_draft_atomically_after_fixture_decision(self) -> None:
+        dispatch_id = "a" * 32
+        proposal = self.store.create_pending_dispatch(
+            dispatch_id=dispatch_id,
+            dispatch_type="PROMPT",
+            milestone_id="M999.002",
+            milestone_root="docs/milestones",
+            body="# Proposed fixture prompt",
+            title="Proposed fixture",
+        )
+        self.assertEqual(self.store.list_disposable_milestones()["candidates"], [])
+        decision = {
+            "dispatch_id": dispatch_id,
+            "history_id": "b" * 32,
+            "status": "APPROVED",
+            "actor_role": "product_owner",
+            "actor_attribution": "Reported fixture PO",
+            "trusted_fixture_po_confirmation": True,
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "milestone_root": "docs/milestones",
+            "expected_fingerprint": dispatch_reconciliation_fingerprint(proposal),
+        }
+        with self.assertRaises(DispatchDecisionError):
+            self.store.record_dispatch_decision(**{**decision, "trusted_fixture_po_confirmation": False})
+        with self.assertRaises(StaleStateError):
+            self.store.record_dispatch_decision(**{**decision, "expected_fingerprint": "0" * 64})
+        original_insert = self.store._insert_revision
+
+        def fail_after_revision(*args, **kwargs) -> None:
+            original_insert(*args, **kwargs)
+            raise RuntimeError("injected fixture decision failure")
+
+        with patch.object(self.store, "_insert_revision", side_effect=fail_after_revision):
+            with self.assertRaisesRegex(RuntimeError, "injected fixture decision"):
+                self.store.record_dispatch_decision(**decision)
+        self.assertEqual(self.store.get_dispatch(dispatch_id)["status"], "PENDING")
+        self.assertEqual(len(self.store.list_dispatch_history(dispatch_id)), 1)
+        self.assertEqual(self.store.list_disposable_milestones()["candidates"], [])
+        approved = self.store.record_dispatch_decision(**decision)
+        self.assertEqual(approved["status"], "APPROVED")
+        self.assertFalse(approved["authorization_granted"])
+        self.assertEqual(self.store.record_dispatch_decision(**decision), approved)
+        history = self.store.list_dispatch_history(dispatch_id)
+        self.assertEqual([row["record_kind"] for row in history], ["CREATED", "DECISION"])
+        binding = history[-1]["payload"]["prompt_binding"]
+        self.assertEqual(binding["source_path"], "docs/milestones/M999.002_proposed_fixture_prompt.md")
+        self.assertEqual(binding["content_sha256"], hashlib.sha256(b"# Proposed fixture prompt\n").hexdigest())
+        self.assertEqual(self.store.snapshot()["event_count"], 0)
+        self.assertEqual(self.store.identity.milestone_id, "M999.001")
+        candidate = self.store.list_disposable_milestones()["candidates"][0]
+        self.assertEqual(candidate["milestone_id"], "M999.002")
+        self.assertFalse((self.repository_root / binding["source_path"]).exists())
+        revisions = self.store.list_repository_revisions()
+        self.assertEqual(revisions[0]["status"], "draft")
+        self.assertEqual(revisions[0]["content"], "# Proposed fixture prompt\n")
+
+        duplicate = self.store.create_pending_dispatch(
+            dispatch_id="c" * 32, dispatch_type="PROMPT", milestone_id="M999.002",
+            milestone_root="docs/milestones", body="Another proposal", title="Another proposal",
+        )
+        with self.assertRaisesRegex(DispatchDecisionError, "already exists"):
+            self.store.record_dispatch_decision(**{
+                **decision, "dispatch_id": duplicate["dispatch_id"], "history_id": "d" * 32,
+                "expected_fingerprint": dispatch_reconciliation_fingerprint(duplicate),
+            })
+        self.assertEqual(self.store.get_dispatch(duplicate["dispatch_id"])["status"], "PENDING")
+
+    def test_repository_dispatch_import_retry_detects_changed_snapshot_and_stored_state(self) -> None:
+        source = self.root / "dispatch-source" / self.identity.repository_id / "architect_dispatches.json"
+        source.parent.mkdir(parents=True)
+        timestamp = "2026-01-01T00:00:00+00:00"
+        record = {
+            "dispatch_id": "e" * 32,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": "M999.099",
+            "type": "PROMPT",
+            "status": "PENDING",
+            "title": "Future fixture",
+            "slug": "future_fixture",
+            "canonical_destination": "docs/milestones/M999.099_future_fixture_prompt.md",
+            "body": "# Proposed prompt\n",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        source_bytes = json.dumps({
+            "schema_version": 1, "repository_id": self.identity.repository_id, "dispatches": [record],
+        }).encode("utf-8")
+        source.write_bytes(source_bytes)
+        request = {"source_path": str(source), "source_bytes": source_bytes}
+        receipt = self.store.reconcile_disposable_dispatch_snapshot(**request)
+        self.assertEqual(receipt["source_count"], 1)
+        self.assertEqual(receipt["imported_missing_count"], 1)
+        self.assertEqual(self.store.reconcile_disposable_dispatch_snapshot(**request), receipt)
+        self.assertEqual(self.store.list_dispatch_history(record["dispatch_id"])[0]["po_confirmed"], None)
+        changed = json.dumps({
+            "schema_version": 1, "repository_id": self.identity.repository_id,
+            "dispatches": [{**record, "body": "# Different source\n"}],
+        }).encode("utf-8")
+        with self.assertRaises(ImportSourceError):
+            self.store.reconcile_disposable_dispatch_snapshot(**{**request, "source_bytes": changed})
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE architect_dispatch SET status = 'REJECTED' WHERE dispatch_id = ?",
+                (record["dispatch_id"],),
+            )
+        with self.assertRaisesRegex(ImportSourceError, "differs from its unmodified source"):
+            self.store.reconcile_disposable_dispatch_snapshot(**request)
+
     def test_import_preserves_exact_sources_and_does_not_invent_approvals_or_links(self) -> None:
         events = _closeout_history()
         candidate = {
@@ -793,6 +1292,9 @@ class InformationStoreTests(unittest.TestCase):
         legacy_history = self.store.list_dispatch_history("d" * 32)
         self.assertEqual(legacy_history[0]["record_kind"], "LEGACY_SNAPSHOT")
         self.assertIsNone(legacy_history[0]["po_confirmed"])
+        guidance = self.store.snapshot()
+        self.assertEqual(guidance["confirmed_guidance"], [])
+        self.assertEqual([item["dispatch_id"] for item in guidance["unverified_guidance"]], ["d" * 32])
         self.assertEqual(self._counts()["workflow_document_link"], 0)
         for dispatch_path in (
             str(self.root / "different-repository-id" / "architect_dispatches.json"),
@@ -801,6 +1303,37 @@ class InformationStoreTests(unittest.TestCase):
             with self.subTest(dispatch_path=dispatch_path):
                 with self.assertRaises(ImportSourceError):
                     self.store.import_v1_fixture(replace(bundle, dispatch_path=dispatch_path))
+        fingerprint = information_store.dispatch_reconciliation_fingerprint(dispatch)
+        reconciliation = {
+            "dispatch_id": dispatch["dispatch_id"],
+            "history_id": "f" * 32,
+            "status": "APPROVED",
+            "expected_fingerprint": fingerprint,
+            "trusted_fixture_po_confirmation": True,
+        }
+        with self.assertRaises(DispatchDecisionError):
+            self.store.reconcile_imported_guidance(
+                **{**reconciliation, "trusted_fixture_po_confirmation": False}
+            )
+        with self.assertRaises(StaleStateError):
+            self.store.reconcile_imported_guidance(
+                **{**reconciliation, "expected_fingerprint": "0" * 64}
+            )
+        confirmed = self.store.reconcile_imported_guidance(**reconciliation)
+        self.assertEqual(self.store.reconcile_imported_guidance(**reconciliation), confirmed)
+        self.assertEqual(self.store.snapshot()["unverified_guidance"], [])
+        self.assertEqual(
+            [item["dispatch_id"] for item in self.store.snapshot()["confirmed_guidance"]],
+            [dispatch["dispatch_id"]],
+        )
+        history = self.store.list_dispatch_history(dispatch["dispatch_id"])
+        self.assertEqual([item["record_kind"] for item in history], ["LEGACY_SNAPSHOT", "DECISION"])
+        self.assertEqual(history[-1]["payload"]["historical_approval"], "UNKNOWN/NOT VERIFIED")
+        self.assertEqual(self.store.read_import_source(
+            next(item["source_id"] for item in sources if item["source_kind"] == "dispatch")
+        ), dispatch_bytes)
+        with self.assertRaises(IdempotencyConflictError):
+            self.store.reconcile_imported_guidance(**{**reconciliation, "status": "REJECTED"})
 
     def test_malformed_import_rolls_back_all_fixture_records(self) -> None:
         bundle = V1FixtureBundle(
