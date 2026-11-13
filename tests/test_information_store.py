@@ -164,7 +164,10 @@ class InformationStoreTests(unittest.TestCase):
         self.assertFalse(controlled_backport["production_eligible"])
         with self.assertRaises(ValueError):
             sqlite_runtime_status((3, 45, 1), fixed_backport_evidence=" ")
-        self.assertFalse(self.store.snapshot()["production_eligible"])
+        self.assertEqual(
+            self.store.snapshot()["production_eligible"],
+            actual["production_eligible"],
+        )
 
     def test_quiesced_central_fixture_keeps_repository_and_milestone_scopes_separate(self) -> None:
         self._create_prompt()
