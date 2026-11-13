@@ -12,7 +12,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 import _sqlite3
 
-from repoctl.information_store import sqlite_runtime_status
+from repoctl.sqlite_runtime import sqlite_runtime_status
 
 
 def build_report() -> dict[str, object]:

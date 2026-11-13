@@ -169,6 +169,20 @@ class InformationStoreTests(unittest.TestCase):
             actual["production_eligible"],
         )
 
+    def test_runtime_probe_does_not_require_site_packages_or_flask(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        probe = repository_root / "ops/verify_sqlite_runtime.py"
+        result = subprocess.run(
+            [sys.executable, "-S", str(probe)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        report = json.loads(result.stdout)
+        expected_eligible = tuple(sqlite3.sqlite_version_info) >= MINIMUM_SQLITE_VERSION
+        self.assertEqual(result.returncode, 0 if expected_eligible else 2, result.stderr)
+        self.assertEqual(report["production_eligible"], expected_eligible)
+
     def test_quiesced_central_fixture_keeps_repository_and_milestone_scopes_separate(self) -> None:
         self._create_prompt()
         second_identity = replace(
