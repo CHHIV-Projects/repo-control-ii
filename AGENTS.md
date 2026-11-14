@@ -3,7 +3,7 @@
 <!-- This template is rendered into a managed repository's host entrypoint. -->
 
 This file is generated from Repo Control shared procedure release
-`1.4.0`. Follow current Repo Control state and the active prompt; this
+`1.5.0`. Follow current Repo Control state and the active prompt; this
 bootstrap and the repository-specific overlay are procedures, not authority.
 
 ## Start from current state
@@ -15,7 +15,7 @@ Do not rely on chat history, packets, filenames, or prior milestone state.
 Run the canonical Repo Control CLI from any managed worktree:
 
 ```bash
-/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-context
+/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.cli coder-context
 ```
 
 Read the returned active prompt, repository identity, lifecycle, authorization,
@@ -58,7 +58,7 @@ fresh bounded verification, supplying the intended identity from the task or
 trusted current context:
 
 ```bash
-/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.cli coder-verify \
+/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.cli coder-verify \
   --trigger NEW \
   --expected-repository-key <key> \
   --expected-repository-id <id> \
@@ -66,6 +66,30 @@ trusted current context:
   --expected-milestone-id <milestone-id> \
   --acknowledge-git-boundary
 ```
+
+When `coder-context` reports file/ledger authority, use the verification
+command as shown. When it reports InformationStore authority, also bind
+verification to the exact selected and approved prompt values returned by
+current context:
+
+```bash
+/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.cli coder-verify \
+  --trigger NEW \
+  --expected-repository-key <key> \
+  --expected-repository-id <id> \
+  --expected-repository-root <absolute-path> \
+  --expected-milestone-id <milestone-id> \
+  --expected-selection-id <selection-id> \
+  --expected-selection-revision <selection-revision> \
+  --expected-prompt-document-id <prompt-document-id> \
+  --expected-prompt-revision-id <prompt-revision-id> \
+  --expected-prompt-sha256 <prompt-content-sha256> \
+  --acknowledge-git-boundary
+```
+
+Use `--allow-materialized-prompt` only when that exact selected approved
+prompt is materialized in the worktree and its bytes match the approved
+content hash. Other dirty paths remain subject to the normal Git preflight.
 
 The command resolves current Repo Control state, checks those expected
 repository and milestone bindings, and records the bounded observed snapshot.

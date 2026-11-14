@@ -1,5 +1,5 @@
 schema_version = 1
-release = "1.4.0"
+release = "1.5.0"
 overlay_schema_version = 1
 overlay_marker = "<!-- repo-control-project-overlay:v1 -->"
 lock_path = ".repo-control/shared-procedure.lock.toml"
@@ -7,7 +7,7 @@ host_entrypoint = ".github/copilot-instructions.md"
 
 [[sources]]
 path = "bootstrap.md"
-sha256 = "786b20d6b5c79080251627ebc8bbe1b93bca417963fa6502cd39d9575168d0d3"
+sha256 = "17dc9ee08e6be20a439497a800f238a57bbedd5d2ac69b7a67b03f3d912e1093"
 
 [[sources]]
 path = "workflow_core.md"
@@ -23,7 +23,7 @@ sha256 = "62897fd027f19101a00a026ad9aff76f933ca23ca1c0b374ca8659eeb7fbde60"
 
 [[sources]]
 path = "skills/repo-control-validation-closeout/SKILL.md"
-sha256 = "9c2d79af8eb9e5e1da87ddb10b2023cb0af47f3c9c49d48b35e3332fc736b1eb"
+sha256 = "bd6f4d2cb6c25634da2b3d83ad36d646cfe22f235a6998ccf044496ab3602903"
 
 [[artifacts]]
 source = "bootstrap.md"

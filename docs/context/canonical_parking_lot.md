@@ -696,6 +696,32 @@ Preserve explicit review before mutation and the existing Coder no-Git-mutation 
 
 ---
 
+## WORKFLOW-008 - Stale Host Bootstrap After Procedure Apply
+
+### Status
+
+Deferred
+
+### Summary
+
+Investigate why a fresh VS Code Copilot session received the 1.4.0 bootstrap after Repo Control II applied 1.5.0. The generated files on disk matched the published 1.5.0 manifest, and Repo Control context verification passed. Automatic instruction delivery failed. The source of the old text was not established.
+
+### Why It Is Parked
+
+The installation and context verification results are established. Keep the host-delivery investigation separate from the current database work. Do not treat manual recovery as proof of automatic delivery.
+
+### Trigger for Reconsideration
+
+Revisit before relying on automatic bootstrap for SQLite cutover, or sooner if another procedure update reproduces the mismatch.
+
+### Likely Scope
+
+Identify the instruction source used by a fresh Copilot session and compare the delivered text with the installed release. Add canonical guidance for a version mismatch: treat the host-supplied text as stale, follow the supported context refresh and verification procedure before consequential work, and record automatic delivery separately from coder-verify. A VERIFIED result does not prove the host loaded the current instructions.
+
+### Notes
+
+M010.013 evidence: automatic delivery failure event 8d3db7cee83e49ebae162f4629679742 and context verification event 0e6b632151f44771843b4e6c69318e47. Cache reuse and reading the committed Git copy remain hypotheses, not findings.
+
 ## UI-001 — Dashboard Refresh Status HTTP 500
 
 ### Status
