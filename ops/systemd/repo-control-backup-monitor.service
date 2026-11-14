@@ -1,0 +1,17 @@
+[Unit]
+Description=Check freshness and integrity evidence for Repo Control NAS backups
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=chuck
+Group=chuck
+WorkingDirectory=/home/chuck/projects/repo-control-ii
+EnvironmentFile=/etc/repo-control/backup.env
+ExecStart=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3-m010014-clean/bin/python -m repoctl.backup monitor
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=-/mnt/nas/repo-control

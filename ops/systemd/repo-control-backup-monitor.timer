@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Repo Control NAS backup health independently every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=1min
+Persistent=true
+Unit=repo-control-backup-monitor.service
+
+[Install]
+WantedBy=timers.target

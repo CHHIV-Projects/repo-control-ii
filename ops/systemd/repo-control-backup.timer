@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Repo Control NAS backup every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+AccuracySec=1min
+Persistent=true
+Unit=repo-control-backup.service
+
+[Install]
+WantedBy=timers.target

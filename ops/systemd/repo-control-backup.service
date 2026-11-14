@@ -1,0 +1,19 @@
+[Unit]
+Description=Create and verify a local Repo Control SQLite snapshot on the NAS
+After=network-online.target remote-fs.target
+RequiresMountsFor=/mnt/nas/repo-control
+
+[Service]
+Type=oneshot
+User=chuck
+Group=chuck
+WorkingDirectory=/home/chuck/projects/repo-control-ii
+EnvironmentFile=/etc/repo-control/backup.env
+ExecStart=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3-m010014-clean/bin/python -m repoctl.backup backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/chuck/.local/share/repoctl-sqlite/repo-control-ii/information-store.sqlite3
+ReadWritePaths=/home/chuck/.local/state/repo-control-backup/staging /mnt/nas/repo-control/repo-control-ii
