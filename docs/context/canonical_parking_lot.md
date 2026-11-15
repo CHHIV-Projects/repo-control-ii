@@ -722,6 +722,32 @@ Identify the instruction source used by a fresh Copilot session and compare the 
 
 M010.013 evidence: automatic delivery failure event 8d3db7cee83e49ebae162f4629679742 and context verification event 0e6b632151f44771843b4e6c69318e47. Cache reuse and reading the committed Git copy remain hypotheses, not findings.
 
+## WORKFLOW-009 - Cross-Milestone Bug Resolution Tracking
+
+### Status
+
+Deferred
+
+### Summary
+
+Repo Control can record a bug in one milestone and accept its fix in another, but the original bug can still appear open. A reference in the follow-up closeout preserves the evidence but does not update the bug list.
+
+### Why It Is Parked
+
+Use the accepted follow-up closeout as the resolution record for now. Do not reopen a closed milestone or reclassify a bug just to clear its open flag.
+
+### Trigger for Reconsideration
+
+Revisit when reviewing workflow usability or when the open-bug list can no longer reliably distinguish work still needed from fixes accepted in later milestones.
+
+### Likely Scope
+
+Let the Product Owner link an original bug to an accepted follow-up milestone and its verification evidence. Preserve the original discovery and classification. Show the linked resolution in the original milestone and exclude it from unresolved-bug lists. Distinguish a verified fix from deployment or operational checks that are still pending.
+
+### Notes
+
+Example: M010.015 recorded the WAL/SHM cleanup bug in event be1d9d235ecd4c808a9340b908244d59. M010.016 implemented and locally verified the fix, but Repo Control rejected a cross-milestone bug-fixed event. Verification on the Synology SMB mount is separate. This item tracks the workflow gap, not the cleanup bug itself.
+
 ## UI-001 — Dashboard Refresh Status HTTP 500
 
 ### Status

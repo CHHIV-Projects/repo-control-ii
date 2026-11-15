@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -359,6 +360,64 @@ def _remove_if_present(path: Path | None) -> None:
             pass
 
 
+def _sqlite_sidecar_paths(path: Path) -> tuple[Path, Path]:
+    return (
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    )
+
+
+def _existing_sqlite_sidecars(path: Path) -> frozenset[Path]:
+    existing = []
+    for sidecar in _sqlite_sidecar_paths(path):
+        try:
+            sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        existing.append(sidecar)
+    return frozenset(existing)
+
+
+def _remove_new_sqlite_sidecars(path: Path | None, preexisting: frozenset[Path]) -> None:
+    if path is None:
+        return
+    for sidecar in _sqlite_sidecar_paths(path):
+        if sidecar in preexisting:
+            continue
+        try:
+            metadata = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BackupError(f"Refusing to remove a non-regular SQLite sidecar: {sidecar.name}")
+        if sidecar.name.endswith("-wal") and metadata.st_size != 0:
+            raise BackupError(f"Refusing to remove a non-empty SQLite WAL sidecar: {sidecar.name}")
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _lock_manifest(path: Path) -> int:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise BackupError("The backup manifest is not a regular file.")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise BackupError("Another restore operation is already running for this backup.") from exc
+        except OSError as exc:
+            raise BackupError("The backup manifest could not be locked for restore.") from exc
+    except (OSError, BackupError):
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def create_verified_backup(
     source: Path,
     staging: Path,
@@ -386,7 +445,9 @@ def create_verified_backup(
         stamp = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         stem = f"repo-control-{stamp}-{uuid.uuid4().hex[:12]}"
         local_snapshot: Path | None = None
+        local_snapshot_sidecars: frozenset[Path] = frozenset()
         remote_partial: Path | None = None
+        remote_partial_sidecars: frozenset[Path] = frozenset()
         manifest_partial: Path | None = None
         final_database: Path | None = None
         final_manifest: Path | None = None
@@ -398,6 +459,9 @@ def create_verified_backup(
             os.fchmod(descriptor, 0o600)
             os.close(descriptor)
             local_snapshot = Path(local_name)
+            local_snapshot_sidecars = _existing_sqlite_sidecars(local_snapshot)
+            if local_snapshot_sidecars:
+                raise BackupError("A new local snapshot has unexpected pre-existing SQLite sidecars.")
             source_uri = f"{source_path.as_uri()}?mode=ro"
             source_connection = sqlite3.connect(source_uri, uri=True, timeout=30)
             try:
@@ -416,6 +480,9 @@ def create_verified_backup(
             manifest_partial = destination_path / f".{stem}.manifest.json.partial"
             final_manifest = destination_path / f"{stem}.manifest.json"
             _copy_to_partial(local_snapshot, remote_partial)
+            remote_partial_sidecars = _existing_sqlite_sidecars(remote_partial)
+            if remote_partial_sidecars:
+                raise BackupError("A new destination partial has unexpected pre-existing SQLite sidecars.")
             backup_hash = _sha256_file(remote_partial)
             if backup_hash != _sha256_file(local_snapshot):
                 raise BackupError("The transferred database does not match the local snapshot bytes.")
@@ -423,6 +490,7 @@ def create_verified_backup(
                 remote_partial, expected_repository_id, expected_repository_key, expected_repository_root,
             ) != snapshot:
                 raise BackupError("The destination copy does not match the consistent local SQLite snapshot.")
+            _remove_new_sqlite_sidecars(remote_partial, remote_partial_sidecars)
             verified_at = (now or datetime.now(UTC)).astimezone(UTC)
             manifest: dict[str, Any] = {
                 "manifest_version": MANIFEST_VERSION,
@@ -443,6 +511,8 @@ def create_verified_backup(
             published = True
             return {**manifest, "manifest_path": str(final_manifest)}
         finally:
+            _remove_new_sqlite_sidecars(local_snapshot, local_snapshot_sidecars)
+            _remove_new_sqlite_sidecars(remote_partial, remote_partial_sidecars)
             _remove_if_present(local_snapshot)
             _remove_if_present(remote_partial)
             _remove_if_present(manifest_partial)
@@ -499,9 +569,15 @@ def _read_verified_manifest(
         "repository_root": expected_repository_root,
     }:
         raise BackupError("The backup manifest belongs to a different repository.")
-    actual_snapshot = _store_snapshot(
-        database, expected_repository_id, expected_repository_key, expected_repository_root,
-    )
+    sidecars_before = _existing_sqlite_sidecars(database)
+    if sidecars_before:
+        raise BackupError("The verified backup has pre-existing SQLite sidecars.")
+    try:
+        actual_snapshot = _store_snapshot(
+            database, expected_repository_id, expected_repository_key, expected_repository_root,
+        )
+    finally:
+        _remove_new_sqlite_sidecars(database, sidecars_before)
     if actual_snapshot != snapshot:
         raise BackupError("The backup database does not match its verified snapshot manifest.")
     return manifest, database
@@ -516,45 +592,63 @@ def restore_verified_backup(
     expected_repository_key: str,
     expected_repository_root: str,
 ) -> Path:
-    root = _require_directory(restore_root, "Separate restore directory")
-    target = destination.absolute()
-    if target.parent.resolve(strict=True) != root or target.exists() or target.is_symlink():
-        raise BackupError("Restore destination must be a new direct child of the separate restore directory.")
-    _, backup = _read_verified_manifest(
-        manifest_path,
-        expected_repository_id=expected_repository_id,
-        expected_repository_key=expected_repository_key,
-        expected_repository_root=expected_repository_root,
-    )
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".repo-control-restore-", suffix=".partial", dir=root)
-    os.fchmod(descriptor, 0o600)
-    os.close(descriptor)
-    temporary = Path(temporary_name)
+    manifest_lock = _lock_manifest(manifest_path)
     try:
-        source_connection = sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True, timeout=30)
-        try:
-            target_connection = sqlite3.connect(temporary, timeout=30)
-            try:
-                source_connection.backup(target_connection, pages=512, sleep=0.1)
-            finally:
-                target_connection.close()
-        finally:
-            source_connection.close()
-        restored = _store_snapshot(
-            temporary, expected_repository_id, expected_repository_key, expected_repository_root,
-        )
-        manifest, _ = _read_verified_manifest(
+        root = _require_directory(restore_root, "Separate restore directory")
+        target = destination.absolute()
+        if target.parent.resolve(strict=True) != root or target.exists() or target.is_symlink():
+            raise BackupError("Restore destination must be a new direct child of the separate restore directory.")
+        _, backup = _read_verified_manifest(
             manifest_path,
             expected_repository_id=expected_repository_id,
             expected_repository_key=expected_repository_key,
             expected_repository_root=expected_repository_root,
         )
-        if restored != manifest["snapshot"]:
-            raise BackupError("The restored database does not match the verified backup snapshot.")
-        os.replace(temporary, target)
-        return target
+        backup_sidecars_before = _existing_sqlite_sidecars(backup)
+        if backup_sidecars_before:
+            raise BackupError("The verified backup has pre-existing SQLite sidecars.")
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".repo-control-restore-", suffix=".partial", dir=root)
+        os.fchmod(descriptor, 0o600)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        temporary_sidecars_before = _existing_sqlite_sidecars(temporary)
+        try:
+            if temporary_sidecars_before:
+                raise BackupError("A new restore temporary has unexpected pre-existing SQLite sidecars.")
+            try:
+                source_connection = sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True, timeout=30)
+                try:
+                    target_connection = sqlite3.connect(temporary, timeout=30)
+                    try:
+                        source_connection.backup(target_connection, pages=512, sleep=0.1)
+                    finally:
+                        target_connection.close()
+                finally:
+                    source_connection.close()
+            finally:
+                _remove_new_sqlite_sidecars(backup, backup_sidecars_before)
+            restored = _store_snapshot(
+                temporary, expected_repository_id, expected_repository_key, expected_repository_root,
+            )
+            _remove_new_sqlite_sidecars(temporary, temporary_sidecars_before)
+            manifest, _ = _read_verified_manifest(
+                manifest_path,
+                expected_repository_id=expected_repository_id,
+                expected_repository_key=expected_repository_key,
+                expected_repository_root=expected_repository_root,
+            )
+            if restored != manifest["snapshot"]:
+                raise BackupError("The restored database does not match the verified backup snapshot.")
+            os.replace(temporary, target)
+            return target
+        finally:
+            _remove_new_sqlite_sidecars(temporary, temporary_sidecars_before)
+            _remove_if_present(temporary)
     finally:
-        _remove_if_present(temporary)
+        try:
+            fcntl.flock(manifest_lock, fcntl.LOCK_UN)
+        finally:
+            os.close(manifest_lock)
 
 
 def _read_manifest_for_monitor(
