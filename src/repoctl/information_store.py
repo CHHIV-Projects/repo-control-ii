@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from . import backup_guard
 from .scanner.core import state_artifact_lock
 from .store_authority import (
     StoreAuthorityConfiguration,
@@ -131,6 +132,10 @@ class IntegrityFailureError(InformationStoreError):
 
 
 class BusyStoreError(InformationStoreError):
+    pass
+
+
+class BackupCoverageError(InformationStoreError):
     pass
 
 
@@ -1050,11 +1055,13 @@ class _SelectionLockedConnection(sqlite3.Connection):
         guard: AbstractContextManager[None] | None,
         validate: Callable[[], None],
         validate_marker: Callable[[sqlite3.Connection], None],
+        validate_write_coverage: Callable[[], None],
         managed: bool,
     ) -> None:
         self._selection_guard = guard
         self._validate_selection = validate
         self._validate_marker = validate_marker
+        self._validate_write_coverage = validate_write_coverage
         self._managed = managed
         self._committed_changes = self.total_changes
 
@@ -1062,6 +1069,10 @@ class _SelectionLockedConnection(sqlite3.Connection):
         if selection:
             self._validate_selection()
         self._validate_marker(self)
+
+    def validate_write_coverage(self) -> None:
+        if self._managed:
+            self._validate_write_coverage()
 
     def mark_managed_write(self) -> None:
         if self._managed and self.in_transaction and self.total_changes > self._committed_changes:
@@ -1071,6 +1082,8 @@ class _SelectionLockedConnection(sqlite3.Connection):
 
     def commit(self) -> None:
         self.validate_authority()
+        if self._managed and self.in_transaction and self.total_changes > self._committed_changes:
+            self.validate_write_coverage()
         self.mark_managed_write()
         super().commit()
         self._committed_changes = self.total_changes
@@ -1177,6 +1190,7 @@ class InformationStore:
         allow_unsupported_runtime_for_fixture: bool = False,
         creation_mode: str = "disposable_fixture",
         authority_configuration: StoreAuthorityConfiguration | None = None,
+        backup_snapshot_configuration: StoreAuthorityConfiguration | None = None,
     ) -> None:
         self.path = path
         self.identity = identity
@@ -1185,6 +1199,10 @@ class InformationStore:
         self.allow_unsupported_runtime_for_fixture = allow_unsupported_runtime_for_fixture
         self.creation_mode = creation_mode
         self.authority_configuration = authority_configuration
+        self.backup_snapshot_configuration = backup_snapshot_configuration
+        self.backup_coverage_path = (
+            backup_guard.recovery_point_path() if authority_configuration is not None else None
+        )
         if creation_mode not in {"disposable_fixture", "managed_prepared"}:
             raise ValueError("Unsupported InformationStore creation mode.")
         if authority_configuration is not None and (
@@ -1194,6 +1212,14 @@ class InformationStore:
             or allow_unsupported_runtime_for_fixture
         ):
             raise IdentityMismatchError("Managed authority configuration does not match the store binding.")
+        if backup_snapshot_configuration is not None and (
+            creation_mode != "managed_prepared"
+            or authority_configuration is not None
+            or selection_state_root is not None
+            or path.resolve(strict=False) == backup_snapshot_configuration.database_path.resolve(strict=False)
+            or allow_unsupported_runtime_for_fixture
+        ):
+            raise IdentityMismatchError("A managed backup snapshot must be separate and read-only.")
         metadata = path.stat(follow_symlinks=False)
         if not stat.S_ISREG(metadata.st_mode):
             raise IdentityMismatchError("The InformationStore path is not a regular file.")
@@ -1352,6 +1378,24 @@ class InformationStore:
         return cls._open(path, identity, creation_mode="managed_prepared")
 
     @classmethod
+    def open_managed_backup_snapshot(
+        cls,
+        path: str | Path,
+        identity: StoreIdentity,
+        configuration: StoreAuthorityConfiguration,
+    ) -> InformationStore:
+        try:
+            verify_store_registry(configuration)
+        except StoreAuthorityError as exc:
+            raise IdentityMismatchError(str(exc)) from exc
+        return cls._open(
+            path,
+            identity,
+            creation_mode="managed_prepared",
+            backup_snapshot_configuration=configuration,
+        )
+
+    @classmethod
     def _open(
         cls,
         path: str | Path,
@@ -1361,6 +1405,7 @@ class InformationStore:
         allow_unsupported_runtime_for_fixture: bool = False,
         selection_state_root: str | Path | None = None,
         authority_configuration: StoreAuthorityConfiguration | None = None,
+        backup_snapshot_configuration: StoreAuthorityConfiguration | None = None,
     ) -> InformationStore:
         if creation_mode != "disposable_fixture" and allow_unsupported_runtime_for_fixture:
             raise RuntimeGateError("Unsupported-runtime permission is restricted to disposable fixtures.")
@@ -1385,6 +1430,7 @@ class InformationStore:
             allow_unsupported_runtime_for_fixture=allow_unsupported_runtime_for_fixture,
             creation_mode=creation_mode,
             authority_configuration=authority_configuration,
+            backup_snapshot_configuration=backup_snapshot_configuration,
         )
         connection = store._connection(read_only=True)
         try:
@@ -1834,6 +1880,8 @@ class InformationStore:
             raise StaleStateError("The submitted selection snapshot is stale.")
         with state_artifact_lock(self.selection_state_root):
             connection = self._connection()
+            selection_published = False
+            previous_selection: dict[str, Any] | None = None
             try:
                 if self.authority_configuration is not None and milestone_id != self.identity.milestone_id:
                     self._begin_immediate(connection)
@@ -1869,6 +1917,7 @@ class InformationStore:
                     selection_revision=self.identity.selection_revision + 1,
                 )
                 selection = _read_fixture_selection(self.selection_state_root, self.identity.repository_id)
+                previous_selection = dict(selection)
                 self._verify_bound_selection()
                 selection.update(
                     milestone_id=next_identity.milestone_id,
@@ -1889,7 +1938,10 @@ class InformationStore:
                         next_identity.repository_id,
                     ),
                 )
+                if isinstance(connection, _SelectionLockedConnection):
+                    connection.validate_write_coverage()
                 _write_fixture_selection(self.selection_state_root, self.identity.repository_id, selection)
+                selection_published = True
                 self.database_identity()
                 if _read_fixture_selection(self.selection_state_root, self.identity.repository_id) != selection:
                     raise StaleStateError("External fixture selection changed during selection publication.")
@@ -1897,8 +1949,20 @@ class InformationStore:
                 if isinstance(connection, _SelectionLockedConnection):
                     connection.validate_authority(selection=False)
                     connection.mark_managed_write()
+                    connection.validate_write_coverage()
                 sqlite3.Connection.commit(connection)
-            except Exception:
+            except Exception as exc:
+                try:
+                    if selection_published and previous_selection is not None:
+                        _write_fixture_selection(
+                            self.selection_state_root, self.identity.repository_id, previous_selection,
+                        )
+                except Exception as restore_exc:
+                    if connection.in_transaction:
+                        connection.rollback()
+                    raise StaleStateError(
+                        f"Selection publication failed and its previous pointer could not be restored: {restore_exc}"
+                    ) from exc
                 if connection.in_transaction:
                     connection.rollback()
                 raise
@@ -2061,6 +2125,16 @@ class InformationStore:
         ).fetchall())
         if self.creation_mode != "managed_prepared":
             return
+        backup_configuration = self.backup_snapshot_configuration
+        if backup_configuration is not None:
+            if (
+                metadata.get("authority_generation") != backup_configuration.generation
+                or metadata.get("authority_configuration_sha256") != backup_configuration.configuration_sha256
+                or metadata.get("authority_state_root") != str(backup_configuration.state_root)
+                or metadata.get("authority_first_write") not in {"0", "1"}
+            ):
+                raise StaleStateError("The managed backup snapshot does not match the selected authority markers.")
+            return
         if self.authority_configuration is None:
             if metadata:
                 raise StaleStateError("The prepared store has been activated; offline access is disabled.")
@@ -2111,6 +2185,8 @@ class InformationStore:
             raise IdentityMismatchError("Selection snapshot does not match the disposable store.")
 
     def _connection(self, *, read_only: bool = False) -> sqlite3.Connection:
+        if self.backup_snapshot_configuration is not None and not read_only:
+            raise InformationStoreError("Verified managed backup snapshots are read-only.")
         guard = state_artifact_lock(self.selection_state_root) if self.selection_state_root is not None else None
         if guard is not None:
             guard.__enter__()
@@ -2125,6 +2201,7 @@ class InformationStore:
             )
             locked.bind_selection_guard(
                 guard, self._verify_bound_selection, self._verify_authority_marker,
+                self._validate_backup_coverage,
                 self.authority_configuration is not None,
             )
             guard = None
@@ -2153,6 +2230,30 @@ class InformationStore:
                 verify_store_registry(self.authority_configuration)
             except StoreAuthorityError as exc:
                 raise StaleStateError(str(exc)) from exc
+
+    def _validate_backup_coverage(self) -> None:
+        configuration = self.authority_configuration
+        if configuration is None:
+            return
+        try:
+            binding = backup_guard.authority_binding(
+                configuration,
+                self.database_identity(),
+                repository_id=self.identity.repository_id,
+                repository_key=self.identity.repository_key,
+                repository_root=self.identity.repository_root,
+                milestone_id=self.identity.milestone_id,
+                prompt_path=self.identity.prompt_path,
+                selection_id=self.identity.selection_id,
+                selection_revision=self.identity.selection_revision,
+            )
+            if self.backup_coverage_path is None:
+                raise backup_guard.BackupEvidenceError("The backup recovery-point path is not configured.")
+            backup_guard.read_recovery_point(self.backup_coverage_path, binding)
+        except backup_guard.BackupEvidenceError as exc:
+            raise BackupCoverageError(
+                f"Managed SQLite writes are paused until this authority has a fresh verified NAS backup: {exc}"
+            ) from exc
 
     def _verify_bound_selection(self) -> None:
         self.database_identity()
@@ -2223,6 +2324,9 @@ class InformationStore:
     @staticmethod
     def _begin_immediate(connection: sqlite3.Connection) -> None:
         try:
+            if isinstance(connection, _SelectionLockedConnection):
+                connection.validate_authority()
+                connection.validate_write_coverage()
             connection.execute("BEGIN IMMEDIATE")
             if isinstance(connection, _SelectionLockedConnection):
                 connection.validate_authority()

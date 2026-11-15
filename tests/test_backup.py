@@ -230,6 +230,15 @@ class BackupTests(unittest.TestCase):
             now=datetime(2026, 11, 14, 12, 19, tzinfo=UTC),
         )
         self.assertTrue(healthy.healthy)
+        threshold = check_backup_freshness(
+            self.destination,
+            expected_repository_id=self.identity.repository_id,
+            expected_repository_key=self.identity.repository_key,
+            expected_repository_root=self.identity.repository_root,
+            now=datetime(2026, 11, 14, 12, 20, tzinfo=UTC),
+        )
+        self.assertFalse(threshold.healthy)
+        self.assertIn("20.0 minutes old", threshold.message)
         stale = check_backup_freshness(
             self.destination,
             expected_repository_id=self.identity.repository_id,
@@ -386,12 +395,9 @@ class BackupTests(unittest.TestCase):
             result = backup_main(["monitor"])
 
         self.assertEqual(result, 1)
-        self.assertIn("NAS backup destination check failed: NAS unavailable", error_output.getvalue())
-        send_alert.assert_called_once_with(
-            config.alert_hook,
-            config.alert_target,
-            "NAS backup destination check failed: NAS unavailable",
-        )
+        self.assertIn("UNRESOLVED BACKUP WARNING: NAS backup destination check failed: NAS unavailable",
+                      error_output.getvalue())
+        send_alert.assert_not_called()
 
 
 if __name__ == "__main__":

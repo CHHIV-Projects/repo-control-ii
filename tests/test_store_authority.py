@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from threading import Thread
@@ -29,7 +31,9 @@ from repoctl.information_store import (
 )
 from repoctl.migration_rehearsal import MigrationRehearsalError, verify_prepared_source_parity
 from repoctl import information_store
+from repoctl import backup_guard
 from repoctl.mcp import architect_adapter
+from repoctl.backup import create_verified_backup, restore_verified_backup
 from repoctl.scanner.util import make_repository_id
 from repoctl import store_authority
 from repoctl.store_authority import (
@@ -67,6 +71,19 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.repository_root = self.root / "repository"
         self.state_root = self.root / "state"
         self.state_root.mkdir()
+        self.backup_staging = self.root / "backup-staging"
+        self.backup_destination = self.root / "backup-destination"
+        self.restore_root = self.root / "restore"
+        self.backup_staging.mkdir(mode=0o700)
+        self.backup_destination.mkdir(mode=0o700)
+        self.restore_root.mkdir(mode=0o700)
+        self.coverage_path = self.backup_staging / ".repoctl-verified-recovery-point.json"
+        coverage_environment = patch.dict(
+            os.environ,
+            {"REPOCTL_BACKUP_COVERAGE_PATH": str(self.coverage_path)},
+        )
+        coverage_environment.start()
+        self.addCleanup(coverage_environment.stop)
         (self.repository_root / "docs/milestones").mkdir(parents=True)
         (self.repository_root / "docs/context").mkdir(parents=True)
         (self.repository_root / "docs/context/project_context.md").write_text("# Context\n", encoding="utf-8")
@@ -172,11 +189,61 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             json.dumps(guard), encoding="utf-8",
         )
         (self.state_root / "information-store-authority.json").write_bytes(raw)
+        self.create_fixture_recovery_point()
+
+    def create_fixture_recovery_point(self) -> dict:
+        configuration = load_store_authority(self.state_root)
+        if configuration is None:
+            raise AssertionError("The isolated managed authority fixture is not active.")
+        return create_verified_backup(
+            configuration.database_path,
+            self.backup_staging,
+            self.backup_destination,
+            expected_repository_id=self.identity.repository_id,
+            expected_repository_key=self.identity.repository_key,
+            expected_repository_root=str(self.repository_root),
+            authority_configuration=configuration,
+            coverage_path=self.coverage_path,
+        )
 
     def managed_clients(self):
         configuration = load_store_authority(self.state_root)
         self.assertIsNotNone(configuration)
         return create_managed_information_store_clients(configuration, self.repository)
+
+    def invoke_managed_cli(self, arguments: list[str]) -> tuple[int, str, str]:
+        output, errors = StringIO(), StringIO()
+        args = list(arguments)
+        if "--state-root" not in args:
+            args.extend(["--state-root", str(self.state_root)])
+        with (
+            patch("repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH", self.registry_path),
+            patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=self.repository),
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            code = cli_main(args)
+        return code, output.getvalue(), errors.getvalue()
+
+    def post_browser_workflow_event(self, browser, clients, summary: str):
+        with browser.session_transaction() as browser_session:
+            token = browser_session["csrf_token"]
+        workflow = clients.browser_snapshot()["workflow"]
+        return browser.post("/milestones/workflow/event", data={
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "repository_generation": "0",
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+            "expected_phase": workflow["phase"],
+            "expected_event_count": str(workflow["event_count"]),
+            "expected_prompt_identity": workflow["prompt_identity"],
+            "event_type": "test_result_recorded",
+            "summary": summary,
+            "evidence_source": "isolated managed backup-guard test",
+            "result": "PASS",
+            "po_confirmation": "confirmed",
+        })
 
     def test_interrupted_activation_resumes_and_aborts_only_before_first_write(self) -> None:
         generation = "a" * 32
@@ -287,6 +354,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             expected_plan_sha256=plan["plan_sha256"], po_confirmed=True, writers_quiesced=True,
             source_parity_confirmed=True,
         )
+        self.create_fixture_recovery_point()
         clients = self.managed_clients()
         snapshot = clients.browser_snapshot()
         prompt = snapshot["workflow"]["unverified_prompt"]
@@ -344,7 +412,25 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             expected_plan_sha256=plan["plan_sha256"], po_confirmed=True, writers_quiesced=True,
             source_parity_confirmed=True,
         )
+        self.create_fixture_recovery_point()
         clients = self.managed_clients()
+        selection_bytes = self.selection_path.read_bytes()
+        selected_before = clients.store.identity
+        coverage = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        with patch(
+            "repoctl.backup_guard.utc_now",
+            return_value=datetime.fromisoformat(coverage["verified_at_utc"])
+            + timedelta(seconds=backup_guard.WRITE_GUARD_MAX_AGE_SECONDS),
+        ):
+            with self.assertRaisesRegex(InformationStoreError, "writes are paused"):
+                clients.store.switch_selection(
+                    next_scope.milestone_id,
+                    expected_selection_id=old.selection_id,
+                    expected_selection_revision=old.selection_revision,
+                )
+        self.assertEqual(self.selection_path.read_bytes(), selection_bytes)
+        self.assertEqual(clients.store.identity, selected_before)
+        self.create_fixture_recovery_point()
         write_selection = information_store._write_fixture_selection
 
         def interrupt_after_pointer(*args):
@@ -1003,6 +1089,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertIsNone(load_store_authority(self.state_root))
         code, _, error = invoke(["store-authority", "activate", *common, *confirmed])
         self.assertEqual(code, 0, error)
+        self.create_fixture_recovery_point()
 
         app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
         app.config["TESTING"] = True
@@ -1289,6 +1376,197 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             self.assertEqual(committed.status_code, 200)
             self.assertEqual(committed.json["status"], "committed")
         self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
+
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_managed_write_guard_pauses_browser_and_coder_cli_until_verified_recovery(self, _status) -> None:
+        self.activate_fixture_configuration()
+        clients = self.managed_clients()
+        initial = clients.browser_snapshot()
+        prompt = initial["workflow"]["unverified_prompt"]
+        clients.confirm_imported_prompt(
+            request_id=prompt["request_id"],
+            expected_store_revision=initial["snapshot"]["store_revision"],
+            document_id=prompt["document_id"],
+            revision_id=prompt["revision_id"],
+            content_sha256=prompt["content_sha256"],
+            managed_po_confirmation=True,
+        )
+
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Fresh managed CLI write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertEqual(code, 0, error)
+        coverage = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        verified_at = datetime.fromisoformat(coverage["verified_at_utc"])
+        cutoff = verified_at + timedelta(seconds=backup_guard.WRITE_GUARD_MAX_AGE_SECONDS)
+        before = clients.workflow_snapshot()
+
+        app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        self.assertEqual(browser.get("/milestones").status_code, 200)
+        with patch("repoctl.backup_guard.utc_now", return_value=cutoff):
+            code, _, error = self.invoke_managed_cli([
+                "coder-test", "Stale managed CLI write", "--source", "isolated fixture", "--result", "PASS",
+            ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("writes are paused", error)
+        self.assertEqual(browser.get("/milestones").status_code, 200)
+        with patch("repoctl.backup_guard.utc_now", return_value=cutoff):
+            rejected = self.post_browser_workflow_event(
+                browser,
+                app.extensions["repoctl_information_store_clients"],
+                "Stale managed browser write",
+            )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(clients.workflow_snapshot(), before)
+        with patch("repoctl.backup_guard.utc_now", return_value=cutoff):
+            restored_path = restore_verified_backup(
+                Path(coverage["manifest_path"]),
+                self.restore_root / "paused-restore.sqlite3",
+                self.restore_root,
+                expected_repository_id=self.identity.repository_id,
+                expected_repository_key=self.identity.repository_key,
+                expected_repository_root=self.identity.repository_root,
+                authority_configuration=load_store_authority(self.state_root),
+            )
+        self.assertTrue(restored_path.is_file())
+        self.assertEqual(restored_path.stat().st_mode & 0o777, 0o600)
+
+        code, _, error = self.invoke_managed_cli([
+            "coder-context", "--format", "json",
+        ])
+        self.assertEqual(code, 0, error)
+        self.assertEqual(clients.workflow_snapshot(), before)
+
+        self.create_fixture_recovery_point()
+        refreshed = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        self.assertGreater(
+            datetime.fromisoformat(refreshed["verified_at_utc"]),
+            verified_at,
+        )
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Resumed managed CLI write", "--source", "verified recovery", "--result", "PASS",
+        ])
+        self.assertEqual(code, 0, error)
+        self.assertEqual(clients.workflow_snapshot()["event_count"], before["event_count"] + 1)
+
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_managed_write_guard_rechecks_in_flight_browser_commit(self, _status) -> None:
+        self.activate_fixture_configuration()
+        clients = self.managed_clients()
+        initial = clients.browser_snapshot()
+        prompt = initial["workflow"]["unverified_prompt"]
+        clients.confirm_imported_prompt(
+            request_id=prompt["request_id"],
+            expected_store_revision=initial["snapshot"]["store_revision"],
+            document_id=prompt["document_id"],
+            revision_id=prompt["revision_id"],
+            content_sha256=prompt["content_sha256"],
+            managed_po_confirmation=True,
+        )
+        coverage = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        verified_at = datetime.fromisoformat(coverage["verified_at_utc"])
+        event_before = clients.workflow_snapshot()
+        workflow_bytes = self.workflow_path.read_bytes()
+        selection_bytes = self.selection_path.read_bytes()
+        app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        self.assertEqual(browser.get("/milestones").status_code, 200)
+        with patch(
+            "repoctl.backup_guard.utc_now",
+            side_effect=[
+                verified_at + timedelta(seconds=backup_guard.WRITE_GUARD_MAX_AGE_SECONDS - 1),
+                verified_at + timedelta(seconds=backup_guard.WRITE_GUARD_MAX_AGE_SECONDS),
+            ],
+        ):
+            rejected = self.post_browser_workflow_event(
+                browser,
+                app.extensions["repoctl_information_store_clients"],
+                "In-flight browser write crossing the freshness cutoff",
+            )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(clients.workflow_snapshot(), event_before)
+        self.assertEqual(self.workflow_path.read_bytes(), workflow_bytes)
+        self.assertEqual(self.selection_path.read_bytes(), selection_bytes)
+
+    def test_managed_write_guard_rejects_missing_invalid_and_unbound_evidence(self) -> None:
+        self.activate_fixture_configuration()
+        clients = self.managed_clients()
+        initial = clients.browser_snapshot()
+        prompt = initial["workflow"]["unverified_prompt"]
+        clients.confirm_imported_prompt(
+            request_id=prompt["request_id"],
+            expected_store_revision=initial["snapshot"]["store_revision"],
+            document_id=prompt["document_id"],
+            revision_id=prompt["revision_id"],
+            content_sha256=prompt["content_sha256"],
+            managed_po_confirmation=True,
+        )
+        before = clients.workflow_snapshot()
+
+        self.coverage_path.unlink()
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Missing coverage write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("No verified recovery-point evidence", error)
+
+        self.create_fixture_recovery_point()
+        with patch("repoctl.backup_guard.utc_now", side_effect=OSError("clock unavailable")):
+            code, _, error = self.invoke_managed_cli([
+                "coder-test", "Unavailable clock write", "--source", "isolated fixture", "--result", "PASS",
+            ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("system clock could not be read safely", error)
+
+        self.coverage_path.chmod(0o644)
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Non-private coverage write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("private bounded regular file", error)
+
+        self.coverage_path.write_text("{", encoding="utf-8")
+        self.coverage_path.chmod(0o600)
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Malformed coverage write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("malformed", error)
+
+        self.create_fixture_recovery_point()
+        record = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        record["authority_binding"]["authority"]["generation"] = "0" * 32
+        unsigned = {key: value for key, value in record.items() if key != "record_sha256"}
+        record["record_sha256"] = hashlib.sha256(backup_guard.canonical_json(unsigned)).hexdigest()
+        self.coverage_path.write_bytes(backup_guard.canonical_json(record) + b"\n")
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Unbound coverage write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("different database or authority binding", error)
+        self.assertEqual(clients.workflow_snapshot(), before)
+
+        self.create_fixture_recovery_point()
+        record = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        record["verified_at_utc"] = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        unsigned = {key: value for key, value in record.items() if key != "record_sha256"}
+        record["record_sha256"] = hashlib.sha256(backup_guard.canonical_json(unsigned)).hexdigest()
+        self.coverage_path.write_bytes(backup_guard.canonical_json(record) + b"\n")
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Future-dated coverage write", "--source", "isolated fixture", "--result", "PASS",
+        ])
+        self.assertNotEqual(code, 0, error)
+        self.assertIn("timestamp is in the future", error)
+
+        self.create_fixture_recovery_point()
+        code, _, error = self.invoke_managed_cli([
+            "coder-test", "Recovered after evidence repair", "--source", "verified recovery", "--result", "PASS",
+        ])
+        self.assertEqual(code, 0, error)
+        self.assertEqual(clients.workflow_snapshot()["event_count"], before["event_count"] + 1)
 
 
 if __name__ == "__main__":

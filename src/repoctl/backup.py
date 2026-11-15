@@ -18,12 +18,20 @@ import tempfile
 from typing import Any, Callable, Mapping
 import uuid
 
+from . import backup_guard
 from .information_store import (
     APPLICATION_ID,
     SCHEMA_VERSION,
     InformationStore,
     InformationStoreError,
     StoreIdentity,
+)
+from .scanner.core import DEFAULT_STATE_ROOT
+from .store_authority import (
+    StoreAuthorityConfiguration,
+    StoreAuthorityError,
+    load_store_authority,
+    verify_store_registry,
 )
 
 
@@ -50,6 +58,8 @@ class BackupConfig:
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS
     alert_hook: Path | None = None
     alert_target: str | None = None
+    authority_state_root: Path = DEFAULT_STATE_ROOT
+    coverage_path: Path = backup_guard.DEFAULT_RECOVERY_POINT_PATH
 
 
 @dataclass(frozen=True)
@@ -200,6 +210,7 @@ def _store_snapshot(
     expected_repository_id: str,
     expected_repository_key: str,
     expected_repository_root: str,
+    authority_configuration: StoreAuthorityConfiguration | None = None,
 ) -> dict[str, Any]:
     try:
         identity = _store_identity(
@@ -216,7 +227,10 @@ def _store_snapshot(
                 path, identity, allow_unsupported_runtime_for_fixture=True,
             )
         elif creation_mode == "managed_prepared":
-            store = InformationStore.open_managed_prepared(path, identity)
+            if authority_configuration is None:
+                store = InformationStore.open_managed_prepared(path, identity)
+            else:
+                store = InformationStore.open_managed_backup_snapshot(path, identity, authority_configuration)
         else:
             raise BackupError("The database creation mode is not recognized.")
         selected = store.snapshot()
@@ -427,10 +441,34 @@ def create_verified_backup(
     expected_repository_key: str,
     expected_repository_root: str,
     now: datetime | None = None,
+    authority_configuration: StoreAuthorityConfiguration | None = None,
+    coverage_path: Path | None = None,
 ) -> dict[str, Any]:
     source_path = _require_source(source)
     staging_path = _require_directory(staging, "Local backup staging directory")
     destination_path = _require_directory(destination, "NAS backup destination")
+    managed_identity: StoreIdentity | None = None
+    managed_database_identity: str | None = None
+    if authority_configuration is not None:
+        if authority_configuration.database_path.resolve(strict=False) != source_path:
+            raise BackupError("The configured source is not the active managed InformationStore database.")
+        try:
+            verify_store_registry(authority_configuration)
+            managed_store = InformationStore.open_managed_from_external_selection(
+                authority_configuration,
+                repository_id=expected_repository_id,
+                repository_key=expected_repository_key,
+                repository_root=expected_repository_root,
+            )
+            managed_identity = managed_store.identity
+            managed_database_identity = managed_store.database_identity()
+        except (InformationStoreError, StoreAuthorityError) as exc:
+            raise BackupError(f"The active managed authority could not be verified for backup: {exc}") from exc
+        if coverage_path is None:
+            try:
+                coverage_path = backup_guard.recovery_point_path()
+            except backup_guard.BackupEvidenceError as exc:
+                raise BackupError(str(exc)) from exc
     lock_path = staging_path / ".repoctl-backup.lock"
     lock_descriptor = os.open(
         lock_path,
@@ -473,8 +511,20 @@ def create_verified_backup(
             finally:
                 source_connection.close()
             snapshot = _store_snapshot(
-                local_snapshot, expected_repository_id, expected_repository_key, expected_repository_root,
+                local_snapshot,
+                expected_repository_id,
+                expected_repository_key,
+                expected_repository_root,
+                authority_configuration,
             )
+            if managed_identity is not None and snapshot["selection"] != {
+                "milestone_id": managed_identity.milestone_id,
+                "prompt_path": managed_identity.prompt_path,
+                "selection_id": managed_identity.selection_id,
+                "selection_revision": managed_identity.selection_revision,
+                "prompt_revision_id": snapshot["selection"]["prompt_revision_id"],
+            }:
+                raise BackupError("The selected managed authority changed while the backup snapshot was created.")
             remote_partial = destination_path / f".{stem}.sqlite3.partial"
             final_database = destination_path / f"{stem}.sqlite3"
             manifest_partial = destination_path / f".{stem}.manifest.json.partial"
@@ -487,7 +537,11 @@ def create_verified_backup(
             if backup_hash != _sha256_file(local_snapshot):
                 raise BackupError("The transferred database does not match the local snapshot bytes.")
             if _store_snapshot(
-                remote_partial, expected_repository_id, expected_repository_key, expected_repository_root,
+                remote_partial,
+                expected_repository_id,
+                expected_repository_key,
+                expected_repository_root,
+                authority_configuration,
             ) != snapshot:
                 raise BackupError("The destination copy does not match the consistent local SQLite snapshot.")
             _remove_new_sqlite_sidecars(remote_partial, remote_partial_sidecars)
@@ -509,6 +563,61 @@ def create_verified_backup(
             os.replace(remote_partial, final_database)
             os.replace(manifest_partial, final_manifest)
             published = True
+            if authority_configuration is not None:
+                try:
+                    if load_store_authority(authority_configuration.state_root) != authority_configuration:
+                        raise BackupError("The managed authority changed before recovery-point publication.")
+                    current_store = InformationStore.open_managed_from_external_selection(
+                        authority_configuration,
+                        repository_id=expected_repository_id,
+                        repository_key=expected_repository_key,
+                        repository_root=expected_repository_root,
+                    )
+                    if (
+                        current_store.identity != managed_identity
+                        or current_store.database_identity() != managed_database_identity
+                    ):
+                        raise BackupError(
+                            "The managed database or selection changed before recovery-point publication."
+                        )
+                except (InformationStoreError, StoreAuthorityError) as exc:
+                    raise BackupError(f"The active managed authority changed during backup: {exc}") from exc
+                verified_manifest = _read_manifest_for_monitor(
+                    final_manifest,
+                    expected_repository_id=expected_repository_id,
+                    expected_repository_key=expected_repository_key,
+                    expected_repository_root=expected_repository_root,
+                )
+                if verified_manifest is None:
+                    raise BackupError("The published NAS manifest could not be reverified for write coverage.")
+                if coverage_path is None or managed_identity is None or managed_database_identity is None:
+                    raise BackupError("The active managed backup is missing its authority-bound recovery-point inputs.")
+                try:
+                    published_manifest = json.loads(_read_manifest_bytes(final_manifest))
+                except (BackupError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise BackupError(f"The published NAS manifest could not be read for write coverage: {exc}") from exc
+                if not isinstance(published_manifest, dict):
+                    raise BackupError("The published NAS manifest is not a JSON object.")
+                binding = backup_guard.authority_binding(
+                    authority_configuration,
+                    managed_database_identity,
+                    repository_id=managed_identity.repository_id,
+                    repository_key=managed_identity.repository_key,
+                    repository_root=managed_identity.repository_root,
+                    milestone_id=managed_identity.milestone_id,
+                    prompt_path=managed_identity.prompt_path,
+                    selection_id=managed_identity.selection_id,
+                    selection_revision=managed_identity.selection_revision,
+                )
+                try:
+                    backup_guard.write_recovery_point(
+                        coverage_path,
+                        manifest_path=final_manifest,
+                        manifest=published_manifest,
+                        binding=binding,
+                    )
+                except backup_guard.BackupEvidenceError as exc:
+                    raise BackupError(f"The verified NAS backup could not authorize managed writes: {exc}") from exc
             return {**manifest, "manifest_path": str(final_manifest)}
         finally:
             _remove_new_sqlite_sidecars(local_snapshot, local_snapshot_sidecars)
@@ -530,6 +639,7 @@ def _read_verified_manifest(
     expected_repository_id: str,
     expected_repository_key: str,
     expected_repository_root: str,
+    authority_configuration: StoreAuthorityConfiguration | None = None,
 ) -> tuple[dict[str, Any], Path]:
     try:
         manifest = json.loads(_read_manifest_bytes(manifest_path).decode("utf-8"))
@@ -574,7 +684,11 @@ def _read_verified_manifest(
         raise BackupError("The verified backup has pre-existing SQLite sidecars.")
     try:
         actual_snapshot = _store_snapshot(
-            database, expected_repository_id, expected_repository_key, expected_repository_root,
+            database,
+            expected_repository_id,
+            expected_repository_key,
+            expected_repository_root,
+            authority_configuration,
         )
     finally:
         _remove_new_sqlite_sidecars(database, sidecars_before)
@@ -591,6 +705,7 @@ def restore_verified_backup(
     expected_repository_id: str,
     expected_repository_key: str,
     expected_repository_root: str,
+    authority_configuration: StoreAuthorityConfiguration | None = None,
 ) -> Path:
     manifest_lock = _lock_manifest(manifest_path)
     try:
@@ -603,6 +718,7 @@ def restore_verified_backup(
             expected_repository_id=expected_repository_id,
             expected_repository_key=expected_repository_key,
             expected_repository_root=expected_repository_root,
+            authority_configuration=authority_configuration,
         )
         backup_sidecars_before = _existing_sqlite_sidecars(backup)
         if backup_sidecars_before:
@@ -628,7 +744,11 @@ def restore_verified_backup(
             finally:
                 _remove_new_sqlite_sidecars(backup, backup_sidecars_before)
             restored = _store_snapshot(
-                temporary, expected_repository_id, expected_repository_key, expected_repository_root,
+                temporary,
+                expected_repository_id,
+                expected_repository_key,
+                expected_repository_root,
+                authority_configuration,
             )
             _remove_new_sqlite_sidecars(temporary, temporary_sidecars_before)
             manifest, _ = _read_verified_manifest(
@@ -636,6 +756,7 @@ def restore_verified_backup(
                 expected_repository_id=expected_repository_id,
                 expected_repository_key=expected_repository_key,
                 expected_repository_root=expected_repository_root,
+                authority_configuration=authority_configuration,
             )
             if restored != manifest["snapshot"]:
                 raise BackupError("The restored database does not match the verified backup snapshot.")
@@ -741,7 +862,7 @@ def check_backup_freshness(
     age = ((now or datetime.now(UTC)).astimezone(UTC) - newest).total_seconds()
     if age < -300:
         return BackupStatus(False, "The newest verified NAS backup timestamp is unexpectedly in the future.", newest, age, invalid)
-    if age > max_age_seconds:
+    if age >= max_age_seconds:
         return BackupStatus(
             False,
             f"The newest verified NAS backup is {age / 60:.1f} minutes old; limit is {max_age_seconds / 60:.0f} minutes.",
@@ -757,6 +878,89 @@ def check_backup_freshness(
         age,
         invalid,
     )
+
+
+def _load_active_authority(configuration: BackupConfig) -> StoreAuthorityConfiguration | None:
+    try:
+        return load_store_authority(configuration.authority_state_root)
+    except StoreAuthorityError as exc:
+        raise BackupError(f"The managed InformationStore authority could not be verified: {exc}") from exc
+
+
+def _validate_local_coverage_path(configuration: BackupConfig) -> Path:
+    staging = _require_directory(
+        configuration.staging, "Local backup staging directory", writable=False,
+    )
+    mountpoint = configuration.mountpoint.resolve(strict=True)
+    coverage_path = configuration.coverage_path
+    if (
+        not coverage_path.is_absolute()
+        or coverage_path.parent.resolve(strict=True) != staging
+        or staging == mountpoint
+        or staging.is_relative_to(mountpoint)
+    ):
+        raise BackupError("The managed recovery-point record must be a local direct child of backup staging.")
+    return coverage_path
+
+
+def _verify_managed_coverage(
+    configuration: BackupConfig,
+    authority_configuration: StoreAuthorityConfiguration,
+) -> dict[str, Any]:
+    try:
+        store = InformationStore.open_managed_from_external_selection(
+            authority_configuration,
+            repository_id=configuration.repository_id,
+            repository_key=configuration.repository_key,
+            repository_root=configuration.repository_root,
+        )
+        binding = backup_guard.authority_binding(
+            authority_configuration,
+            store.database_identity(),
+            repository_id=store.identity.repository_id,
+            repository_key=store.identity.repository_key,
+            repository_root=store.identity.repository_root,
+            milestone_id=store.identity.milestone_id,
+            prompt_path=store.identity.prompt_path,
+            selection_id=store.identity.selection_id,
+            selection_revision=store.identity.selection_revision,
+        )
+        record = backup_guard.read_recovery_point(
+            _validate_local_coverage_path(configuration),
+            binding,
+            max_age_seconds=configuration.max_age_seconds,
+        )
+    except (InformationStoreError, StoreAuthorityError, backup_guard.BackupEvidenceError) as exc:
+        raise BackupError(f"Managed SQLite backup coverage is unresolved: {exc}") from exc
+    manifest_path = Path(record["manifest_path"])
+    destination = _require_directory(configuration.destination, "NAS backup destination", writable=False)
+    if (
+        manifest_path.resolve(strict=True) != manifest_path
+        or manifest_path.parent.resolve(strict=True) != destination
+    ):
+        raise BackupError("The recovery-point manifest is not a direct canonical file in the NAS destination.")
+    verified = _read_manifest_for_monitor(
+        manifest_path,
+        expected_repository_id=configuration.repository_id,
+        expected_repository_key=configuration.repository_key,
+        expected_repository_root=configuration.repository_root,
+    )
+    if verified is None:
+        raise BackupError("The recovery-point NAS manifest or database is no longer verifiable.")
+    try:
+        manifest = json.loads(_read_manifest_bytes(manifest_path))
+    except (BackupError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupError(f"The recovery-point NAS manifest could not be re-read: {exc}") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("manifest_sha256") != record["manifest_sha256"]
+        or manifest.get("database_sha256") != record["database_sha256"]
+        or manifest.get("snapshot_sha256") != record["snapshot_sha256"]
+        or manifest.get("verified_at_utc") != record["verified_at_utc"]
+        or verified[0].isoformat() != record["verified_at_utc"]
+    ):
+        raise BackupError("The recovery-point record no longer matches its verified NAS manifest.")
+    return record
 
 
 def _send_alert(hook: Path | None, target: str | None, message: str) -> None:
@@ -799,6 +1003,15 @@ def config_from_environment(environment: Mapping[str, str] = os.environ) -> Back
         raise BackupError("REPOCTL_BACKUP_MAX_AGE_SECONDS must be positive.")
     hook = environment.get("REPOCTL_BACKUP_ALERT_HOOK") or None
     target = environment.get("REPOCTL_BACKUP_ALERT_TARGET") or None
+    try:
+        coverage_path = backup_guard.recovery_point_path(environment)
+    except backup_guard.BackupEvidenceError as exc:
+        raise BackupError(str(exc)) from exc
+    authority_state_root = Path(
+        environment.get("REPOCTL_BACKUP_AUTHORITY_STATE_ROOT", str(DEFAULT_STATE_ROOT))
+    ).expanduser()
+    if not authority_state_root.is_absolute():
+        raise BackupError("REPOCTL_BACKUP_AUTHORITY_STATE_ROOT must be an absolute path.")
     return BackupConfig(
         source=Path(environment["REPOCTL_BACKUP_SOURCE"]),
         staging=Path(environment["REPOCTL_BACKUP_STAGING"]),
@@ -812,6 +1025,8 @@ def config_from_environment(environment: Mapping[str, str] = os.environ) -> Back
         max_age_seconds=max_age,
         alert_hook=Path(hook) if hook else None,
         alert_target=target,
+        authority_state_root=authority_state_root,
+        coverage_path=coverage_path,
     )
 
 
@@ -825,6 +1040,10 @@ def main(argv: list[str] | None = None) -> int:
         config = config_from_environment()
         if arguments.operation == "backup":
             verify_destination_mount(config.destination, config.mountpoint, config.mount_source)
+            authority_configuration = _load_active_authority(config)
+            coverage_path = None
+            if authority_configuration is not None:
+                coverage_path = _validate_local_coverage_path(config)
             result = create_verified_backup(
                 config.source,
                 config.staging,
@@ -832,6 +1051,8 @@ def main(argv: list[str] | None = None) -> int:
                 expected_repository_id=config.repository_id,
                 expected_repository_key=config.repository_key,
                 expected_repository_root=config.repository_root,
+                authority_configuration=authority_configuration,
+                coverage_path=coverage_path,
             )
             print(json.dumps(result, sort_keys=True))
             return 0
@@ -844,8 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
             except (BackupError, OSError) as exc:
                 mount_error = f"NAS backup destination check failed: {exc}"
             if mount_error is not None:
-                _send_alert(config.alert_hook, config.alert_target, mount_error)
-                print(mount_error, file=sys.stderr)
+                print(f"UNRESOLVED BACKUP WARNING: {mount_error}", file=sys.stderr)
                 return 1
             try:
                 status = check_backup_freshness(
@@ -856,14 +1076,20 @@ def main(argv: list[str] | None = None) -> int:
                     max_age_seconds=config.max_age_seconds,
                 )
             except (BackupError, OSError) as exc:
-                _send_alert(config.alert_hook, config.alert_target, f"NAS backup monitor failed: {exc}")
-                print(f"NAS backup monitor failed: {exc}", file=sys.stderr)
+                print(f"UNRESOLVED BACKUP WARNING: NAS backup monitor failed: {exc}", file=sys.stderr)
                 return 1
-            print(status.message, file=sys.stderr if not status.healthy else sys.stdout)
-            if status.healthy:
-                return 0
-            _send_alert(config.alert_hook, config.alert_target, status.message)
-            return 1
+            if not status.healthy:
+                print(f"UNRESOLVED BACKUP WARNING: {status.message}", file=sys.stderr)
+                return 1
+            authority_configuration = _load_active_authority(config)
+            if authority_configuration is not None:
+                try:
+                    _verify_managed_coverage(config, authority_configuration)
+                except (BackupError, OSError) as exc:
+                    print(f"UNRESOLVED BACKUP WARNING: {exc}", file=sys.stderr)
+                    return 1
+            print(f"Backup coverage healthy: {status.message}")
+            return 0
         if arguments.manifest is None or not arguments.restore_name:
             raise BackupError("Restore requires --manifest and --restore-name.")
         if Path(arguments.restore_name).name != arguments.restore_name:
@@ -882,10 +1108,18 @@ def main(argv: list[str] | None = None) -> int:
             expected_repository_id=config.repository_id,
             expected_repository_key=config.repository_key,
             expected_repository_root=config.repository_root,
+            authority_configuration=_load_active_authority(config),
         )
         print(f"Restored verified backup to separate path: {restored}")
         return 0
-    except (BackupError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
+    except (
+        BackupError,
+        backup_guard.BackupEvidenceError,
+        StoreAuthorityError,
+        OSError,
+        sqlite3.Error,
+        subprocess.TimeoutExpired,
+    ) as exc:
         print(f"repoctl backup {arguments.operation} failed: {exc}", file=sys.stderr)
         return 2
 

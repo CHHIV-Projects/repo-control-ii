@@ -107,12 +107,12 @@ installed units. The backup timer runs at minutes 00, 15, 30, and 45. A
 separate monitor timer runs every five minutes and checks the newest
 verified-manifest age against 20 minutes, validating the recorded backup hash.
 The monitor does not require the NAS mount to start; when the share is
-unavailable it reports the mount mismatch and attempts the configured
-independent alert hook. The hook receives the approved route identifier as
-its first argument and alert text on stdin. The hook and destination must be
-selected and tested by the operator; no approved route is currently
-configured. A local journal entry or simulated hook is not proof that the
-intended operator received an alert.
+unavailable it reports the mount mismatch. M010.018 selects repeated local
+terminal/journal warnings; the monitor does not invoke the optional alert-hook
+configuration. These warnings are not unattended notifications and do not
+prove that an operator saw them. The monitor proposal remains uninstalled, and
+journal retention and inspection must be verified during the operational
+rehearsal.
 
 When a 20-minute alert fires, the operator should immediately verify the NAS
 mount identity, restore backup job operation, and confirm a new verified
@@ -122,6 +122,25 @@ keep writes paused until a fresh verified copy exists. The proposed monitor
 checks every five minutes, but that schedule and response window do not prove
 the one-hour loss limit. Restore duration, alert delivery, and actual NAS
 behavior must be measured before relying on that objective.
+
+## M010.018 managed-write guard
+
+For an active managed InformationStore only, a successful verified NAS backup
+publishes a private local recovery-point record bound to the exact database,
+authority configuration, repository and selected milestone. Managed writes
+validate that evidence before starting a transaction and again before commit;
+missing, malformed, stale, future-dated, or mismatched evidence pauses writes
+at an inclusive 45-minute age. The verified backup path refreshes the record.
+Reads, backup creation, and restore to a separate disposable path remain
+available while managed writes are paused. The guard does not change current
+file-backed service behavior and has not been enabled in production.
+
+The monitor's 20-minute warning threshold is independent of the 45-minute
+write cutoff. While a check is unhealthy, it prints an unresolved local
+warning; after a fresh verified backup, a healthy run reports current
+coverage. The implementation uses monitor output rather than a separate
+status file, so actual scheduling, journal persistence, warning/recovery
+cadence, and operator acknowledgement still require the M010.018 rehearsal.
 
 ## Rehearsal boundary
 
