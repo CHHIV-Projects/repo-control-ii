@@ -23,6 +23,11 @@ from .information_store import (
     InformationStore,
     StoreIdentity,
     V1FixtureBundle,
+    _IMPORTED_PROMPT_APPROVAL_LINK_EVIDENCE,
+    _IMPORTED_PROMPT_APPROVAL_SOURCE_KIND,
+    _imported_prompt_approval_decision_id,
+    _imported_prompt_approval_payload,
+    _json_text,
     build_historical_closeout_path_reconciliation_receipt,
     build_historical_path_reconciliation_receipt,
     historical_prompt_path_alias,
@@ -43,7 +48,7 @@ from .scanner.core import (
 from .store_authority import load_store_authority
 from .web.repository_registry import RepositoryEntry, RepositoryRegistry
 from .workflow.architect_dispatches import ArchitectDispatchError, read_owner_dispatch_ledger_snapshot
-from .workflow.lifecycle import WorkflowRecordError, _reduce_events
+from .workflow.lifecycle import WorkflowRecordError, _reduce_events, matching_prompt_approval_event
 
 
 _CANONICAL_MILESTONE_ID = re.compile(r"(?:M[0-9]{3}(?:\.[0-9]{3})+|R[0-9]{3}\.[0-9]{2})\Z")
@@ -59,6 +64,54 @@ def _sha256(data: bytes) -> str:
 
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _is_valid_imported_prompt_reconfirmation(
+    decision: sqlite3.Row,
+    *,
+    repository_id: str,
+    milestone_id: str,
+    document_id: str,
+    revision_id: str,
+    content_sha256: str,
+    source_id: str,
+    selection_id: str,
+    selection_revision: int,
+) -> bool:
+    source_kind = decision["source_kind"]
+    confirmation = {
+        "po_browser_reconfirmation": "new_explicit_browser_po_decision",
+        "fixture_reconfirmation": "new_explicit_fixture_po_decision",
+    }.get(source_kind)
+    if confirmation is None:
+        return False
+    try:
+        payload = json.loads(decision["payload_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return (
+        decision["decision_type"] == "APPROVED"
+        and decision["actor_role"] == "product_owner"
+        and decision["actor_attribution"]
+        == (
+            "Explicit new PO browser confirmation; identity and historical revision are not authenticated."
+            if source_kind == "po_browser_reconfirmation"
+            else "Explicit new fixture PO confirmation; identity and historical revision are not authenticated."
+        )
+        and decision["po_confirmed"] == 1
+        and payload.get("repository_id") == repository_id
+        and payload.get("milestone_id") == milestone_id
+        and payload.get("document_id") == document_id
+        and payload.get("revision_id") == revision_id
+        and payload.get("content_sha256") == content_sha256
+        and payload.get("import_source_id") == source_id
+        and payload.get("selection_id") == selection_id
+        and payload.get("selection_revision") == selection_revision
+        and payload.get("decision_id") == decision["decision_id"]
+        and payload.get("confirmation") == confirmation
+        and payload.get("historical_event_time_revision") == "UNKNOWN/NOT VERIFIED"
+        and payload.get("lifecycle_changed") is False
+    )
 
 
 def _registry_binding_sha256(registry: RepositoryRegistry) -> str:
@@ -991,6 +1044,7 @@ def rehearse_milestone_imports(
                 "projection": projection,
                 "linked_event_count": first["linked_event_count"],
                 "approved_prompt_revision_id": first["approved_prompt_revision_id"],
+                "prompt_approval_provenance": first["prompt_approval_provenance"],
                 "approval_events_are_reported_source_claims": True,
                 "dispatch_count": first["dispatch_count"],
                 "dispatch_audit": dispatch_audit,
@@ -1327,11 +1381,10 @@ def verify_prepared_source_parity(
     )
     if inventory.exclusions or len(inventory.inventories) != len(registry.entries):
         raise MigrationRehearsalError(f"Registered source inventory is incomplete: {inventory.exclusions}")
-    for table in ("document_revision_decision", "workflow_document_link", "document_publication"):
-        if connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:
-            raise MigrationRehearsalError("Prepared import contains unverified decisions, links, or publications.")
     expected_sources: dict[tuple[str, str, str, str], bytes] = {}
     expected_receipts: dict[str, dict[str, Any]] = {}
+    expected_decision_count = 0
+    expected_link_count = 0
     for item in inventory.inventories:
         entry = item.repository
         prompts = [
@@ -1393,6 +1446,34 @@ def verify_prepared_source_parity(
                 )
                 if workflow is not None else []
             )
+            approval_event = matching_prompt_approval_event(
+                events,
+                repository_key=entry.key,
+                repository_id=entry.repository_id,
+                milestone_id=milestone_id,
+                prompt_path=prompt.path,
+                content_sha256=prompt.content_sha256,
+            )
+            prompt_document_id = _sha256(
+                _json_text([entry.repository_id, milestone_id, prompt.path]).encode("utf-8")
+            )[:32]
+            prompt_revision_id = _sha256(
+                f"{prompt_document_id}:{prompt.content_sha256}".encode("utf-8")
+            )[:32]
+            approval_payload = (
+                _imported_prompt_approval_payload(
+                    repository_key=entry.key,
+                    repository_id=entry.repository_id,
+                    milestone_id=milestone_id,
+                    prompt_path=prompt.path,
+                    prompt_sha256=prompt.content_sha256,
+                    source_event=approval_event,
+                    workflow_path=workflow.path,
+                    workflow_sha256=_sha256(workflow.content.encode("utf-8")),
+                )
+                if approval_event is not None and workflow is not None
+                else None
+            )
             event_rows = connection.execute(
                 """SELECT event_id, event_type, event_timestamp, request_id, payload_json, payload_sha256
                    FROM workflow_event
@@ -1424,8 +1505,132 @@ def verify_prepared_source_parity(
                 "SELECT prompt_path, prompt_revision_id FROM milestone WHERE repository_id = ? AND milestone_id = ?",
                 (entry.repository_id, milestone_id),
             ).fetchone()
-            if milestone is None or milestone["prompt_path"] != prompt.path or milestone["prompt_revision_id"] is not None:
-                raise MigrationRehearsalError(f"Prepared prompt approval is not unverified for {entry.key}/{milestone_id}.")
+            approval_links = connection.execute(
+                """
+                SELECT event_id, document_id, revision_id, content_sha256, link_role, evidence
+                FROM workflow_document_link
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (entry.repository_id, milestone_id),
+            ).fetchall()
+            approval_decisions = connection.execute(
+                """
+                SELECT decision_id, document_id, revision_id, decision_type, actor_role,
+                       actor_attribution, po_confirmed, source_kind, decided_at, payload_json
+                FROM document_revision_decision
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (entry.repository_id, milestone_id),
+            ).fetchall()
+            publication_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM document_publication
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (entry.repository_id, milestone_id),
+            ).fetchone()[0]
+            prompt_sources = connection.execute(
+                """
+                SELECT source_id, source_sha256, source_bytes
+                FROM import_source
+                WHERE repository_id = ? AND milestone_id = ?
+                  AND source_kind = 'prompt' AND source_path = ?
+                """,
+                (entry.repository_id, milestone_id, prompt.path),
+            ).fetchall()
+            selected_state = connection.execute(
+                """
+                SELECT milestone_id, selection_id, selection_revision
+                FROM repository_selection WHERE repository_id = ?
+                """,
+                (entry.repository_id,),
+            ).fetchone()
+            legacy_reconfirmation = False
+            if approval_event is not None:
+                if approval_payload is None or workflow is None:
+                    raise MigrationRehearsalError(
+                        f"Exact prompt approval lacks workflow provenance for {entry.key}/{milestone_id}."
+                    )
+                expected_link = (
+                    approval_event["event_id"],
+                    prompt_document_id,
+                    prompt_revision_id,
+                    prompt.content_sha256,
+                    "prompt",
+                    _IMPORTED_PROMPT_APPROVAL_LINK_EVIDENCE,
+                )
+                expected_decision = (
+                    _imported_prompt_approval_decision_id(
+                        entry.repository_id,
+                        milestone_id,
+                        approval_event["event_id"],
+                    ),
+                    prompt_document_id,
+                    prompt_revision_id,
+                    "APPROVED",
+                    approval_event["actor_role"],
+                    approval_event["actor_attribution"],
+                    1,
+                    _IMPORTED_PROMPT_APPROVAL_SOURCE_KIND,
+                    approval_event["timestamp"],
+                    _json_text(approval_payload),
+                )
+                if (
+                    len(approval_links) != 1
+                    or tuple(approval_links[0]) != expected_link
+                    or len(approval_decisions) != 1
+                    or tuple(approval_decisions[0]) != expected_decision
+                ):
+                    raise MigrationRehearsalError(
+                        f"Exact prompt approval provenance differs for {entry.key}/{milestone_id}."
+                    )
+                expected_decision_count += 1
+                expected_link_count += 1
+            elif approval_decisions:
+                if (
+                    len(approval_decisions) != 1
+                    or approval_links
+                    or len(prompt_sources) != 1
+                    or selected_state is None
+                    or selected_state["milestone_id"] != milestone_id
+                    or not _is_valid_imported_prompt_reconfirmation(
+                        approval_decisions[0],
+                        repository_id=entry.repository_id,
+                        milestone_id=milestone_id,
+                        document_id=prompt_document_id,
+                        revision_id=prompt_revision_id,
+                        content_sha256=prompt.content_sha256,
+                        source_id=prompt_sources[0]["source_id"],
+                        selection_id=selected_state["selection_id"],
+                        selection_revision=selected_state["selection_revision"],
+                    )
+                ):
+                    raise MigrationRehearsalError(
+                        f"Imported prompt confirmation provenance differs for {entry.key}/{milestone_id}."
+                    )
+                legacy_reconfirmation = True
+                expected_decision_count += 1
+            elif approval_links:
+                raise MigrationRehearsalError(
+                    f"Unverified workflow document link exists for {entry.key}/{milestone_id}."
+                )
+            if publication_count:
+                raise MigrationRehearsalError(
+                    f"Imported prompt unexpectedly has publication records for {entry.key}/{milestone_id}."
+                )
+            expected_prompt_revision_id = (
+                prompt_revision_id
+                if approval_event is not None or legacy_reconfirmation
+                else None
+            )
+            if (
+                milestone is None
+                or milestone["prompt_path"] != prompt.path
+                or milestone["prompt_revision_id"] != expected_prompt_revision_id
+            ):
+                raise MigrationRehearsalError(
+                    f"Prepared prompt approval pointer differs for {entry.key}/{milestone_id}."
+                )
             expected_document_count = 1 + (closeout is not None)
             for table in ("document", "document_revision"):
                 count = connection.execute(
@@ -1438,7 +1643,7 @@ def verify_prepared_source_parity(
                 if record is None:
                     continue
                 revision = connection.execute(
-                    """SELECT d.logical_key, d.approved_revision_id, r.content, r.content_sha256,
+                    """SELECT d.logical_key, d.approved_revision_id, r.revision_id, r.content, r.content_sha256,
                               r.source_kind, r.parent_revision_id, r.provenance_json
                        FROM document d
                        JOIN document_revision r ON r.document_id = d.document_id
@@ -1450,11 +1655,25 @@ def verify_prepared_source_parity(
                 provenance: dict[str, Any] = {"source_path": record.path, "source_sha256": record.content_sha256}
                 if record.logical_type == "CLOSEOUT" and closeout_receipt is not None:
                     provenance["historical_closeout_path_reconciliation"] = closeout_receipt
+                expected_document_approval = (
+                    prompt_revision_id
+                    if record.logical_type == "PROMPT"
+                    and (approval_event is not None or legacy_reconfirmation)
+                    else None
+                )
                 if (
-                    len(revision) != 1 or revision[0]["content"] != record.content
+                    len(revision) != 1
+                    or revision[0]["content"] != record.content
                     or revision[0]["content_sha256"] != record.content_sha256
                     or revision[0]["logical_key"] != record.path
-                    or revision[0]["approved_revision_id"] is not None
+                    or (
+                        record.logical_type == "PROMPT"
+                        and revision[0]["revision_id"] != prompt_revision_id
+                    )
+                ):
+                    raise MigrationRehearsalError(f"Document parity failed for {entry.key}/{record.path}.")
+                if (
+                    revision[0]["approved_revision_id"] != expected_document_approval
                     or revision[0]["source_kind"] != "v1_import"
                     or revision[0]["parent_revision_id"] is not None
                     or json.loads(revision[0]["provenance_json"]) != provenance
@@ -1522,6 +1741,23 @@ def verify_prepared_source_parity(
                 or json.loads(history[0]["payload_json"]) != expected
             ):
                 raise MigrationRehearsalError(f"Dispatch provenance parity failed for {entry.key}/{dispatch_id}.")
+    actual_decision_count = connection.execute(
+        "SELECT COUNT(*) FROM document_revision_decision"
+    ).fetchone()[0]
+    actual_link_count = connection.execute(
+        "SELECT COUNT(*) FROM workflow_document_link"
+    ).fetchone()[0]
+    publication_count = connection.execute(
+        "SELECT COUNT(*) FROM document_publication"
+    ).fetchone()[0]
+    if (
+        actual_decision_count != expected_decision_count
+        or actual_link_count != expected_link_count
+        or publication_count != 0
+    ):
+        raise MigrationRehearsalError(
+            "Prepared approval decisions, workflow links, or publications differ from verified source states."
+        )
     receipt_rows = connection.execute(
         """SELECT r.repository_id, r.request_id, r.request_hash, r.resulting_revision, r.result_json,
                   w.store_revision

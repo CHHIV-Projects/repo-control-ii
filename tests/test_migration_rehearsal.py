@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,10 +23,17 @@ from repoctl.migration_rehearsal import (
 )
 from repoctl.scanner.core import StateArtifactWriteFreezeError
 from repoctl.scanner.util import make_repository_id
+from repoctl.store_authority import activate_prepared_authority, preview_prepared_authority
+from repoctl.web.app import create_web_app
 from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
 from repoctl.document_library import SourceEnumerationError
 from repoctl.workflow import architect_dispatches, lifecycle
-from repoctl.workflow.milestones import save_milestone_selection
+from repoctl.workflow.milestones import (
+    discover_milestones,
+    load_milestone_selection,
+    prompt_identity,
+    save_milestone_selection,
+)
 from tests.test_sqlite_workflow_poc import _closeout_history
 
 
@@ -135,6 +145,44 @@ class MigrationRehearsalTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "separate disposable temp directory"):
             rehearse_milestone_imports(inventory, self.repository_root)
+
+    def test_import_does_not_promote_approval_after_prompt_bytes_change(self) -> None:
+        state_root = self.dispatch_state_root
+        save_milestone_selection(self.repository_root, state_root, "M999.002")
+        candidate = next(
+            item for item in discover_milestones(self.repository_root)["candidates"]
+            if item["milestone_id"] == "M999.002"
+        )
+        reviewed_sha256 = prompt_identity(self.repository_root, "docs/milestones", candidate)
+        lifecycle.record_milestone_event(
+            self.repository_root,
+            state_root,
+            "docs/milestones",
+            candidate,
+            event_type="prompt_approved",
+            summary="Approve before the source prompt changes.",
+            actor_role="product_owner",
+            po_approved=True,
+            approval_repository_key=self.repository.key,
+            expected_prompt_sha256=reviewed_sha256,
+        )
+        prompt = self.repository_root / candidate["prompt_path"]
+        prompt.write_bytes(prompt.read_bytes() + b"\nChanged after approval.\n")
+
+        inventory = inventory_selected_repository(
+            self.repository,
+            current_milestone_id="M999.002",
+            dispatch_state_root=state_root,
+        )
+        destination = self.root / "stale-approval-import"
+        destination.mkdir()
+        report = rehearse_milestone_imports(inventory, destination)
+        imported = next(
+            item for item in report["imports"] if item["milestone_id"] == "M999.002"
+        )
+        self.assertEqual(imported["prompt_approval_provenance"]["status"], "unverified_lifecycle_only")
+        self.assertIsNone(imported["approved_prompt_revision_id"])
+        self.assertEqual(imported["linked_event_count"], 0)
 
     def test_quiesced_managed_import_prepares_all_scopes_without_changing_v1_selection(self) -> None:
         pointer_path = self.dispatch_state_root / self.repository_id / "milestones/selection.json"
@@ -256,6 +304,306 @@ class MigrationRehearsalTests(unittest.TestCase):
             freeze_id=failed_runtime_freeze["freeze_id"],
             abort_reason="The pinned SQLite runtime eligibility check failed.",
         )
+
+    def test_exact_browser_approval_survives_import_activation_and_fresh_coder_status(self) -> None:
+        source_state_root = self.dispatch_state_root
+        save_milestone_selection(self.repository_root, source_state_root, "M999.002")
+        for arguments in (
+            ["git", "-C", str(self.repository_root), "init", "-q"],
+            ["git", "-C", str(self.repository_root), "config", "user.email", "test@example.com"],
+            ["git", "-C", str(self.repository_root), "config", "user.name", "Test User"],
+            ["git", "-C", str(self.repository_root), "add", "-A"],
+            ["git", "-C", str(self.repository_root), "commit", "-qm", "migration fixture"],
+        ):
+            subprocess.run(arguments, check=True, capture_output=True, text=True)
+        registry = RepositoryRegistry((self.repository,), default_key=self.repository.key)
+        registry_path = self.root / "repositories.toml"
+        registry_path.write_text("# Isolated migration fixture registry\n", encoding="utf-8")
+        with patch(
+            "repoctl.web.repository_registry.RepositoryRegistry.from_toml",
+            return_value=registry,
+        ):
+            app = create_web_app(
+                repository_registry_path=registry_path,
+                state_root=source_state_root,
+            )
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        self.assertEqual(browser.get("/milestones").status_code, 200)
+        selection = load_milestone_selection(self.repository_root, source_state_root)["selection"]
+        workflow = lifecycle.load_milestone_workflow(
+            self.repository_root,
+            source_state_root,
+            self.repository.milestone_root,
+            selection,
+        )
+        with browser.session_transaction() as browser_session:
+            csrf_token = browser_session["csrf_token"]
+        prompt_bytes = (self.repository_root / selection["prompt_path"]).read_bytes()
+        approval_response = browser.post(
+            "/milestones/workflow/event",
+            data={
+                "csrf_token": csrf_token,
+                "repository_key": self.repository.key,
+                "repository_generation": "0",
+                "milestone_id": selection["milestone_id"],
+                "prompt_path": selection["prompt_path"],
+                "expected_prompt_identity": workflow["prompt_identity"],
+                "expected_phase": "PLANNING",
+                "expected_event_count": str(workflow["event_count"]),
+                "event_type": "prompt_approved",
+                "summary": "Approve the exact reviewed fixture prompt.",
+                "actor_role": "product_owner",
+                "po_approved": "yes",
+            },
+        )
+        self.assertEqual(approval_response.status_code, 302)
+        workflow = lifecycle.load_milestone_workflow(
+            self.repository_root,
+            source_state_root,
+            self.repository.milestone_root,
+            selection,
+        )
+        approval_event = workflow["event_history"][0]
+        prompt_sha256 = hashlib.sha256(prompt_bytes).hexdigest()
+        self.assertEqual(
+            approval_event["prompt_approval"],
+            {
+                "schema_version": 1,
+                "repository_key": self.repository.key,
+                "repository_id": self.repository_id,
+                "milestone_id": selection["milestone_id"],
+                "prompt_path": selection["prompt_path"],
+                "content_sha256": prompt_sha256,
+            },
+        )
+        legacy_candidate = next(
+            item for item in discover_milestones(self.repository_root)["candidates"]
+            if item["milestone_id"] == "M999.001"
+        )
+        legacy_workflow_path = (
+            self.repository_root / self.workflow_path
+        )
+        legacy_workflow_events = lifecycle._read_ledger(
+            legacy_workflow_path,
+            self.repository_id,
+            legacy_candidate,
+        )["events"]
+        source_selection_path = (
+            source_state_root / self.repository_id / "milestones/selection.json"
+        )
+        dispatch_path = (
+            source_state_root / self.repository_id / "architect_dispatches.json"
+        )
+        source_snapshot = {
+            self.repository_root / selection["prompt_path"]: prompt_bytes,
+            self.repository_root / workflow["sidecar_path"]: (
+                self.repository_root / workflow["sidecar_path"]
+            ).read_bytes(),
+            source_selection_path: source_selection_path.read_bytes(),
+            dispatch_path: dispatch_path.read_bytes(),
+        }
+
+        destination = self.root / "exact-approval-import"
+        candidate_state_root = self.root / "exact-approval-candidate-state"
+        destination.mkdir()
+        candidate_state_root.mkdir()
+        freeze = freeze_managed_import_writers(registry, state_root=source_state_root)
+        with (
+            patch(
+                "repoctl.web.repository_registry.RepositoryRegistry.from_toml",
+                return_value=registry,
+            ),
+        ):
+            report = prepare_managed_repository_imports(
+                registry,
+                destination,
+                state_root=source_state_root,
+                candidate_state_root=candidate_state_root,
+                writers_quiesced=True,
+            )
+            self.assertEqual(report["mismatch_count"], 0)
+            repository_report = next(
+                item for item in report["repositories"]
+                if item["repository_key"] == self.repository.key
+            )["rehearsal"]
+            imported_approval = next(
+                item for item in repository_report["imports"]
+                if item["milestone_id"] == selection["milestone_id"]
+            )
+            self.assertEqual(
+                imported_approval["prompt_approval_provenance"]["status"],
+                "migrated_exact_byte_source_approval",
+            )
+            self.assertEqual(imported_approval["linked_event_count"], 1)
+            self.assertIsNotNone(imported_approval["approved_prompt_revision_id"])
+            binding = next(
+                item for item in report["prepared_selection_bindings"]
+                if item["milestone_id"] == selection["milestone_id"]
+            )
+            expected_selection_hash = binding["v1_selection_sha256"]
+            identity_fields = {
+                key: value for key, value in binding.items() if key != "v1_selection_sha256"
+            }
+            store = InformationStore.bind_prepared_v1_selection(
+                report["prepared_database_path"],
+                StoreIdentity(**identity_fields),
+                selection_state_root=candidate_state_root,
+                expected_v1_sha256=expected_selection_hash,
+                cutover_confirmed=True,
+            )
+            imported_document = next(
+                item for item in store.list_documents()["documents"]
+                if item["logical_type"] == "PROMPT"
+            )
+            self.assertEqual(
+                imported_document["approved_revision_id"],
+                imported_document["draft_revision_id"],
+            )
+            imported_prompt = store.get_revision(
+                imported_document["document_id"],
+                imported_document["approved_revision_id"],
+            )
+            self.assertEqual(imported_prompt["content_sha256"], prompt_sha256)
+            generation = "c" * 32
+            plan = preview_prepared_authority(
+                report["prepared_database_path"],
+                candidate_state_root,
+                registry_path,
+                generation,
+                source_state_root=source_state_root,
+            )
+            activate_prepared_authority(
+                report["prepared_database_path"],
+                candidate_state_root,
+                registry_path,
+                generation,
+                expected_plan_sha256=plan["plan_sha256"],
+                po_confirmed=True,
+                writers_quiesced=True,
+                source_parity_confirmed=True,
+                source_state_root=source_state_root,
+            )
+        release_managed_import_writers(
+            registry,
+            state_root=source_state_root,
+            freeze_id=freeze["freeze_id"],
+        )
+        self.assertEqual(
+            {path: path.read_bytes() for path in source_snapshot},
+            source_snapshot,
+        )
+        with sqlite3.connect(report["prepared_database_path"]) as connection:
+            connection.row_factory = sqlite3.Row
+            self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            target_events = [
+                json.loads(row["payload_json"])
+                for row in connection.execute(
+                    """
+                    SELECT payload_json FROM workflow_event
+                    WHERE repository_id = ? AND milestone_id = ? ORDER BY sequence
+                    """,
+                    (self.repository_id, selection["milestone_id"]),
+                )
+            ]
+            legacy_events = [
+                json.loads(row["payload_json"])
+                for row in connection.execute(
+                    """
+                    SELECT payload_json FROM workflow_event
+                    WHERE repository_id = ? AND milestone_id = ? ORDER BY sequence
+                    """,
+                    (self.repository_id, "M999.001"),
+                )
+            ]
+            decision = connection.execute(
+                """
+                SELECT decision_type, actor_role, po_confirmed, source_kind, payload_json
+                FROM document_revision_decision
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (self.repository_id, selection["milestone_id"]),
+            ).fetchone()
+            link_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM workflow_document_link
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (self.repository_id, selection["milestone_id"]),
+            ).fetchone()[0]
+        self.assertEqual(target_events, workflow["event_history"])
+        self.assertEqual(legacy_events, legacy_workflow_events)
+        self.assertEqual(link_count, 1)
+        self.assertEqual(
+            (decision["decision_type"], decision["actor_role"], decision["po_confirmed"], decision["source_kind"]),
+            ("APPROVED", "product_owner", 1, "v1_imported_prompt_approval"),
+        )
+        decision_payload = json.loads(decision["payload_json"])
+        self.assertEqual(decision_payload["source_event_id"], approval_event["event_id"])
+        self.assertEqual(decision_payload["source_prompt_sha256"], prompt_sha256)
+
+        cli_script = (
+            "import sys\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            "from repoctl.scanner import core as scanner_core\n"
+            "from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry\n"
+            "from repoctl.workflow import coder_interface\n"
+            "os.environ['REPOCTL_BACKUP_COVERAGE_PATH'] = str(\n"
+            "    Path(sys.argv[5]).parent / 'candidate-test-recovery-point.json'\n"
+            ")\n"
+            "repository = Path(sys.argv[1]).resolve()\n"
+            "entry = RepositoryEntry(\n"
+            "    key=sys.argv[2], name='Migration fixture', path=repository, repository_id=sys.argv[3],\n"
+            "    milestone_root='docs/milestones', documents={'context': 'docs/context/project_context.md'},\n"
+            ")\n"
+            "registry = RepositoryRegistry((entry,), default_key=entry.key)\n"
+            "RepositoryRegistry.from_toml = classmethod(lambda cls, path: registry)\n"
+            "coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH = Path(sys.argv[4])\n"
+            "coder_interface.resolve_repository_entry = lambda repository_path=None, milestone_root=None: entry\n"
+            "scanner_core.DEFAULT_STATE_ROOT = Path(sys.argv[5]).parent / 'unused-default-state'\n"
+            "from repoctl.cli import main\n"
+            "raise SystemExit(main(sys.argv[6:]))\n"
+        )
+        def run_independent_status():
+            return subprocess.run(
+                [
+                sys.executable,
+                "-c",
+                cli_script,
+                str(self.repository_root),
+                self.repository.key,
+                self.repository_id,
+                str(registry_path),
+                str(candidate_state_root),
+                "coder-status",
+                "--repository",
+                str(self.repository_root),
+                "--state-root",
+                str(candidate_state_root),
+                "--format",
+                "json",
+                ],
+                cwd=self.repository_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        statuses = []
+        for _ in range(2):
+            cli_result = run_independent_status()
+            self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
+            status = json.loads(cli_result.stdout)
+            self.assertEqual(status["information_store_authority"], "sqlite_managed")
+            self.assertEqual(status["selection"]["milestone_id"], selection["milestone_id"])
+            self.assertEqual(status["prompt"]["identity"], (
+                f"{imported_prompt['document_id']}:{imported_prompt['revision_id']}:{prompt_sha256}"
+            ))
+            statuses.append(status)
+        self.assertEqual(statuses[0]["prompt"], statuses[1]["prompt"])
+        self.assertEqual(statuses[0]["selection"], statuses[1]["selection"])
 
     def test_registered_source_drift_requires_abort_before_writer_release(self) -> None:
         pointer_path = self.dispatch_state_root / self.repository_id / "milestones/selection.json"

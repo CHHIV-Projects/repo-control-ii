@@ -238,6 +238,7 @@ class MilestoneWebTests(unittest.TestCase):
                         "repository_generation": "0",
                         "milestone_id": "R003.01",
                         "prompt_path": selection["prompt_path"],
+                        "expected_prompt_identity": workflow["prompt_identity"],
                         "expected_phase": "PLANNING",
                         "expected_event_count": str(workflow["event_count"]),
                         "event_type": "prompt_approved",
@@ -479,6 +480,10 @@ class MilestoneWebTests(unittest.TestCase):
             [item["event_type"] for item in workflow["event_history"]],
             ["prompt_approved", "implementation_started"],
         )
+        self.assertEqual(
+            workflow["event_history"][0]["prompt_approval"]["content_sha256"],
+            workflow["prompt_identity"],
+        )
         current_receipt = measurements.summary(artifact_root(entry, state_root))["refreshes"][0]
         self.assertEqual(current_receipt["action"], "noop_current")
 
@@ -547,6 +552,10 @@ class MilestoneWebTests(unittest.TestCase):
         self.assertEqual(
             [item["event_type"] for item in workflow["event_history"]],
             ["prompt_approved", "implementation_started"],
+        )
+        self.assertEqual(
+            workflow["event_history"][0]["prompt_approval"]["content_sha256"],
+            workflow["prompt_identity"],
         )
 
     def test_combined_browser_cycle_staleness_errors_and_authority(self) -> None:

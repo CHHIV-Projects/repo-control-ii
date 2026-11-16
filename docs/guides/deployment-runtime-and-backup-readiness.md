@@ -1382,3 +1382,63 @@ M010.025 validates this explicit one-time reconciliation on disposable data;
 it does not authorize another production staging attempt or maintenance
 window. Approval-time revision/hash capture may be proposed as a separate
 follow-up, with no bulk historical backfill.
+
+#### M010.026 exact-prompt approval dependency for a future fresh candidate
+
+M010.026 adds optional `prompt_approval` evidence to newly written
+file-backed `prompt_approved` events. The evidence binds repository key/ID,
+milestone, canonical prompt path, and the SHA-256 of the exact raw prompt bytes
+revalidated at the lifecycle write boundary. The file-backed workflow has no
+separate immutable document revision ID; this digest identifies the reviewed
+bytes. The managed import creates its own immutable revision and binds the
+source event to that exact revision. The evidence remains a reported
+Product Owner action, not actor authentication.
+
+The shortest next staging sequence is:
+
+1. **Obtain separate deployment and staging authorization.** Before the
+   Product Owner reviews or approves a future staging prompt, deploy the
+   approved code containing [the file-backed approval writer](../../src/repoctl/workflow/lifecycle.py),
+   [both browser approval routes](../../src/repoctl/web/app.py), and the
+   [managed importer/parity checks](../../src/repoctl/information_store.py)
+   and [source-parity verifier](../../src/repoctl/migration_rehearsal.py).
+   Use the pinned CPython 3.12.16 / SQLite 3.51.3 runtime for the service and
+   importer. Confirm `/healthz` reports `legacy_files` before candidate
+   preparation and advertises
+   `runtime_capabilities.workflow.prompt_approval_evidence_schema_version`
+   as `1`. A missing capability means the running service cannot establish
+   approval-time byte evidence; do not approve the staging prompt or infer
+   support from a local checkout. M010.026 does not authorize deployment or
+   restarting the active service.
+2. **Prove the source approval before any downtime is scheduled.** Inspect the
+   new sidecar `prompt_approved` event and confirm its single `prompt_approval`
+   object matches the selected repository key/ID, milestone, canonical prompt
+   path, and `sha256sum` of the exact prompt file. Do not substitute a later
+   Coder hash, timestamp, filename, lifecycle phase, or manually entered
+   digest. Any missing, malformed, duplicate, stale, or mismatched evidence
+   stays lifecycle-only and must not be treated as an imported approval.
+3. **Run the separately authorized fresh-candidate rehearsal and proof gates.**
+   Before production scheduling, use the real importer on disposable data,
+   verify exact source parity, and preview/activate a separate candidate root.
+   The prepared approval must have one
+   `v1_imported_prompt_approval` decision and exact event-to-revision link;
+   the document and milestone pointers must name the same imported revision.
+   Verify original workflow chronology and source bytes are unchanged,
+   `PRAGMA integrity_check` is `ok`, `PRAGMA foreign_key_check` is empty, and
+   two fresh independent `coder-status` processes report the exact repository,
+   milestone, selection, revision, and digest. An exact-source retry must not
+   duplicate the approval decision or link.
+
+If the source history predates this evidence, including the M010.024 B1 event,
+or if its bytes/scope do not match, the importer must leave the prompt
+unapproved. Only on a separately authorized fresh candidate, follow the
+M010.025 one-time exact-revision confirmation: verify the candidate-bound
+revision and source parity, create its valid recovery point while still
+unapproved, then explicitly confirm that revision. This confirmation is a new
+candidate-local decision, not recovered historical approval. M010.026's own
+earlier approval and all other old events remain unchanged and do not gain
+digests retroactively.
+
+The held `/var/lib/repo-control-staging/m010.024` candidate remains untouched.
+Production backup/restore, installed timer verification, candidate writer
+release, cutover, and any maintenance window remain separate NO-GO gates.

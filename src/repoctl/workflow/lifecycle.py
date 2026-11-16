@@ -28,6 +28,7 @@ from .milestones import (
 
 WORKFLOW_LEDGER_SCHEMA_VERSION = 1
 WORKFLOW_EVENT_SCHEMA_VERSION = 1
+PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION = 1
 _LEDGER_SCHEMA_VERSION = WORKFLOW_LEDGER_SCHEMA_VERSION
 _MAX_SIDECAR_BYTES = 5_000_000
 _MAX_EVENTS = 2000
@@ -57,6 +58,14 @@ _EVENT_TYPES = {
 }
 _ACTOR_ROLES = {"product_owner", "architect", "coder", "repo_control"}
 _DISPATCH_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_PROMPT_APPROVAL_EVIDENCE_FIELDS = {
+    "schema_version",
+    "repository_key",
+    "repository_id",
+    "milestone_id",
+    "prompt_path",
+    "content_sha256",
+}
 _WAITING_CATEGORIES = {"clarification", "decision", "blocker", "escalation", "other"}
 EVENT_OPTIONS = (
     ("prompt_approved", "Mark prompt READY (Product Owner approval)"),
@@ -92,12 +101,49 @@ def workflow_runtime_capabilities() -> dict[str, Any]:
     return {
         "ledger_schema_version": WORKFLOW_LEDGER_SCHEMA_VERSION,
         "event_schema_version": WORKFLOW_EVENT_SCHEMA_VERSION,
+        "prompt_approval_evidence_schema_version": PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION,
         "supported_event_types": sorted(_EVENT_TYPES),
     }
 
 
 class WorkflowRecordError(RuntimeError):
     pass
+
+
+class PromptApprovalStaleError(WorkflowRecordError):
+    pass
+
+
+def matching_prompt_approval_event(
+    events: list[dict[str, Any]],
+    *,
+    repository_key: str,
+    repository_id: str,
+    milestone_id: str,
+    prompt_path: str,
+    content_sha256: str,
+) -> dict[str, Any] | None:
+    approvals = [event for event in events if event.get("event_type") == "prompt_approved"]
+    if len(approvals) != 1:
+        return None
+    event = approvals[0]
+    if (
+        event.get("actor_role") != "product_owner"
+        or event.get("po_approved") is not True
+        or event.get("phase_before") != "PLANNING"
+        or event.get("phase_after") != "READY"
+        or event.get("prompt_approval")
+        != {
+            "schema_version": PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION,
+            "repository_key": repository_key,
+            "repository_id": repository_id,
+            "milestone_id": milestone_id,
+            "prompt_path": prompt_path,
+            "content_sha256": content_sha256,
+        }
+    ):
+        return None
+    return event
 
 
 def _sidecar_path(candidate: dict[str, Any]) -> str:
@@ -340,6 +386,33 @@ def _validate_event_shape(event: Any) -> None:
         raise WorkflowRecordError("Workflow record contains event text above the supported size limit.")
     if not isinstance(event.get("po_approved"), bool):
         raise WorkflowRecordError("Workflow record contains an invalid approval marker.")
+    if event.get("event_type") == "prompt_approved":
+        if "prompt_approval" in event:
+            approval = event["prompt_approval"]
+            if (
+                not isinstance(approval, dict)
+                or set(approval) != _PROMPT_APPROVAL_EVIDENCE_FIELDS
+                or type(approval.get("schema_version")) is not int
+                or approval["schema_version"] != PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION
+                or not isinstance(approval.get("repository_key"), str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", approval["repository_key"])
+                or not isinstance(approval.get("repository_id"), str)
+                or not approval["repository_id"]
+                or len(approval["repository_id"]) > 128
+                or not isinstance(approval.get("milestone_id"), str)
+                or not approval["milestone_id"]
+                or len(approval["milestone_id"]) > 128
+                or not isinstance(approval.get("prompt_path"), str)
+                or not approval["prompt_path"]
+                or approval["prompt_path"].startswith("/")
+                or "\\" in approval["prompt_path"]
+                or any(part in {"", ".", ".."} for part in approval["prompt_path"].split("/"))
+                or not isinstance(approval.get("content_sha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", approval["content_sha256"])
+            ):
+                raise WorkflowRecordError("Workflow record contains malformed exact prompt approval evidence.")
+    elif "prompt_approval" in event:
+        raise WorkflowRecordError("Exact prompt approval evidence is valid only on prompt_approved.")
     for field in ("phase_before", "phase_after"):
         if not isinstance(event.get(field), str) or event[field] not in _PHASES:
             raise WorkflowRecordError("Workflow record contains an invalid lifecycle phase.")
@@ -726,6 +799,8 @@ def _record_milestone_event_locked(
     expected_phase: str | None = None,
     expected_event_count: int | None = None,
     expected_prompt_identity: str | None = None,
+    approval_repository_key: str | None = None,
+    expected_prompt_sha256: str | None = None,
 ) -> dict[str, Any]:
     summary = summary.strip()
     if not summary or len(summary) > 2000:
@@ -809,6 +884,10 @@ def _record_milestone_event_locked(
         or selection["selection"]["milestone_id"] != candidate["milestone_id"]
         or selection["selection"]["prompt_path"] != candidate["prompt_path"]
     ):
+        if event_type == "prompt_approved":
+            raise PromptApprovalStaleError(
+                "The selected milestone or prompt changed; reload and review it before approving."
+            )
         raise WorkflowRecordError("The selected milestone changed or is invalid; refresh and retry.")
     inventory = discover_milestones(root, milestone_root)
     current_candidate = next(
@@ -820,14 +899,48 @@ def _record_milestone_event_locked(
         None,
     )
     if current_candidate is None:
+        if event_type == "prompt_approved":
+            raise PromptApprovalStaleError(
+                "The selected prompt is no longer available; reload and review the milestone before approving."
+            )
         raise WorkflowRecordError("The selected prompt is no longer a valid milestone candidate.")
     if event_type == "closeout_submitted" and not current_candidate["closeout_exists"]:
         raise WorkflowRecordError("A currently discovered closeout artifact is required before review submission.")
+    prompt_approval: dict[str, Any] | None = None
+    if event_type == "prompt_approved":
+        if (
+            not isinstance(approval_repository_key, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", approval_repository_key)
+            or not isinstance(expected_prompt_sha256, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_prompt_sha256)
+        ):
+            raise WorkflowRecordError("Prompt approval requires the reviewed repository and prompt digest; reload and review.")
+    elif approval_repository_key is not None or expected_prompt_sha256 is not None:
+        raise WorkflowRecordError("Reviewed prompt identity is valid only for prompt_approved.")
 
     _, milestone_dir = _root_paths(root, milestone_root)
     relative_sidecar = _sidecar_path(current_candidate)
     sidecar_path = root / Path(*PurePosixPath(relative_sidecar).parts)
     with state_artifact_lock(state_root, mutation=True):
+        if event_type == "prompt_approved":
+            try:
+                actual_prompt_sha256 = prompt_identity(root, milestone_root, current_candidate)
+            except MilestoneArtifactError as exc:
+                raise PromptApprovalStaleError(
+                    "The selected prompt is missing or unreadable; reload the milestone and review it before approving."
+                ) from exc
+            if actual_prompt_sha256 != expected_prompt_sha256:
+                raise PromptApprovalStaleError(
+                    "The selected prompt bytes changed since review; reload and review the prompt before approving."
+                )
+            prompt_approval = {
+                "schema_version": PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION,
+                "repository_key": approval_repository_key,
+                "repository_id": repository_id,
+                "milestone_id": current_candidate["milestone_id"],
+                "prompt_path": current_candidate["prompt_path"],
+                "content_sha256": actual_prompt_sha256,
+            }
         if sidecar_path.exists() or sidecar_path.is_symlink():
             try:
                 _contained_file(root, milestone_dir, relative_sidecar)
@@ -976,6 +1089,8 @@ def _record_milestone_event_locked(
                 event_fields["reopen_target_phase"] = reopen_target_phase
             if event_type == VERIFICATION_EVENT_TYPE:
                 event_fields["context_verification"] = context_verification
+            if prompt_approval is not None:
+                event_fields["prompt_approval"] = prompt_approval
             event = _new_event(
                 event_type=event_type,
                 summary=summary,
@@ -1070,6 +1185,8 @@ def record_milestone_action(
     lock_in_summary: str | None = None,
     closure_override_reason: str | None = None,
     outstanding_dispatch_ids: tuple[str, ...] | None = None,
+    approval_repository_key: str | None = None,
+    expected_prompt_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Validate the entire browser action before one atomic sidecar replacement."""
     with state_artifact_lock(state_root):
@@ -1109,6 +1226,8 @@ def record_milestone_action(
             closure_override_reason=closure_override_reason,
             outstanding_dispatch_ids=outstanding_dispatch_ids,
             following_events=following,
+            approval_repository_key=approval_repository_key,
+            expected_prompt_sha256=expected_prompt_sha256,
         )
 
 
@@ -1166,6 +1285,8 @@ def record_milestone_event(
     expected_phase: str | None = None,
     expected_event_count: int | None = None,
     expected_prompt_identity: str | None = None,
+    approval_repository_key: str | None = None,
+    expected_prompt_sha256: str | None = None,
 ) -> dict[str, Any]:
     with state_artifact_lock(state_root):
         return _record_milestone_event_locked(
@@ -1187,6 +1308,8 @@ def record_milestone_event(
             expected_phase=expected_phase,
             expected_event_count=expected_event_count,
             expected_prompt_identity=expected_prompt_identity,
+            approval_repository_key=approval_repository_key,
+            expected_prompt_sha256=expected_prompt_sha256,
         )
 
 

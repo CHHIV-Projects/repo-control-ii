@@ -69,6 +69,10 @@ _PUBLICATION_STATUSES = {
     "failed",
     "drifted",
 }
+_IMPORTED_PROMPT_APPROVAL_SOURCE_KIND = "v1_imported_prompt_approval"
+_IMPORTED_PROMPT_APPROVAL_LINK_EVIDENCE = (
+    "Exact-byte file-backed prompt approval carried forward from its source workflow event."
+)
 _PUBLICATION_TRANSITIONS = {
     "accepted_not_published": {"accepted_not_published", "preview_ready", "failed", "drifted"},
     "preview_ready": {"preview_ready", "materialized_unstaged", "staged", "committed", "failed", "drifted"},
@@ -1139,6 +1143,42 @@ def _projection(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _source_record_id(repository_id: str, milestone_id: str, kind: str, path: str, source_hash: str) -> str:
     return _sha256(_json_text([repository_id, milestone_id, kind, path, source_hash]).encode("utf-8"))
+
+
+def _imported_prompt_approval_decision_id(
+    repository_id: str,
+    milestone_id: str,
+    event_id: str,
+) -> str:
+    return _sha256(
+        _json_text([repository_id, milestone_id, "v1_imported_prompt_approval", event_id]).encode("utf-8")
+    )[:32]
+
+
+def _imported_prompt_approval_payload(
+    *,
+    repository_key: str,
+    repository_id: str,
+    milestone_id: str,
+    prompt_path: str,
+    prompt_sha256: str,
+    source_event: Mapping[str, Any],
+    workflow_path: str,
+    workflow_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "approval_origin": "migrated_file_backed_prompt_approval",
+        "source_event_id": source_event["event_id"],
+        "source_event_type": "prompt_approved",
+        "source_workflow_path": workflow_path,
+        "source_workflow_sha256": workflow_sha256,
+        "source_repository_key": repository_key,
+        "source_repository_id": repository_id,
+        "source_milestone_id": milestone_id,
+        "source_prompt_path": prompt_path,
+        "source_prompt_sha256": prompt_sha256,
+        "prompt_approval": source_event["prompt_approval"],
+    }
 
 
 def _parse_sidecar_bytes(
@@ -4315,6 +4355,33 @@ class InformationStore:
             _json_text([self.identity.repository_id, self.identity.milestone_id, prompt_path]).encode("utf-8")
         )[:32]
         prompt_revision_id = _sha256(f"{prompt_doc_id}:{prompt_hash}".encode("utf-8"))[:32]
+        prompt_approval_event = lifecycle.matching_prompt_approval_event(
+            events,
+            repository_key=self.identity.repository_key,
+            repository_id=self.identity.repository_id,
+            milestone_id=self.identity.milestone_id,
+            prompt_path=prompt_path,
+            content_sha256=prompt_hash,
+        )
+        prompt_approval_payload = (
+            _imported_prompt_approval_payload(
+                repository_key=self.identity.repository_key,
+                repository_id=self.identity.repository_id,
+                milestone_id=self.identity.milestone_id,
+                prompt_path=prompt_path,
+                prompt_sha256=prompt_hash,
+                source_event=prompt_approval_event,
+                workflow_path=workflow_path,
+                workflow_sha256=_sha256(bundle.workflow_bytes),
+            )
+            if prompt_approval_event is not None
+            and workflow_path is not None
+            and bundle.workflow_bytes is not None
+            else None
+        )
+        prompt_approval_events = [
+            event for event in events if event["event_type"] == "prompt_approved"
+        ]
         closeout_hash = _sha256(bundle.closeout_bytes) if bundle.closeout_bytes is not None else None
         closeout_doc_id = (
             _sha256(
@@ -4387,10 +4454,25 @@ class InformationStore:
             "closeout_revision_id": closeout_revision_id,
             "closeout_sha256": closeout_hash,
             "imported_event_count": len(events),
-            "linked_event_count": 0,
             "dispatch_count": len(matching_dispatches),
             "transaction_boundaries": "not_invented",
-            "approved_prompt_revision_id": None,
+            "approved_prompt_revision_id": (
+                prompt_revision_id if prompt_approval_event is not None else None
+            ),
+            "linked_event_count": 1 if prompt_approval_event is not None else 0,
+            "prompt_approval_provenance": {
+                "status": (
+                    "migrated_exact_byte_source_approval"
+                    if prompt_approval_event is not None
+                    else "unverified_lifecycle_only"
+                    if prompt_approval_events
+                    else "no_prompt_approval_event"
+                ),
+                "source_event_id": (
+                    prompt_approval_event["event_id"] if prompt_approval_event is not None else None
+                ),
+                "source_prompt_sha256": prompt_hash,
+            },
             "source_manifest": source_manifest,
             "import_receipt_sha256": receipt_sha256,
             "historical_reconciliation": reconciliation_receipt,
@@ -4522,6 +4604,80 @@ class InformationStore:
                 self._validate_projection(state, stored_events)
                 if stored_events != events:
                     raise ImportSourceError("Existing imported workflow events differ from the requested retry.")
+                if prompt_approval_event is not None:
+                    link_rows = connection.execute(
+                        """
+                        SELECT event_id, document_id, revision_id, content_sha256, link_role, evidence
+                        FROM workflow_document_link
+                        WHERE repository_id = ? AND milestone_id = ?
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id),
+                    ).fetchall()
+                    decision_rows = connection.execute(
+                        """
+                        SELECT decision_id, document_id, revision_id, decision_type, actor_role,
+                               actor_attribution, po_confirmed, source_kind, decided_at, payload_json
+                        FROM document_revision_decision
+                        WHERE repository_id = ? AND milestone_id = ?
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id),
+                    ).fetchall()
+                    publication_count = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM document_publication
+                        WHERE repository_id = ? AND milestone_id = ?
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id),
+                    ).fetchone()[0]
+                    document_state = connection.execute(
+                        """
+                        SELECT d.approved_revision_id, m.prompt_revision_id
+                        FROM document d JOIN milestone m
+                          ON m.repository_id = d.repository_id AND m.milestone_id = d.milestone_id
+                        WHERE d.repository_id = ? AND d.milestone_id = ? AND d.document_id = ?
+                        """,
+                        (self.identity.repository_id, self.identity.milestone_id, prompt_doc_id),
+                    ).fetchone()
+                    expected_decision = (
+                        _imported_prompt_approval_decision_id(
+                            self.identity.repository_id,
+                            self.identity.milestone_id,
+                            prompt_approval_event["event_id"],
+                        ),
+                        prompt_doc_id,
+                        prompt_revision_id,
+                        "APPROVED",
+                        prompt_approval_event["actor_role"],
+                        prompt_approval_event["actor_attribution"],
+                        1,
+                        _IMPORTED_PROMPT_APPROVAL_SOURCE_KIND,
+                        prompt_approval_event["timestamp"],
+                        _json_text(prompt_approval_payload),
+                    )
+                    actual_decision = (
+                        tuple(decision_rows[0])
+                        if len(decision_rows) == 1
+                        else None
+                    )
+                    if (
+                        len(link_rows) != 1
+                        or tuple(link_rows[0])
+                        != (
+                            prompt_approval_event["event_id"],
+                            prompt_doc_id,
+                            prompt_revision_id,
+                            prompt_hash,
+                            "prompt",
+                            _IMPORTED_PROMPT_APPROVAL_LINK_EVIDENCE,
+                        )
+                        or actual_decision != expected_decision
+                        or publication_count != 0
+                        or document_state is None
+                        or tuple(document_state) != (prompt_revision_id, prompt_revision_id)
+                    ):
+                        raise ImportSourceError(
+                            "Existing imported approval provenance differs from the exact source event."
+                        )
                 connection.commit()
                 return result
 
@@ -4614,6 +4770,70 @@ class InformationStore:
                         event["timestamp"],
                         payload.decode("utf-8"),
                         _sha256(payload),
+                    ),
+                )
+            if prompt_approval_event is not None:
+                if prompt_approval_payload is None or workflow_path is None:
+                    raise ImportSourceError("Exact source approval lacks its workflow provenance.")
+                connection.execute(
+                    """
+                    INSERT INTO workflow_document_link
+                        (repository_id, milestone_id, event_id, document_id, revision_id,
+                         content_sha256, link_role, evidence)
+                    VALUES (?, ?, ?, ?, ?, ?, 'prompt', ?)
+                    """,
+                    (
+                        self.identity.repository_id,
+                        self.identity.milestone_id,
+                        prompt_approval_event["event_id"],
+                        prompt_doc_id,
+                        prompt_revision_id,
+                        prompt_hash,
+                        _IMPORTED_PROMPT_APPROVAL_LINK_EVIDENCE,
+                    ),
+                )
+                cursor = connection.execute(
+                    "UPDATE document SET approved_revision_id = ? WHERE document_id = ?",
+                    (prompt_revision_id, prompt_doc_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ImportSourceError("Imported prompt approval could not bind its exact document revision.")
+                cursor = connection.execute(
+                    """
+                    UPDATE milestone SET prompt_revision_id = ?
+                    WHERE repository_id = ? AND milestone_id = ?
+                    """,
+                    (
+                        prompt_revision_id,
+                        self.identity.repository_id,
+                        self.identity.milestone_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ImportSourceError("Imported prompt approval could not bind its selected milestone revision.")
+                connection.execute(
+                    """
+                    INSERT INTO document_revision_decision
+                        (decision_id, repository_id, milestone_id, document_id, revision_id,
+                         decision_type, actor_role, actor_attribution, po_confirmed, source_kind,
+                         decided_at, payload_json)
+                    VALUES (?, ?, ?, ?, ?, 'APPROVED', ?, ?, 1, ?, ?, ?)
+                    """,
+                    (
+                        _imported_prompt_approval_decision_id(
+                            self.identity.repository_id,
+                            self.identity.milestone_id,
+                            prompt_approval_event["event_id"],
+                        ),
+                        self.identity.repository_id,
+                        self.identity.milestone_id,
+                        prompt_doc_id,
+                        prompt_revision_id,
+                        prompt_approval_event["actor_role"],
+                        prompt_approval_event["actor_attribution"],
+                        _IMPORTED_PROMPT_APPROVAL_SOURCE_KIND,
+                        prompt_approval_event["timestamp"],
+                        _json_text(prompt_approval_payload),
                     ),
                 )
             projection = _projection(events)

@@ -52,6 +52,31 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         )
         connection.close.assert_called_once()
 
+    def test_prompt_approval_requires_the_exact_evidence_reader_capability(self) -> None:
+        connection = self._response(self.payload)
+        with mock.patch(
+            "repoctl.workflow.runtime_compatibility.http.client.HTTPConnection",
+            return_value=connection,
+        ):
+            result = require_event_runtime_compatibility("prompt_approved")
+        self.assertEqual(result["status"], "COMPATIBLE")
+        self.assertEqual(result["required_event_capabilities"], {
+            "prompt_approval_evidence_schema_version": 1,
+        })
+
+        old_payload = json.loads(json.dumps(self.payload))
+        old_payload["runtime_capabilities"]["workflow"].pop(
+            "prompt_approval_evidence_schema_version"
+        )
+        connection = self._response(old_payload)
+        with mock.patch(
+            "repoctl.workflow.runtime_compatibility.http.client.HTTPConnection",
+            return_value=connection,
+        ):
+            with self.assertRaises(RuntimeCompatibilityError) as caught:
+                require_event_runtime_compatibility("prompt_approved")
+        self.assertEqual(caught.exception.code, "runtime_upgrade_required")
+
     def test_rejects_old_reader_before_event_write(self) -> None:
         old_payload = json.loads(json.dumps(self.payload))
         old_payload["runtime_capabilities"]["workflow"][

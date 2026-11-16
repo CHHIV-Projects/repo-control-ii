@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from repoctl.workflow.context_verification import make_verification_record
 from repoctl.workflow.milestones import (
     discover_milestones,
     load_milestone_selection,
+    prompt_identity,
     save_milestone_selection,
 )
 
@@ -57,6 +59,12 @@ def _candidate(repo: Path) -> dict:
 
 
 def _record(repo: Path, state_root: Path, candidate: dict, event_type: str, summary: str, **kwargs):
+    if event_type == "prompt_approved":
+        kwargs.setdefault("approval_repository_key", "default")
+        kwargs.setdefault(
+            "expected_prompt_sha256",
+            prompt_identity(repo, "docs/milestones", candidate),
+        )
     return record_milestone_event(
         repo,
         state_root,
@@ -122,6 +130,12 @@ class MilestoneLifecycleTests(unittest.TestCase):
         workflow = load_milestone_workflow(
             self.repo, self.state_root, "docs/milestones", self.candidate,
         )
+        if action == "approve_and_start":
+            fields.setdefault("approval_repository_key", "default")
+            fields.setdefault(
+                "expected_prompt_sha256",
+                prompt_identity(self.repo, "docs/milestones", self.candidate),
+            )
         return record_milestone_action(
             self.repo, self.state_root, "docs/milestones", self.candidate,
             action=action, summary=fields.pop("summary", "Deliberate Product Owner action"),
@@ -289,6 +303,129 @@ class MilestoneLifecycleTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in events[-2:]], ["acceptance_recorded", "milestone_closed"])
         self.assertEqual(len({event["event_id"] for event in events}), len(events))
         self.assertTrue(all(event["actor_role"] == "product_owner" for event in events[-2:]))
+
+    def test_prompt_approval_rechecks_exact_bytes_under_the_lifecycle_lock(self) -> None:
+        reviewed_sha256 = prompt_identity(self.repo, "docs/milestones", self.candidate)
+        prompt = self.repo / self.candidate["prompt_path"]
+        sidecar = self.repo / "docs/milestones/M003.001_example_workflow.md"
+        original_lock = lifecycle.state_artifact_lock
+        original_prompt_identity = lifecycle.prompt_identity
+        inside_writer_lock = False
+        prompt_changed = False
+
+        @contextmanager
+        def track_writer_lock(*args, **kwargs):
+            nonlocal inside_writer_lock
+            with original_lock(*args, **kwargs):
+                previous = inside_writer_lock
+                inside_writer_lock = kwargs.get("mutation") is True
+                try:
+                    yield
+                finally:
+                    inside_writer_lock = previous
+
+        def change_prompt_during_locked_revalidation(*args, **kwargs):
+            nonlocal prompt_changed
+            if inside_writer_lock and not prompt_changed:
+                prompt.write_bytes(prompt.read_bytes() + b"changed after review\n")
+                prompt_changed = True
+            return original_prompt_identity(*args, **kwargs)
+
+        with (
+            patch("repoctl.workflow.lifecycle.state_artifact_lock", side_effect=track_writer_lock),
+            patch(
+                "repoctl.workflow.lifecycle.prompt_identity",
+                side_effect=change_prompt_during_locked_revalidation,
+            ),
+        ):
+            with self.assertRaisesRegex(lifecycle.PromptApprovalStaleError, "changed since review"):
+                record_milestone_action(
+                    self.repo,
+                    self.state_root,
+                    "docs/milestones",
+                    self.candidate,
+                    action="approve_and_start",
+                    summary="Approve reviewed prompt.",
+                    expected_phase="PLANNING",
+                    expected_event_count=0,
+                    approval_repository_key="default",
+                    expected_prompt_sha256=reviewed_sha256,
+                )
+        self.assertTrue(prompt_changed)
+        self.assertFalse(sidecar.exists())
+
+        changed_bytes = prompt.read_bytes()
+        reviewed_sha256 = prompt_identity(self.repo, "docs/milestones", self.candidate)
+        prompt.unlink()
+        with self.assertRaisesRegex(lifecycle.PromptApprovalStaleError, "reload and review"):
+            record_milestone_event(
+                self.repo,
+                self.state_root,
+                "docs/milestones",
+                self.candidate,
+                event_type="prompt_approved",
+                summary="Approve missing prompt.",
+                actor_role="product_owner",
+                po_approved=True,
+                approval_repository_key="default",
+                expected_prompt_sha256=reviewed_sha256,
+            )
+        prompt.write_bytes(changed_bytes)
+        self.assertFalse(sidecar.exists())
+
+        current_sha256 = prompt_identity(self.repo, "docs/milestones", self.candidate)
+        workflow = self.action("approve_and_start")
+        approval = workflow["event_history"][0]["prompt_approval"]
+        self.assertEqual(
+            approval,
+            {
+                "schema_version": 1,
+                "repository_key": "default",
+                "repository_id": lifecycle.make_repository_id(self.repo),
+                "milestone_id": self.candidate["milestone_id"],
+                "prompt_path": self.candidate["prompt_path"],
+                "content_sha256": current_sha256,
+            },
+        )
+
+    def test_prompt_approval_matcher_requires_one_matching_exact_scope_event(self) -> None:
+        workflow = self.action("approve_and_start")
+        approval = workflow["event_history"][0]
+        expected = {
+            "repository_key": "default",
+            "repository_id": lifecycle.make_repository_id(self.repo),
+            "milestone_id": self.candidate["milestone_id"],
+            "prompt_path": self.candidate["prompt_path"],
+            "content_sha256": workflow["prompt_identity"],
+        }
+        self.assertEqual(
+            lifecycle.matching_prompt_approval_event([approval], **expected),
+            approval,
+        )
+
+        for field in expected:
+            with self.subTest(field=field):
+                mismatched = {
+                    **approval,
+                    "prompt_approval": {
+                        **approval["prompt_approval"],
+                        field: f"mismatched-{field}",
+                    },
+                }
+                self.assertIsNone(
+                    lifecycle.matching_prompt_approval_event([mismatched], **expected)
+                )
+                self.assertIsNone(
+                    lifecycle.matching_prompt_approval_event(
+                        [approval, mismatched],
+                        **expected,
+                    )
+                )
+
+        malformed = {**approval, "prompt_approval": {"schema_version": 1}}
+        self.assertIsNone(
+            lifecycle.matching_prompt_approval_event([malformed], **expected)
+        )
 
     def test_combined_question_resolution_targets_only_active_blocker(self) -> None:
         self.action("approve_and_start")

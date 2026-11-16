@@ -8,7 +8,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .context_verification import VERIFICATION_EVENT_TYPE, VERIFICATION_RECORD_SCHEMA_VERSION
-from .lifecycle import WORKFLOW_EVENT_SCHEMA_VERSION, WORKFLOW_LEDGER_SCHEMA_VERSION
+from .lifecycle import (
+    PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION,
+    WORKFLOW_EVENT_SCHEMA_VERSION,
+    WORKFLOW_LEDGER_SCHEMA_VERSION,
+)
 
 
 DEFAULT_RUNTIME_URL = "http://127.0.0.1:8765"
@@ -17,6 +21,9 @@ MAX_RUNTIME_RESPONSE_BYTES = 8_192
 _INSTANCE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 PRODUCER_CONTRACT_ID = "repoctl-workflow-event-writer:v1"
 EVENT_CAPABILITY_REQUIREMENTS = {
+    "prompt_approved": {
+        "prompt_approval_evidence_schema_version": PROMPT_APPROVAL_EVIDENCE_SCHEMA_VERSION,
+    },
     VERIFICATION_EVENT_TYPE: {
         "context_verification_record_schema_version": VERIFICATION_RECORD_SCHEMA_VERSION,
     },

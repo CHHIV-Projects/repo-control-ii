@@ -849,6 +849,20 @@ not newly gated. Future event or payload-schema changes require explicit
 reader-capability requirements; unknown historical events are not discarded,
 coerced, or rewritten.
 
+File-backed `prompt_approved` events may include the optional
+`prompt_approval` evidence object (capability schema version 1), binding the
+reported repository key/ID, milestone, canonical prompt path, and SHA-256 of
+the exact raw bytes revalidated at the lifecycle write boundary. The event
+envelope remains schema version 1; runtime capabilities advertise the evidence
+schema separately. Older events without this object remain readable but are
+lifecycle-only evidence. Managed imports promote only one structurally valid
+source event whose scope and digest match the exact imported prompt, recording
+its source event and digest in the managed decision/link/pointer state. This is
+reported workflow evidence, not actor authentication. The existing managed
+browser approval path is unchanged, and the M010.025 explicit confirmation
+remains the only supported approval for historical imports without exact-byte
+evidence.
+
 ## Single-User Browser Action Compression
 
 Approve & Start records prompt_approved followed by implementation_started; Resolve & Resume records the active condition's answer/resolution, an optional distinct lock_in_approved, then implementation_resumed; Accept & Close records acceptance_recorded followed by milestone_closed. A valid immediately preceding acceptance may be reused by closure, preserving existing ledger semantics. Reopen appends `milestone_reopened` with the required reason and target phase; it never edits prior events or mutates Git.

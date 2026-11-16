@@ -94,6 +94,7 @@ from ..workflow.milestones import (
 )
 from ..workflow.lifecycle import (
     EVENT_OPTIONS,
+    PromptApprovalStaleError,
     WorkflowRecordError,
     load_milestone_workflow,
     record_milestone_event,
@@ -4089,13 +4090,19 @@ def create_web_app(
             summary = request.form.get("summary", "")
             if action == "resolve_and_resume":
                 summary = summary.replace("\r\n", "\n").replace("\r", "\n")
-            if action in {"approve_and_start", "implementation_started"}:
+            if action in {"approve_and_start", "prompt_approved", "implementation_started"}:
                 if request.form.get("expected_prompt_identity") != workflow["prompt_identity"]:
                     raise WebUIError(
                         "stale_workflow_prompt",
-                        "The selected prompt changed since this form was rendered. Refresh before starting.",
+                        (
+                            "The selected prompt changed since this form was rendered. "
+                            "Reload and review it before approving."
+                            if action in {"approve_and_start", "prompt_approved"}
+                            else "The selected prompt changed since this form was rendered. Refresh before starting."
+                        ),
                         status_code=409,
                     )
+            if action in {"approve_and_start", "implementation_started"}:
                 try:
                     verify_milestone_start_baseline(current_repository(), intelligence_baseline)
                 except (WorkflowRecordError, IntelligenceError, ScanError) as exc:
@@ -4191,6 +4198,12 @@ def create_web_app(
                         lock_in_summary=request.form.get("lock_in_summary") or None,
                         closure_override_reason=closure_override_reason,
                         outstanding_dispatch_ids=outstanding_dispatch_ids,
+                        approval_repository_key=(
+                            repository.key if action == "approve_and_start" else None
+                        ),
+                        expected_prompt_sha256=(
+                            workflow["prompt_identity"] if action == "approve_and_start" else None
+                        ),
                     )
                 else:
                     if action == "milestone_closed":
@@ -4210,7 +4223,13 @@ def create_web_app(
                         bug_scope=request.form.get("bug_scope") or None,
                         evidence_source=request.form.get("evidence_source") or None,
                         result=request.form.get("result") or None,
+                        approval_repository_key=repository.key if action == "prompt_approved" else None,
+                        expected_prompt_sha256=(
+                            workflow["prompt_identity"] if action == "prompt_approved" else None
+                        ),
                     )
+            except PromptApprovalStaleError as exc:
+                raise WebUIError("stale_workflow_prompt", str(exc), status_code=409) from exc
             except WorkflowRecordError as exc:
                 inventory = discover_milestones(repository.path, repository.milestone_root)
                 workflow = load_milestone_workflow(

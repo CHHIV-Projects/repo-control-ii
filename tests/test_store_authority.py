@@ -345,7 +345,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             connection.execute(
                 "UPDATE milestone SET prompt_revision_id = (SELECT draft_revision_id FROM document)"
             )
-        with self.assertRaisesRegex(StoreAuthorityError, "prompt approval is not unverified"):
+        with self.assertRaisesRegex(StoreAuthorityError, "approval pointer differs"):
             preview_prepared_authority(self.database_path, self.state_root, self.registry_path, "e" * 32)
         self.assertIsNone(load_store_authority(self.state_root))
 
