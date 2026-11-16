@@ -630,3 +630,112 @@ installed backup/monitor timer validation, the independent operator-owned
 candidate writer hold, and a separately approved production activation remain
 later gates. The active file-backed service, global selection, production
 database, NAS payloads, timers, and Git state remain outside this milestone.
+
+## M010.023 disposable operator-controlled SQLite write hold
+
+M010.023 exercised the operator-owned hold on a private disposable candidate
+only. This evidence does not authorize or demonstrate a production hold,
+service change, NAS write, timer installation, or SQLite cutover. The candidate
+used `/tmp/repoctl-m010023.1qwFGEt5TR-hold/candidate-state`, database
+`/tmp/repoctl-m010023.1qwFGEt5TR-hold/prepared/managed-prepared.sqlite3`,
+selection `6e71658b96fa44108e7d21764fc8db60` for `M010.023`, and a separate
+local coverage, backup destination, staging, and restore path. Browser and
+independent CLI processes ran as `chuck` (UID/EUID 1000), without privilege
+escalation.
+
+### Fixture hold and release procedure
+
+The operator used a one-off root-only helper that checked the exact candidate
+device/inodes, file types, owners, groups, modes, non-symlink paths, and absence
+of open protected-file holders before changing anything. It covered 17 exact
+paths; it did not use recursive permission changes. The helper was kept in
+session state and is not a production tool.
+
+| Candidate path class | Held owner and mode | Purpose |
+|---|---|---|
+| Candidate, repository, and milestones directories | `root:chuck 0750` | Prevent `chuck` from replacing protected children. |
+| Authority guard/configuration, selections, database, and WAL | `root:chuck 0440` | Preserve read access while denying writes and replacement. |
+| SQLite SHM | `root:chuck 0660` | Product Owner-approved exception required for SQLite online backup; it does not make the database or WAL writable. |
+| `.locks` directory and lock file | `chuck:chuck 0700` / `0600` | Preserve the application's candidate lock path. |
+
+Before the hold, the protected fixture paths were owned by `chuck:chuck`;
+directories were `0700`, authority/selection files `0600`, and SQLite
+DB/WAL/SHM files `0644`. Release restored those original owners and modes.
+The operator-reported release output was
+`RELEASE PASS: 17 exact fixture paths verified.` A subsequent unprivileged
+inspection returned `INSPECT PASS: 17 exact fixture paths; no protected-file
+holders.` The tested trust boundary was that the app and CLI ran as `chuck`
+without privilege escalation, while the Product Owner ran the helper as root.
+No claim was made that `chuck` is a separate OS account from the operator or
+that sudo policy was changed.
+An unprivileged `chmod` of the root-owned SHM and creation of a file under a
+protected milestones directory both failed with permission errors.
+
+For a repeat disposable rehearsal, first verify candidate identity and fresh
+local backup coverage, stop all fixture writers, then have the operator run
+the exact-path hold helper and inspect its output. Start the candidate browser
+and independent CLI as `chuck`, verify both bind to the same candidate root,
+database, selection, and coverage, then test reads, backup/restore, and
+representative writes. To release, stop the browser and CLI, verify no
+protected-file holders, and have the operator run the helper's exact-path
+release action. Do not substitute same-owner `chmod`, a freshness flag, or
+recursive `chown`/`chmod`. A production deployment requires a separately
+reviewed, operator-owned control; the session-local fixture helper is not
+suitable for installation.
+
+### M010.023 fixture evidence and limitations
+
+With the hold active and coverage fresh, candidate reads remained available.
+The actual verified local backup
+`repo-control-20261116T161838149196Z-12e09cf29d62.manifest.json` published
+108,204,032 bytes with integrity `ok` and zero foreign-key violations. Its
+recovery-point timestamp was `2026-11-16T16:18:38.915414+00:00`; restoring to
+the distinct local fixture path succeeded and matched the backup hash.
+Independent candidate `coder-status` remained bound to the selected
+`M010.023` candidate and reported four workflow events.
+
+After restarting the candidate browser as `chuck`, a fresh CLI write and an
+actual browser workflow POST were denied by SQLite with
+`attempt to write a readonly database`. The browser returned HTTP 500
+`unexpected_error`; an instrumented fixture call captured the underlying
+`sqlite3.OperationalError`. No event was added. Candidate DB/WAL/SHM,
+authority guard/configuration, all selection files, and the selected prompt
+matched their pre-attempt hashes. The HTTP error is a limitation: the write is
+blocked, but the UI does not present a clear hold-denial response.
+
+The normal `repoctl web` startup could not create scanner temporary files under
+the held candidate root. For the browser test only, the fixture redirected
+scanner cache output to a separate writable local cache while keeping both the
+InformationStore root and lock root on the candidate. The actual browser then
+served candidate reads and exercised the standard workflow route. This
+workaround is not a configured deployment feature; a future held browser
+deployment must provide a separate writable scanner cache or otherwise account
+for this startup limitation.
+
+The operator then released the hold. With the injected clock set exactly to
+`2026-11-16T17:03:38.915414+00:00` (the inclusive 45-minute age of the prior
+coverage), an independent candidate CLI write was rejected with
+`writes are paused` and `45.0 minutes old`; event count remained four and the
+database hash did not change. A new local verified backup was then published
+at `2026-11-16T16:47:30.899360+00:00`, with integrity `ok` and zero foreign-key
+violations. A fresh independent CLI write succeeded, advancing the candidate
+workflow from four to five events. This verifies the stale-coverage guard
+separately from the filesystem hold.
+
+| Acceptance area | Result | Evidence boundary |
+|---|---|---|
+| Independent CLI and browser write denial | PASS, with generic browser HTTP 500 limitation | Fresh coverage; CLI readonly-database error; browser POST's underlying readonly-database exception; no candidate event or protected-file hash change. |
+| Reads, verified backup, and separate restore under hold | PASS | Candidate reads, local verified backup, and hash-matched restore; no NAS access. |
+| Restart persistence | PASS with scanner-cache workaround | Browser restarted as `chuck` against the same candidate authority and lock root; the normal CLI startup path could not create scanner temp files under the hold. |
+| Operator-only release | PASS | Operator-reported exact-path helper release plus independent inspection of all 17 restored paths and no holders. |
+| Freshness guard after release | PASS | Injected clock at the inclusive 45-minute cutoff rejected the write; fresh verified coverage then allowed one candidate-only CLI write. |
+| Production hold, backup/restore, timers, and cutover | NOT TESTED / NO-GO | No live service, production database/recovery record, NAS payload, mount/ACL, timer, or other repository was changed or tested. |
+
+After all fixture writers exited, the exact run-owned roots
+`/tmp/repoctl-m010023.1qwFGEt5TR-hold` and
+`/tmp/repoctl-m010023.1qwFGEt5TR` were removed; no fixture roots remained.
+Before any production SQLite write, the separately authorized gates remain:
+source freeze and import parity, staged authority binding, a verified
+production NAS backup and separate-path restore, installed timer/monitor
+operation with journal evidence, and explicit Product Owner GO. Keep live
+cutover **NO-GO** until those gates are independently authorized and passed.
