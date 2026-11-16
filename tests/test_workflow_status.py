@@ -57,6 +57,35 @@ def _status_payload(state_root: Path, repository_id: str) -> dict:
 
 
 class WorkflowStatusTests(unittest.TestCase):
+    def test_status_uses_separate_scan_and_output_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            scanner_cache_root = root / "scanner-cache"
+            status_root = root / "status-cache"
+
+            scan_result = run_scan_with_artifacts(str(repo), state_root=scanner_cache_root)
+            snapshot = create_snapshot(scan_result, state_root=state_root)
+            status = generate_milestone_status(
+                str(repo),
+                state_root=state_root,
+                scanner_cache_root=scanner_cache_root,
+                status_root=status_root,
+            )
+
+            repository_id = status["repository_id"]
+            self.assertTrue(status["matching_snapshot_exists"])
+            self.assertEqual(status["matching_snapshot_id"], snapshot["snapshot_id"])
+            self.assertEqual(
+                Path(status["status_json"]),
+                status_root / repository_id / "workflow" / "status.json",
+            )
+            self.assertTrue(
+                (state_root / repository_id / "snapshots" / snapshot["snapshot_id"]).is_dir()
+            )
+            self.assertFalse((state_root / repository_id / "repository.json").exists())
+
     def test_clean_repository(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

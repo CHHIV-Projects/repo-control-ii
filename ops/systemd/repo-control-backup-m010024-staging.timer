@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the M010.024 staged Repo Control NAS backup every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+AccuracySec=1min
+Persistent=true
+Unit=repo-control-backup-m010024-staging.service
+
+[Install]
+WantedBy=timers.target

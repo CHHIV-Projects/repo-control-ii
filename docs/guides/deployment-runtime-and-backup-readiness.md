@@ -707,10 +707,13 @@ The normal `repoctl web` startup could not create scanner temporary files under
 the held candidate root. For the browser test only, the fixture redirected
 scanner cache output to a separate writable local cache while keeping both the
 InformationStore root and lock root on the candidate. The actual browser then
-served candidate reads and exercised the standard workflow route. This
-workaround is not a configured deployment feature; a future held browser
-deployment must provide a separate writable scanner cache or otherwise account
-for this startup limitation.
+served candidate reads and exercised the standard workflow route. M010.024
+adds the explicit `--scanner-cache-root` option and routes scanner-derived
+status/context artifacts there while keeping authority, lock, snapshot, and
+workflow records on the candidate state root. A focused test verifies startup
+with a read-only state root and a separate writable cache. This resolves the
+startup limitation in code, but does not replace the required production-shaped
+held-candidate browser test.
 
 The operator then released the hold. With the injected clock set exactly to
 `2026-11-16T17:03:38.915414+00:00` (the inclusive 45-minute age of the prior
@@ -739,3 +742,602 @@ source freeze and import parity, staged authority binding, a verified
 production NAS backup and separate-path restore, installed timer/monitor
 operation with journal evidence, and explicit Product Owner GO. Keep live
 cutover **NO-GO** until those gates are independently authorized and passed.
+
+## M010.024 production staging preparation — not yet executed
+
+This section records the prepared staging plan, not completed production
+evidence. The candidate tree, staging/restore directories, staging environment,
+and staging systemd units were absent at the latest read-only check. No live
+service was stopped or restarted; no source freeze, import, candidate binding,
+hold, NAS write, restore, or timer installation/firing was performed. The
+maintenance-window actions below require explicit operator confirmation.
+
+Implementation checks to date: 82 focused tests passed across web, workflow
+status/commit, and managed-authority suites; all 10 backup tests passed. The
+staging environment example parsed and its candidate paths/bindings matched
+the reviewed configuration. The web CLI exposes `--scanner-cache-root`,
+`git diff --check` passed, and `systemd-analyze verify` plus both timer
+calendar checks succeeded. `systemd-analyze verify` emitted only the existing
+unrelated Synology `/var/run` PIDFile warning. These checks do not establish
+production import, hold, NAS, restore, or timer-operation acceptance.
+
+### Starting authority and exact inputs
+
+The pinned interpreter reports CPython 3.12.16 and SQLite 3.51.3. The current
+`repo-control.service` is active as PID 1022213, started 2026-11-13, with
+`/home/chuck/projects/repo-control-ii/.venv/bin/repoctl web` and no explicit
+state-root override. Its default source authority is therefore
+`/home/chuck/.local/share/repoctl`. The running service predates the
+freeze-aware changes; recheck it in the agreed window and have the operator
+stop it before freezing if it remains non-cooperating. Resume the unchanged
+file-backed service promptly after parity/isolated activation or on abort.
+
+The approved registry contains Repo Control II, Vocab App, and Photo
+Organizer. Their source selections currently resolve to M010.024, M002.007,
+and M001.004 respectively. Recheck all hashes immediately before import:
+
+| Input | SHA-256 |
+|---|---|
+| `ops/repositories.toml` | `8a3899debf3b494ff5840dbdf145d20c2a847bd18b45762e22a1589e0919119e` |
+| Repo Control II selection | `cf99fc6d899c10948fb755bcb749095452adcc0a5b55208409441802839c3182` |
+| Vocab App selection | `2ca05370af4e14b1328f212271e54974feb624a9e83b81830618137650002c87` |
+| Photo Organizer selection | `13baaf0d2e55ac67fa7f0219a426c882d1a07e369f019c7884da1ef6a858b76e` |
+| Repo Control II dispatch ledger | `2240a0871825a90ad37cb67f3b0d4786e27fef75e4ddac2fa4947a8bfa8b2f48` |
+| Vocab App dispatch ledger | `357ceae34931de5cf2058f01205c419c779c2ee3789f9fd77dd0af0b972aaac6` |
+| Photo Organizer dispatch ledger | `1a51e59c0d374e557f2fbfdba4005dfde0dfe06db6672c69bda64e936e0491b5` |
+
+Repo Control II has no approved Architect dispatches at this snapshot. The
+dispatch ledgers were fingerprinted, not opened or disclosed. Any changed
+registry, selection, dispatch, repository inventory, service binding, or source
+fingerprint at window start is a stop-and-review condition, not an instruction
+to proceed with stale evidence.
+
+The NAS mount currently resolves to
+`//192.168.1.171/ProjectBackups` at `/mnt/nas/repo-control` as CIFS, with the
+previously accepted `repoctl-backup` principal and destination subtree
+`/mnt/nas/repo-control/RepoControl/repo-control-ii`. No concrete mount/layout
+change was observed; reuse the accepted ACL evidence and do not repeat the
+sentinel or inspect protected configuration absent evidence of a change.
+
+### Isolated staging paths and definitions
+
+Use only these distinct paths:
+
+| Purpose | Path |
+|---|---|
+| Candidate base | `/var/lib/repo-control-staging/m010.024` |
+| Prepared database | `/var/lib/repo-control-staging/m010.024/prepared/managed-prepared.sqlite3` |
+| Candidate authority/state root | `/var/lib/repo-control-staging/m010.024/state` |
+| Browser scanner/status/context cache | `/home/chuck/.cache/repoctl/m010.024/scanner` |
+| Freeze/import/plan reports | `/home/chuck/.local/state/repo-control-staging/m010.024` |
+| Backup staging and recovery-point record | `/home/chuck/.local/state/repo-control-backup/staging/m010.024` |
+| Candidate recovery-point file | `/home/chuck/.local/state/repo-control-backup/staging/m010.024/.repoctl-verified-recovery-point.json` |
+| Separate restore root | `/home/chuck/.local/state/repo-control-backup/restore/m010.024` |
+| NAS destination | `/mnt/nas/repo-control/RepoControl/repo-control-ii` |
+| Installed staging environment | `/etc/repo-control/backup-m010024-staging.env` |
+
+The staging environment example contains no credentials and explicitly binds
+the backup source, candidate authority root, coverage path, restore root, and
+approved NAS subtree. The four reviewed units are
+`repo-control-backup-m010024-staging.service/.timer` and
+`repo-control-backup-monitor-m010024-staging.service/.timer`; they run as
+`chuck`, target only the candidate, and do not reference or control the live
+browser service. The backup interval is 15 minutes; the independent monitor
+interval is 5 minutes with a 1200-second stale-coverage threshold.
+
+### Window import and activation sequence
+
+The following exact-path command sequence is only for the operator-confirmed
+window. Recheck the listed source fingerprints, repository set, active service
+binding, and absence of all candidate/report paths before creating anything.
+Have the operator freeze external writers and stop the old browser service if
+it remains non-cooperating. Create the root-controlled staging parent as the
+operator; then create the candidate base and private report directory as
+`chuck`:
+
+```sh
+set -eu
+test ! -e /var/lib/repo-control-staging
+test ! -e /home/chuck/.local/state/repo-control-staging/m010.024
+sudo install -d -o root -g chuck -m 0750 /var/lib/repo-control-staging
+sudo install -d -o chuck -g chuck -m 0700 /var/lib/repo-control-staging/m010.024
+install -d -m 0700 /home/chuck/.local/state/repo-control-staging/m010.024
+```
+
+Capture the freeze and import reports outside the candidate tree. Do not pass
+`--writers-quiesced` until every cooperating writer is frozen and the older
+browser has actually stopped:
+
+```sh
+set -eu
+PY=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python
+REPO=/home/chuck/projects/repo-control-ii
+REGISTRY="$REPO/ops/repositories.toml"
+SOURCE_STATE_ROOT=/home/chuck/.local/share/repoctl
+BASE=/var/lib/repo-control-staging/m010.024
+STATE="$BASE/state"
+IMPORT_DIR="$BASE/prepared"
+REPORTS=/home/chuck/.local/state/repo-control-staging/m010.024
+FREEZE_REPORT="$REPORTS/freeze-report.json"
+IMPORT_REPORT="$REPORTS/import-report.json"
+PLAN_REPORT="$REPORTS/activation-plan.json"
+
+test ! -e "$STATE"
+test ! -e "$IMPORT_DIR"
+install -d -m 0700 "$STATE"
+install -d -m 0700 "$IMPORT_DIR"
+"$PY" -m repoctl.cli store-authority freeze-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" > "$FREEZE_REPORT"
+FREEZE_ID=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["freeze_id"])' "$FREEZE_REPORT")
+
+"$PY" -m repoctl.cli store-authority prepare \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --candidate-state-root "$STATE" \
+  --destination "$IMPORT_DIR" \
+  --writers-quiesced > "$IMPORT_REPORT"
+DATABASE=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_database_path"])' "$IMPORT_REPORT")
+test "$DATABASE" = "$IMPORT_DIR/managed-prepared.sqlite3"
+```
+
+Review the import counts, refusal/mismatch totals, source fingerprints, exact
+selection bindings, and representative hashes. The prepared bindings must
+match only Repo Control II M010.024, Vocab App M002.007, and Photo Organizer
+M001.004. Do not bind the live source root or alter global selection. Only
+after the Product Owner confirms these exact entries, bind each reported
+selection:
+
+```sh
+set -eu
+BINDING_COUNT=$("$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"]))' "$IMPORT_REPORT")
+test "$BINDING_COUNT" = 3
+for INDEX in $("$PY" -c 'import json,sys; print(*range(len(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"])))' "$IMPORT_REPORT"); do
+  BINDING_JSON=$("$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"][int(sys.argv[2])], separators=(",", ":")))' "$IMPORT_REPORT" "$INDEX")
+  "$PY" -m repoctl.cli store-authority bind-selection \
+    --registry "$REGISTRY" \
+    --state-root "$STATE" \
+    --database "$DATABASE" \
+    --binding-json "$BINDING_JSON" \
+    --po-confirm
+done
+
+# After every binding succeeds, generate one unique generation and preview.
+GENERATION=$("$PY" -c 'import secrets; print(secrets.token_hex(16))')
+"$PY" -m repoctl.cli store-authority preview \
+  --registry "$REGISTRY" \
+  --state-root "$STATE" \
+  --source-state-root "$SOURCE_STATE_ROOT" \
+  --database "$DATABASE" \
+  --generation "$GENERATION" > "$PLAN_REPORT"
+PLAN_SHA256=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "$PLAN_REPORT")
+```
+
+Activate only after independent parity review and the explicit Product Owner
+confirmation required by the command. Do not start candidate application
+writers; the operator hold must be applied and verified first:
+
+```sh
+set -eu
+"$PY" -m repoctl.cli store-authority activate \
+  --registry "$REGISTRY" \
+  --state-root "$STATE" \
+  --source-state-root "$SOURCE_STATE_ROOT" \
+  --database "$DATABASE" \
+  --generation "$GENERATION" \
+  --expected-plan-sha256 "$PLAN_SHA256" \
+  --po-confirm \
+  --writers-quiesced \
+  --source-parity-confirmed
+
+"$PY" -m repoctl.cli store-authority release-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --freeze-id "$FREEZE_ID"
+```
+
+Verify the source freeze is released and promptly resume the unchanged
+file-backed service if it was stopped. Confirm its health still reports
+`legacy_files` before proceeding to the operator hold. Do not keep source
+writers frozen for the backup, restore, or timer observations.
+
+### Operator-controlled hold procedure
+
+Do not create the candidate or apply this hold before the operator confirms
+the maintenance window. The parent `/var/lib/repo-control-staging` was absent
+at the pre-window check; during the confirmed window, the operator created it
+as `root:chuck 0750`, allowing `chuck` to traverse but not replace entries.
+The operator must also create the candidate base as `chuck:chuck 0700` with
+`sudo install -d -o chuck -g chuck -m 0700
+/var/lib/repo-control-staging/m010.024`. The Coder creates only the `prepared`
+and `state` children beneath that base so import and activation can create
+their exact files. The operator changes the candidate base to `root:chuck
+0750` only when applying the hold. Keep scanner cache,
+`.locks`, backup coverage/staging, and restore paths outside the protected
+candidate tree.
+
+After import, initialize and verify the candidate `.locks` directory and
+`state-artifacts.lock` as `chuck:chuck 0700/0600` before applying the hold.
+Inspect the database journal mode and exact DB/WAL/SHM sidecars. If SQLite
+requires a SHM file, let a normal pre-hold SQLite open create/initialize it;
+never fabricate an empty sidecar. Stop all candidate processes and verify no
+protected-file holders before changing ownership or modes.
+
+Managed import creates one empty per-repository scratch directory under
+`prepared`, named from the first 24 hex characters of the repository ID's
+SHA-256. Verify these three directories are empty and include them in the
+protected inventory; do not apply recursive permission changes.
+
+Set these exact paths from the verified post-import inventory:
+
+```sh
+set -eu
+BASE=/var/lib/repo-control-staging/m010.024
+STATE="$BASE/state"
+RC_IMPORT_SCRATCH="$BASE/prepared/61047c89b60f61a85d61ba3a"
+VOCAB_IMPORT_SCRATCH="$BASE/prepared/c07984ec043b5029f6d87480"
+PHOTO_IMPORT_SCRATCH="$BASE/prepared/1b12de3f56fa83f1657f41f5"
+DB="$BASE/prepared/managed-prepared.sqlite3"
+GUARD="$BASE/.state.information-store-authority.guard"
+CONFIG="$STATE/information-store-authority.json"
+RC_SELECTION="$STATE/repo-control-ii--945e7f88eafb/milestones/selection.json"
+VOCAB_SELECTION="$STATE/vocab-app--0d81efec80ef/milestones/selection.json"
+PHOTO_SELECTION="$STATE/photo-organizer-dev--84c64acdea9f/milestones/selection.json"
+LOCK_DIR="$STATE/.locks"
+LOCK_FILE="$LOCK_DIR/state-artifacts.lock"
+```
+
+Before any privileged change, the operator runs the exact path and inventory
+checks below and reviews every output:
+
+```sh
+set -eu
+namei -l "$BASE"
+namei -l "$STATE"
+namei -l "$DB"
+namei -l "$GUARD"
+namei -l "$CONFIG"
+find "$BASE" -xdev -type l -print
+find "$BASE" -xdev -printf '%p|%y|%u:%g|%m|%d:%i\n' | sort
+stat -c '%n|%F|%U:%G|%a|%d:%i' \
+  "$BASE" "$BASE/prepared" "$RC_IMPORT_SCRATCH" \
+  "$VOCAB_IMPORT_SCRATCH" "$PHOTO_IMPORT_SCRATCH" \
+  "$STATE" "$DB" "$DB-shm" \
+  "$GUARD" "$CONFIG" "$RC_SELECTION" "$VOCAB_SELECTION" \
+  "$PHOTO_SELECTION" "$LOCK_DIR" "$LOCK_FILE"
+sha256sum "$DB" "$DB-wal" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION"
+```
+
+If `$DB-wal` exists, include it in `stat`, the before/after hash record, and
+the holder check; omit it from the commands only when the reviewed inventory
+confirms it is absent. Check each existing protected DB/sidecar, guard,
+configuration, selection, and lock path for open holders:
+
+```sh
+fuser_status=0
+sudo fuser -v "$DB" "$DB-wal" "$DB-shm" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION" "$LOCK_FILE" \
+  || fuser_status=$?
+if test "$fuser_status" -eq 0; then
+  echo "STOP: a protected candidate path has an open holder" >&2
+  exit 1
+fi
+if test "$fuser_status" -ne 1; then
+  echo "STOP: fuser failed with status $fuser_status" >&2
+  exit "$fuser_status"
+fi
+```
+
+Status 1 with no output means no listed users; any PID or diagnostic is a
+stop. Include `$DB-wal` here only when it exists, as confirmed by the reviewed
+inventory.
+Stop if a path is missing or unexpected, a symlink exists, the parent is not
+root-controlled, any holder remains, or the inventory differs from the
+reviewed import. Do not use recursive ownership or mode changes.
+
+Apply only to the exact reviewed paths:
+
+| Paths | Held owner/mode |
+|---|---|
+| Candidate base, `prepared`, the three empty per-repository scratch directories, `state`, each repository directory and each `milestones` directory | `root:chuck 0750` |
+| Guard, authority configuration, all three selection files, database, and existing WAL | `root:chuck 0440` |
+| Existing SQLite SHM only | `root:chuck 0660` |
+| `.locks` and `state-artifacts.lock` | `chuck:chuck 0700` and `chuck:chuck 0600` |
+
+After confirming the exact inventory and no open holders, the operator uses
+these explicit changes (omit the WAL commands only when the reviewed inventory
+confirms that no WAL exists; SHM must exist for the reviewed held deployment):
+
+```sh
+set -eu
+sudo chown root:chuck -- \
+  "$BASE" "$BASE/prepared" "$RC_IMPORT_SCRATCH" \
+  "$VOCAB_IMPORT_SCRATCH" "$PHOTO_IMPORT_SCRATCH" "$STATE" \
+  "$STATE/repo-control-ii--945e7f88eafb" \
+  "$STATE/repo-control-ii--945e7f88eafb/milestones" \
+  "$STATE/vocab-app--0d81efec80ef" \
+  "$STATE/vocab-app--0d81efec80ef/milestones" \
+  "$STATE/photo-organizer-dev--84c64acdea9f" \
+  "$STATE/photo-organizer-dev--84c64acdea9f/milestones"
+sudo chmod 0750 -- \
+  "$BASE" "$BASE/prepared" "$RC_IMPORT_SCRATCH" \
+  "$VOCAB_IMPORT_SCRATCH" "$PHOTO_IMPORT_SCRATCH" "$STATE" \
+  "$STATE/repo-control-ii--945e7f88eafb" \
+  "$STATE/repo-control-ii--945e7f88eafb/milestones" \
+  "$STATE/vocab-app--0d81efec80ef" \
+  "$STATE/vocab-app--0d81efec80ef/milestones" \
+  "$STATE/photo-organizer-dev--84c64acdea9f" \
+  "$STATE/photo-organizer-dev--84c64acdea9f/milestones"
+sudo chown root:chuck -- \
+  "$GUARD" "$CONFIG" "$RC_SELECTION" "$VOCAB_SELECTION" \
+  "$PHOTO_SELECTION" "$DB"
+sudo chmod 0440 -- \
+  "$GUARD" "$CONFIG" "$RC_SELECTION" "$VOCAB_SELECTION" \
+  "$PHOTO_SELECTION" "$DB"
+sudo chown root:chuck -- "$DB-shm"
+sudo chmod 0660 -- "$DB-shm"
+```
+
+If `$DB-wal` exists, apply `sudo chown root:chuck -- "$DB-wal"` and
+`sudo chmod 0440 -- "$DB-wal"` as two exact-path operations. Do not apply any
+recursive operation or same-owner `chmod` workaround. Recheck the full
+inventory after these commands and verify the `.locks` owner/modes were
+preserved.
+
+Leave scanner cache, coverage/staging, restore, and NAS destination ownership
+and modes independently writable by the intended `chuck` processes. Verify
+the resulting exact inventory and, as `chuck`, confirm protected directories,
+DB/WAL, guard/configuration, and selection pointers are not writable; SHM and
+`.locks` are writable:
+
+```sh
+set -eu
+sudo -u chuck -- test ! -w "$BASE"
+sudo -u chuck -- test ! -w "$STATE"
+sudo -u chuck -- test ! -w "$DB"
+sudo -u chuck -- test ! -w "$GUARD"
+sudo -u chuck -- test ! -w "$CONFIG"
+sudo -u chuck -- test ! -w "$RC_SELECTION"
+sudo -u chuck -- test ! -w "$VOCAB_SELECTION"
+sudo -u chuck -- test ! -w "$PHOTO_SELECTION"
+sudo -u chuck -- test -w "$DB-shm"
+sudo -u chuck -- test -w "$LOCK_DIR"
+sudo -u chuck -- test -w "$LOCK_FILE"
+```
+
+Also verify the unchanged hashes for DB/WAL, guard/configuration, and
+selections after the browser restart. No candidate process starts until the
+initial permissions and hashes pass.
+Then run the candidate browser with the production-shaped command and verify
+`/healthz`, candidate identity, and an independent read-only Coder CLI query:
+
+```sh
+set -eu
+PY=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python
+REPO=/home/chuck/projects/repo-control-ii
+REGISTRY="$REPO/ops/repositories.toml"
+SCANNER_CACHE_ROOT=/home/chuck/.cache/repoctl/m010.024/scanner
+COVERAGE_PATH=/home/chuck/.local/state/repo-control-backup/staging/m010.024/.repoctl-verified-recovery-point.json
+REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  "$PY" -m repoctl.cli web \
+    --repository-registry "$REGISTRY" \
+    --host 127.0.0.1 \
+    --port 18766 \
+    --state-root "$STATE" \
+    --scanner-cache-root "$SCANNER_CACHE_ROOT"
+
+# In a second terminal, while the browser is running:
+curl -fsS http://127.0.0.1:18766/healthz
+REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  "$PY" -m repoctl.cli coder-status \
+    --repository "$REPO" \
+    --state-root "$STATE" \
+    --format json
+```
+
+Stop and restart the browser once under the same held paths, then repeat the
+checks and permission/hash inspection. The known browser write-denial response
+remains a generic HTTP 500; do not attempt a production-candidate write.
+
+If any privileged command partially fails, do not start candidate services,
+backup, or timers; do not recursively repair or release the hold. Preserve the
+candidate and exact before/after inventory, keep the candidate offline, and
+have the operator resolve the specific path discrepancy. Independently
+release the source freeze by its exact ID with an explicit abort reason when
+source import/parity work has stopped:
+
+```sh
+set -eu
+"$PY" -m repoctl.cli store-authority release-writers \
+  --registry "$REGISTRY" \
+  --state-root /home/chuck/.local/share/repoctl \
+  --freeze-id "$FREEZE_ID" \
+  --abort-reason "M010.024 staging aborted; file-backed authority remains active."
+```
+
+Then resume and verify the unchanged file-backed service. If a candidate was
+activated but the operator hold has not yet been applied and no managed write
+occurred, stop and verify all candidate writers, then use the exact reviewed
+plan with explicit confirmation:
+
+```sh
+set -eu
+"$PY" -m repoctl.cli store-authority abort \
+  --registry "$REGISTRY" \
+  --state-root "$STATE" \
+  --source-state-root /home/chuck/.local/share/repoctl \
+  --database "$DB" \
+  --generation "$GENERATION" \
+  --expected-plan-sha256 "$PLAN_SHA256" \
+  --po-confirm \
+  --writers-quiesced
+```
+
+This abort is not permitted after the production hold has been applied; the
+hold remains in place for this milestone. If any managed write occurred, do
+not abort or switch back to files; preserve DB/WAL/SHM and verified backups
+and use separately approved forward recovery.
+
+### Window sequence and remaining evidence
+
+The operator handoff must confirm the window, freeze external editors and
+non-cooperating writers, and stop `repo-control.service` if it is still the
+older non-cooperating process. The Coder then freezes the source, captures the
+fingerprinted inventory, imports all three registered sources, verifies
+counts/hashes/drift and the exact plan hash, binds/activates only the separate
+candidate root, and releases the source freeze promptly. The original service
+must be restarted unchanged and verified `legacy_files` before any candidate
+backup/timer observation; do not keep the live source frozen for those checks.
+Do not rely on `--writers-quiesced` without independent evidence that every
+writer is stopped or cooperating.
+
+Create the private scanner-cache directory before starting the candidate
+browser. Create the separate backup-staging and restore directories before
+the first backup, only when absent; if any already exist, inspect their exact
+owner, mode, and contents rather than overwriting or removing them. The
+candidate browser/CLI identity checks must pass before installing staging
+backup units. Confirm the destination environment and unit files do not
+already exist. If any are present, stop rather than overwrite them. Install
+only the staging environment and four reviewed M010.024 units; do not
+overwrite `backup.env` or any live unit:
+
+```sh
+set -eu
+test ! -e /home/chuck/.local/state/repo-control-backup/staging/m010.024
+test ! -e /home/chuck/.local/state/repo-control-backup/restore/m010.024
+test ! -e /etc/repo-control/backup-m010024-staging.env
+test ! -e /etc/systemd/system/repo-control-backup-m010024-staging.service
+test ! -e /etc/systemd/system/repo-control-backup-m010024-staging.timer
+test ! -e /etc/systemd/system/repo-control-backup-monitor-m010024-staging.service
+test ! -e /etc/systemd/system/repo-control-backup-monitor-m010024-staging.timer
+install -d -m 0700 /home/chuck/.local/state/repo-control-backup/staging/m010.024
+install -d -m 0700 /home/chuck/.local/state/repo-control-backup/restore/m010.024
+sudo install -o root -g chuck -m 0640 \
+  ops/backup.m010024-staging.env.example \
+  /etc/repo-control/backup-m010024-staging.env
+sudo install -o root -g root -m 0644 \
+  ops/systemd/repo-control-backup-m010024-staging.service \
+  /etc/systemd/system/repo-control-backup-m010024-staging.service
+sudo install -o root -g root -m 0644 \
+  ops/systemd/repo-control-backup-m010024-staging.timer \
+  /etc/systemd/system/repo-control-backup-m010024-staging.timer
+sudo install -o root -g root -m 0644 \
+  ops/systemd/repo-control-backup-monitor-m010024-staging.service \
+  /etc/systemd/system/repo-control-backup-monitor-m010024-staging.service
+sudo install -o root -g root -m 0644 \
+  ops/systemd/repo-control-backup-monitor-m010024-staging.timer \
+  /etc/systemd/system/repo-control-backup-monitor-m010024-staging.timer
+sudo systemctl daemon-reload
+sudo systemctl start repo-control-backup-m010024-staging.service
+```
+
+Verify the first candidate-bound NAS backup and restore its exact manifest to
+the distinct local restore root before enabling timers. The staging environment
+contains paths and identity only and is group-readable by `chuck`; use it for
+the restore command, never the protected production `backup.env`:
+
+```sh
+set -eu
+set -a
+. /etc/repo-control/backup-m010024-staging.env
+set +a
+PY=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python
+printf 'Enter the exact verified M010.024 manifest path: '
+read -r MANIFEST
+test -f "$MANIFEST"
+"$PY" -m repoctl.backup restore \
+  --manifest "$MANIFEST" \
+  --restore-name m010024-separate-restore.sqlite3
+```
+
+After restore validation, enable the timers and capture actual firings and
+journals:
+
+```sh
+set -eu
+sudo systemctl enable --now \
+  repo-control-backup-m010024-staging.timer \
+  repo-control-backup-monitor-m010024-staging.timer
+systemctl list-timers --all \
+  repo-control-backup-m010024-staging.timer \
+  repo-control-backup-monitor-m010024-staging.timer
+printf 'Enter the UTC maintenance-window start time for journal review: '
+read -r WINDOW_START
+journalctl -u repo-control-backup-m010024-staging.service \
+  -u repo-control-backup-monitor-m010024-staging.service --since "$WINDOW_START"
+```
+
+Then prove actual 15-minute backup and independent 5-minute monitor outcomes,
+including the bounded 20-minute warning/recovery check; calendar syntax alone
+is not evidence. Record timer state, journals, coverage binding, restore
+duration, and the inclusive 45-minute freshness guard. Stop the staging-only
+timers after validation:
+
+```sh
+set -eu
+sudo systemctl disable --now \
+  repo-control-backup-m010024-staging.timer \
+  repo-control-backup-monitor-m010024-staging.timer
+sudo systemctl stop \
+  repo-control-backup-m010024-staging.service \
+  repo-control-backup-monitor-m010024-staging.service
+systemctl list-timers --all \
+  repo-control-backup-m010024-staging.timer \
+  repo-control-backup-monitor-m010024-staging.timer
+```
+
+If the run aborts, stop the candidate browser in its owning terminal, disable
+and stop only these staging timers/services, retain the candidate hold, release
+only the exact source freeze ID with an explicit abort reason, and verify the
+original file-backed service is healthy. If the original service was stopped,
+the operator resumes the unchanged unit with
+`sudo systemctl start repo-control.service` and verifies its health and
+`legacy_files` binding. Never touch `repo-control.service` through the staging
+unit files.
+
+#### M010.024 window result (2026-11-16)
+
+- **PASS — source freeze/import/parity and isolated activation.** The active
+  freeze ID was `4b36cde0b6b66a8db55696eb8779907f`. Import recorded 962
+  documents, 118 milestones, 1,591 events, 452 imported sources, and 161
+  dispatches with zero mismatches/refusals. Source inventory hash:
+  `2f22474513008fb2ca7faf9b68ea6fc80b52aed38e12124844346d1b57379846`.
+  Activation plan hash:
+  `fd1ea05211d86cd782e39c880829dd749e62277d98b585162f13a4bab6714b5e`.
+  Candidate generation: `863b2270fa4149b084746dd845fa7bf0`.
+- **PASS — live recovery after the staging snapshot.** The exact source freeze
+  was released after activation. The unchanged `repo-control.service` was
+  resumed and `/healthz` reported `legacy_files` with no InformationStore
+  binding.
+- **PASS — candidate binding and operator hold.** The candidate uses only
+  `/var/lib/repo-control-staging/m010.024/state` and
+  `/var/lib/repo-control-staging/m010.024/prepared/managed-prepared.sqlite3`.
+  The operator's exact-path hold passed independent ownership, mode,
+  read-only-hash, SQLite integrity, and foreign-key checks. The candidate
+  browser returned HTTP 200 and reported the expected `sqlite_managed`
+  generation and state root.
+- **FAIL — independent candidate Coder CLI.** The read-only
+  `coder-status --state-root /var/lib/repo-control-staging/m010.024/state`
+  failed with `InformationStore has no approved selected prompt revision`.
+  The imported selected prompt has a draft revision but no approved revision,
+  and the candidate has no publication or revision-decision rows. This blocks
+  the required CLI identity gate. Bug `13536637375043a7a4042023493b5a90` was
+  classified out of scope for M010.024; the approval/import fix is deferred
+  to a focused follow-up milestone and is required before cutover. Do not
+  manually approve the candidate prompt or bypass the CLI check. The candidate
+  browser was stopped after this failure. Its hold remains applied; no
+  candidate application write occurred.
+- **NOT TESTED — NAS backup, separate restore, installed backup/monitor
+  timers, and warning/recovery.** These steps were not started after the
+  candidate CLI gate failed. The staging environment and units remain
+  uninstalled.
+
+The candidate was imported before the later file-backed bug/test events, so
+it is not a final cutover copy. Before any separately authorized cutover,
+freeze writers again, refresh/re-import as required, verify exact final
+source/selection/dispatch parity, and create a fresh candidate-bound backup.
+Keep live-cutover status **NO-GO** until the candidate CLI blocker is
+classified and resolved and all remaining backup/restore/timer evidence
+passes. Do not release the candidate hold or make a live SQLite application
+write under M010.024.

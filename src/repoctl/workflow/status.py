@@ -195,8 +195,9 @@ def _calculate_snapshot_candidate(
     repository_path: str,
     repository_id: str,
     state_root: Path,
+    scanner_cache_root: Path | None = None,
 ) -> tuple[str, bool, str | None]:
-    scan_result = run_scan_with_artifacts(repository_path, state_root=state_root)
+    scan_result = run_scan_with_artifacts(repository_path, state_root=scanner_cache_root or state_root)
     scan_output = Path(scan_result["output_dir"])
     artifact_bytes = {name: (scan_output / name).read_bytes() for name in SCAN_ARTIFACTS}
     candidate_id = derive_snapshot_id(artifact_bytes)
@@ -213,9 +214,17 @@ def _calculate_snapshot_candidate(
     return candidate_id, True, candidate_id
 
 
-def generate_milestone_status(repository_path: str, state_root: Path | None = None) -> dict[str, Any]:
+def generate_milestone_status(
+    repository_path: str,
+    state_root: Path | None = None,
+    *,
+    scanner_cache_root: Path | None = None,
+    status_root: Path | None = None,
+) -> dict[str, Any]:
     root = (state_root or DEFAULT_STATE_ROOT).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
+    scan_root = (scanner_cache_root or root).expanduser()
+    output_root = (status_root or root).expanduser()
+    output_root.mkdir(parents=True, exist_ok=True)
 
     try:
         git_state = inspect_git_state(repository_path)
@@ -229,6 +238,7 @@ def generate_milestone_status(repository_path: str, state_root: Path | None = No
         repository_path=str(repository_root),
         repository_id=repository_id,
         state_root=root,
+        scanner_cache_root=scan_root,
     )
 
     status_payload: dict[str, Any] = {
@@ -252,7 +262,7 @@ def generate_milestone_status(repository_path: str, state_root: Path | None = No
     _validate_status_payload(status_payload)
     status_markdown = _build_status_markdown(status_payload)
 
-    workflow_root = root / repository_id / "workflow"
+    workflow_root = output_root / repository_id / "workflow"
     publish_result = _publish_status_pair(workflow_root, status_payload, status_markdown)
 
     return {

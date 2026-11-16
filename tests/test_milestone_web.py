@@ -110,6 +110,44 @@ class FakeGraphProvider:
 
 
 class MilestoneWebTests(unittest.TestCase):
+    def test_readonly_state_root_uses_separate_scanner_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = _repo(root, "repo", "R003.01")
+            state_root = root / "candidate-state"
+            state_root.mkdir(mode=0o700)
+            scanner_cache_root = root / "scanner-cache"
+            scanner_cache_root.mkdir(mode=0o700)
+            try:
+                state_root.chmod(0o500)
+                app = create_web_app(
+                    repository_path=str(repository),
+                    state_root=state_root,
+                    scanner_cache_root=scanner_cache_root,
+                )
+                self.assertEqual(app.config["STATE_ROOT"], state_root)
+                self.assertEqual(app.config["SCANNER_CACHE_ROOT"], scanner_cache_root)
+                response = app.test_client().get("/")
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(
+                    (scanner_cache_root / make_repository_id(repository) / "workflow" / "status.json").is_file()
+                )
+                self.assertEqual(list(state_root.iterdir()), [])
+                with self.assertRaisesRegex(ValueError, "separate"):
+                    create_web_app(
+                        repository_path=str(repository),
+                        state_root=state_root,
+                        scanner_cache_root=state_root / "scanner-cache",
+                    )
+                with self.assertRaisesRegex(ValueError, "registered repository"):
+                    create_web_app(
+                        repository_path=str(repository),
+                        state_root=state_root,
+                        scanner_cache_root=repository / "scanner-cache",
+                    )
+            finally:
+                state_root.chmod(0o700)
+
     def test_repository_action_lock_order_and_lock_error_responses(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             state_root = Path(td) / "state"
@@ -1784,11 +1822,12 @@ class MilestoneWebTests(unittest.TestCase):
             finally:
                 release_state_artifact_writes(state_root, freeze_id=freeze["freeze_id"])
 
-    def test_web_cli_passes_candidate_state_root_to_server(self) -> None:
+    def test_web_cli_passes_candidate_roots_to_server(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             repository = _repo(root, "repo", "R003.01")
             state_root = root / "candidate-state"
+            scanner_cache_root = root / "scanner-cache"
             from repoctl.cli import main
 
             with mock.patch("repoctl.cli.run_web_server") as run_web_server:
@@ -1800,11 +1839,17 @@ class MilestoneWebTests(unittest.TestCase):
                             str(repository),
                             "--state-root",
                             str(state_root),
+                            "--scanner-cache-root",
+                            str(scanner_cache_root),
                         ]
                     ),
                     0,
                 )
             self.assertEqual(run_web_server.call_args.kwargs["state_root"], state_root)
+            self.assertEqual(
+                run_web_server.call_args.kwargs["scanner_cache_root"],
+                scanner_cache_root,
+            )
 
 
 if __name__ == "__main__":

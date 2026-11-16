@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (M009 loopback only)")
     web_parser.add_argument("--port", default=8765, type=int, help="Bind port")
     web_parser.add_argument("--state-root", help="Repo Control state root (default: managed central state root)")
+    web_parser.add_argument("--scanner-cache-root", help="Separate writable root for scanner-derived artifacts")
 
     mcp_parser = subparsers.add_parser("mcp-architect", help="Start read-only Architect MCP stdio adapter")
     mcp_parser.add_argument(
@@ -883,6 +884,7 @@ def _main(
                 host=args.host,
                 port=args.port,
                 state_root=Path(args.state_root) if args.state_root else None,
+                scanner_cache_root=Path(args.scanner_cache_root) if args.scanner_cache_root else None,
                 information_store_clients=information_store_clients,
             )
         except ValueError as exc:

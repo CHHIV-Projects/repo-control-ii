@@ -1120,7 +1120,14 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["status"], "released")
         self.create_fixture_recovery_point(candidate_state_root)
 
-        app = create_web_app(repository_registry_path=self.registry_path, state_root=candidate_state_root)
+        scanner_cache_root = self.root / "candidate-scanner-cache"
+        app = create_web_app(
+            repository_registry_path=self.registry_path,
+            state_root=candidate_state_root,
+            scanner_cache_root=scanner_cache_root,
+        )
+        self.assertEqual(app.config["STATE_ROOT"], candidate_state_root)
+        self.assertEqual(app.config["SCANNER_CACHE_ROOT"], scanner_cache_root)
         app.config["TESTING"] = True
         browser = app.test_client()
         clients = app.extensions["repoctl_information_store_clients"]

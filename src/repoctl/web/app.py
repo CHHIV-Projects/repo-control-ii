@@ -594,6 +594,7 @@ def create_web_app(
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
+    scanner_cache_root: Path | None = None,
     information_store_clients: InformationStoreClientProvider | None = None,
 ) -> Flask:
     bound_host = _validate_host(host)
@@ -610,12 +611,27 @@ def create_web_app(
     initial_repository = registry.active()
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
     resolved_state_root = effective_state_root.resolve(strict=False)
+    effective_scanner_cache_root = (scanner_cache_root or effective_state_root).expanduser()
+    resolved_scanner_cache_root = effective_scanner_cache_root.resolve(strict=False)
     if any(
         resolved_state_root == entry.path.resolve()
         or resolved_state_root.is_relative_to(entry.path.resolve())
         for entry in registry.entries
     ):
         raise ValueError("The Repo Control state root must be outside every registered repository.")
+    if scanner_cache_root is not None:
+        if (
+            resolved_scanner_cache_root == resolved_state_root
+            or resolved_scanner_cache_root.is_relative_to(resolved_state_root)
+            or resolved_state_root.is_relative_to(resolved_scanner_cache_root)
+        ):
+            raise ValueError("The scanner cache root must be separate from the Repo Control state root.")
+        if any(
+            resolved_scanner_cache_root == entry.path.resolve()
+            or resolved_scanner_cache_root.is_relative_to(entry.path.resolve())
+            for entry in registry.entries
+        ):
+            raise ValueError("The scanner cache root must be outside every registered repository.")
     if information_store_clients is None:
         from ..store_authority import load_store_authority
         from ..workflow.information_store_fixture import create_managed_information_store_clients
@@ -656,6 +672,7 @@ def create_web_app(
         else None
     )
     app.config["STATE_ROOT"] = effective_state_root
+    app.config["SCANNER_CACHE_ROOT"] = effective_scanner_cache_root
     app.config["BOUND_HOST"] = bound_host
     app.config["BOUND_PORT"] = port
     app.config["RUNTIME_INSTANCE_ID"] = secrets.token_hex(16)
@@ -1022,10 +1039,11 @@ def create_web_app(
 
     def status_paths() -> tuple[Path, Path]:
         workflow_root = effective_state_root / current_repository().repository_id / "workflow"
-        return workflow_root / "status.json", workflow_root
+        status_root = effective_scanner_cache_root / current_repository().repository_id / "workflow"
+        return status_root / "status.json", workflow_root
 
     def contexts_root() -> Path:
-        return effective_state_root / current_repository().repository_id / "contexts"
+        return effective_scanner_cache_root / current_repository().repository_id / "contexts"
 
     def snapshots_root() -> Path:
         return effective_state_root / current_repository().repository_id / "snapshots"
@@ -1040,7 +1058,12 @@ def create_web_app(
         return effective_state_root / current_repository().repository_id / "workflow"
 
     # Prime deterministic status on startup so dashboard can render immediately.
-    generate_milestone_status(str(initial_repository.path), state_root=effective_state_root)
+    generate_milestone_status(
+        str(initial_repository.path),
+        state_root=effective_state_root,
+        scanner_cache_root=effective_scanner_cache_root,
+        status_root=effective_scanner_cache_root,
+    )
 
     @app.errorhandler(WebUIError)
     def _handle_web_error(err: WebUIError):
@@ -3227,7 +3250,12 @@ def create_web_app(
     def dashboard():
         status_json_path, _ = status_paths()
         if not status_json_path.exists():
-            generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
+            generate_milestone_status(
+                str(current_repository().path),
+                state_root=effective_state_root,
+                scanner_cache_root=effective_scanner_cache_root,
+                status_root=effective_scanner_cache_root,
+            )
         status_payload = _read_status(status_json_path)
         dashboard_view = load_dashboard_view(status_payload, current_repository().path)
         return render_template("dashboard.html", dashboard=dashboard_view)
@@ -3235,7 +3263,12 @@ def create_web_app(
     @app.post("/status/refresh")
     def refresh_status():
         _require_csrf()
-        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
+        generate_milestone_status(
+            str(current_repository().path),
+            state_root=effective_state_root,
+            scanner_cache_root=effective_scanner_cache_root,
+            status_root=effective_scanner_cache_root,
+        )
         flash("Status refreshed.", "success")
         return redirect(url_for("dashboard"))
 
@@ -3270,7 +3303,7 @@ def create_web_app(
     def generate_context():
         _require_csrf()
         query = _validate_context_query(request.form.get("query", ""))
-        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_state_root)
+        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_scanner_cache_root)
         result = build_and_publish_context(scan_result=scan_result, query=query)
         flash("Context generated.", "success")
         return redirect(url_for("context_page", context_id=result["context_id"]))
@@ -3280,7 +3313,12 @@ def create_web_app(
         selected_snapshot_id = request.args.get("snapshot_id")
         status_json_path, wf_root = status_paths()
         # Keep current-match cue aligned with the repository's current state.
-        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
+        generate_milestone_status(
+            str(current_repository().path),
+            state_root=effective_state_root,
+            scanner_cache_root=effective_scanner_cache_root,
+            status_root=effective_scanner_cache_root,
+        )
         status_payload = _read_status(status_json_path)
         rows = list_snapshots(
             snapshots_root(),
@@ -3299,7 +3337,7 @@ def create_web_app(
     @app.post("/snapshots/create")
     def create_snapshot_action():
         _require_csrf()
-        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_state_root)
+        scan_result = run_scan_with_artifacts(str(current_repository().path), state_root=effective_scanner_cache_root)
         result = create_snapshot(scan_result=scan_result, state_root=effective_state_root)
         if result["reused_existing"]:
             flash("Snapshot already exists for this exact repository state; reused existing snapshot.", "success")
@@ -3314,7 +3352,12 @@ def create_web_app(
         selected_after_snapshot_id = request.args.get("after_snapshot_id")
 
         status_json_path, _ = status_paths()
-        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
+        generate_milestone_status(
+            str(current_repository().path),
+            state_root=effective_state_root,
+            scanner_cache_root=effective_scanner_cache_root,
+            status_root=effective_scanner_cache_root,
+        )
         status_payload = _read_status(status_json_path)
 
         snapshot_rows = list_snapshots(
@@ -3604,7 +3647,12 @@ def create_web_app(
     @app.get("/workflow")
     def workflow_page():
         status_json_path, wf_root = status_paths()
-        generate_milestone_status(str(current_repository().path), state_root=effective_state_root)
+        generate_milestone_status(
+            str(current_repository().path),
+            state_root=effective_state_root,
+            scanner_cache_root=effective_scanner_cache_root,
+            status_root=effective_scanner_cache_root,
+        )
         status_payload = _read_status(status_json_path)
         git_state = inspect_git_state(str(current_repository().path))
         workflow_rows = summarize_workflow_artifacts(wf_root, git_state)
@@ -4562,6 +4610,7 @@ def run_web_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     state_root: Path | None = None,
+    scanner_cache_root: Path | None = None,
     information_store_clients: InformationStoreClientProvider | None = None,
 ) -> None:
     app = create_web_app(
@@ -4570,6 +4619,7 @@ def run_web_server(
         host=host,
         port=port,
         state_root=state_root,
+        scanner_cache_root=scanner_cache_root,
         information_store_clients=information_store_clients,
     )
     app.run(host=host, port=port, debug=False, use_reloader=False)
