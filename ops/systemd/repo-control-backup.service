@@ -16,4 +16,4 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadOnlyPaths=/home/chuck/.local/share/repoctl-sqlite/repo-control-ii/information-store.sqlite3
-ReadWritePaths=/home/chuck/.local/state/repo-control-backup/staging /mnt/nas/repo-control/repo-control-ii
+ReadWritePaths=/home/chuck/.local/state/repo-control-backup/staging /mnt/nas/repo-control/RepoControl/repo-control-ii

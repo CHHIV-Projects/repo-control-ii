@@ -64,50 +64,73 @@ by these steps.
 
 ## Backup architecture and operator provisioning
 
-The live database must stay on local storage. The values in
-`ops/backup.env.example` remain proposals except for the M010.019 Product
-Owner's recorded NAS source and destination decision. That decision does not
-authorize provisioning or configuration changes:
+The live database must stay on local storage. `ops/backup.env.example` now
+contains non-secret proposal values for the approved NAS source/destination
+and shared recovery-point path. It is not the protected host configuration;
+the Product Owner reports `/etc/repo-control/backup.env` is provisioned and
+matches the example. Approval of the NAS destination does not authorize live
+service changes, backup writes, or cutover:
 
 | Role | Path / identity and status |
 |---|---|
-| Database | `/home/chuck/.local/share/repoctl-sqlite/repo-control-ii/information-store.sqlite3` (proposed; absent) |
+| Database | `/home/chuck/.local/share/repoctl-sqlite/repo-control-ii/information-store.sqlite3` (absent; parent prepared `0700 chuck:chuck`) |
 | NAS mount | `/mnt/nas/repo-control` (current CIFS mount) |
 | NAS source | `//192.168.1.171/ProjectBackups` (approved by Product Owner in correction event `d0fb8f95a73b4f1e8f262efb2b1a90ea`) |
-| NAS destination | `/mnt/nas/repo-control/RepoControl/repo-control-ii` (approved path; absent) |
-| Local staging | `/home/chuck/.local/state/repo-control-backup/staging` (proposed; absent) |
-| Separate local restore | `/home/chuck/.local/state/repo-control-backup/restore` (proposed; absent) |
+| NAS destination | `/mnt/nas/repo-control/RepoControl/repo-control-ii` (directory exists; authorized sentinel test passed) |
+| Local staging | `/home/chuck/.local/state/repo-control-backup/staging` (`0700 chuck:chuck`, prepared locally) |
+| Separate local restore | `/home/chuck/.local/state/repo-control-backup/restore` (`0700 chuck:chuck`, prepared locally) |
+| Recovery-point record | `/home/chuck/.local/state/repo-control-backup/staging/.repoctl-verified-recovery-point.json` (configured path; record absent) |
+| Host backup environment | `/etc/repo-control/backup.env` (`root:root` mode `0600`; Product Owner reports byte-for-byte match to the tracked example) |
 | Job identity | `chuck` (`uid=1000` on the observed host) |
 
 M010.014 found no dedicated Repo Control share. M010.019 now records the
 Product Owner's approval to use the existing `ProjectBackups` share with the
 destination `/mnt/nas/repo-control/RepoControl/repo-control-ii`. Keep
 `/mnt/nas/repo-control/RepoControl/M010.015-test` separate; it is not the
-production destination. The example file still proposes the old
-`//192.168.1.171/RepoControl` source and
-`/mnt/nas/repo-control/repo-control-ii` destination, so it must not be treated
-as the approved configuration.
+production destination.
 
-The approved destination is absent. Read-only inspection as `chuck` found the
-`RepoControl` parent and disposable test subtree presented as mode `0700`,
-owned by `chuck:chuck`; the parent is locally writable/searchable, while the
-approved destination does not exist. Listing the share root as `chuck` was
-denied. The CIFS mount reports `nounix`, `uid=1000`, `gid=1000`,
-`dir_mode=0700`, and `file_mode=0600`; these client-side modes do not establish
-the NAS server's effective ACL. No production write probe was attempted.
-Therefore, the requirement that the backup account cannot write to sibling
-project folders remains NOT TESTED. Before any separately approved deployment,
-the NAS operator must verify that the effective backup account can write to
-the approved production destination but cannot create or write sibling project
-folders. Do not change the mount or permissions under this assessment.
+The tracked example now matches the approved source and destination and
+explicitly sets `REPOCTL_BACKUP_COVERAGE_PATH`. Product Owner correction event
+`bf23be35f93f41678e3319b5b06e8f3d` reports that the protected host file
+matches this example byte for byte. A read-only metadata check confirms the
+file is `root:root` mode `0600`; its contents were not read or displayed.
+Neither that host-file verification nor the destination's existence proves
+that access is isolated from other projects under `ProjectBackups`.
 
-Keep any mount credential in a root-owned file with mode `0600`, outside Git
-and logs; the service runs as `chuck`. When provisioning is separately
-authorized, create staging, restore, and destination directories with
-restrictive permissions (`0700` directories, `0600` backup files), verify
-service access, and confirm the restore path is local and separate from both
-the live DB and NAS mount. Do not grant the backup account access to unrelated
-project data.
+The initial M010.020 inspection found the approved destination absent.
+Following the Product Owner correction, a read-only `stat` confirms that
+`/mnt/nas/repo-control/RepoControl/repo-control-ii` now exists as a directory
+on the mounted CIFS share. It is presented client-side as `0700
+chuck:chuck`, but the mount reports `nounix`, `uid=1000`, `gid=1000`,
+`dir_mode=0700`, and `file_mode=0600`; these synthetic client modes do not
+establish the NAS server's effective ACL. The earlier share-root listing as
+`chuck` was denied. No write probe was attempted during that initial
+inspection.
+
+Product Owner correction event `3ed3f92eb172453f8934026b5eba9e6f` approves
+`ProjectBackups/RepoControl` and its subfolders as the write boundary for
+`repoctl-backup`, superseding the earlier destination-only requirement. After
+verifying the mount source and SMB username, the Coder created, read, and
+removed one unique harmless sentinel in the exact approved destination as
+`chuck:chuck` (Repo Control test event
+`16909daa18e04eeb92b3278f0129d822`). No existing file, `M010.015-test`, or
+path outside `RepoControl` was touched.
+
+Isolation from other projects under `ProjectBackups` remains NOT TESTED. The
+mount's `username=repoctl-backup` and client-presented CIFS modes do not prove
+server-side rights outside `RepoControl`; the earlier share-root listing denial
+also does not establish write isolation. No NAS-side effective-access/ACL
+evidence for other projects was available, and no write was attempted outside
+`RepoControl`. Report this isolation separately; do not test it by writing to
+other projects. Keep `M010.015-test` and all existing files untouched.
+
+Keep any mount credential in a separate root-owned file with mode `0600`,
+outside Git and logs; do not put it in `backup.env`. The M010.020 preparation
+created the local database parent, staging directory, and separate restore
+directory as `0700 chuck:chuck` on local ext4. No database or recovery-point
+record was created. Access to the approved NAS destination was verified by the
+authorized sentinel test; isolation from other projects under `ProjectBackups`
+remains unverified. Do not write outside `RepoControl`.
 
 `repoctl.backup backup` takes a consistent local snapshot through SQLite's
 online backup API, verifies the Repo Control schema, selection, workflow
@@ -200,9 +223,12 @@ immediately before cutover.
 
 ## M010.019 production host readiness
 
-The read-only host assessment found the following. Proposed units and
-directories remain uninstalled or unprovisioned; no service, mount, credential,
-database, or production destination was changed.
+This table preserves the M010.019 pre-provisioning assessment; the M010.020
+status below records subsequent local preparation, operator provisioning, and
+proposal updates. The read-only host assessment found the following. Proposed
+units and directories remained uninstalled or unprovisioned at that
+assessment; no service, mount, credential, database, or production destination
+was changed then.
 
 | Gate | Result | Evidence | Owner and exact next action |
 |---|---|---|---|
@@ -212,22 +238,20 @@ database, or production destination was changed.
 | Full-suite regression attribution | PASS | Baseline `320a2a4616a5875413c44ce789c72be4d9e2bfed`: 735 tests; accepted `f011f4be5481c6f574c5e770c19c9324f77d7e2f`: 738 tests. Both had 68 failures, 0 errors, and 1 skip with identical failure IDs; no accepted-only failure. | No deployment action. A separate onboarding review should reconcile the one legacy-history `milestone_id` expectation mismatch before changing that behavior. |
 | Proposed unit syntax and timer calendars | PASS | All four proposed unit files passed read-only syntax verification and both calendars parsed. Verification exited 0 with an unrelated legacy `/var/run` PIDFile warning from an installed Synology unit. | No action for syntax; this is not evidence that the proposed controls are installed or firing. |
 | Installed backup and monitor controls | NOT TESTED | The proposed services and 15-minute backup / independent five-minute monitor timers are not installed. | Deployment operator: after separate approval and installation, verify both timers with `systemctl list-timers --all repo-control-backup.timer repo-control-backup-monitor.timer` and inspect both units' local journal output, including warning and recovery. |
-| NAS source/destination decision | PASS | Product Owner correction event `d0fb8f95a73b4f1e8f262efb2b1a90ea` approves `//192.168.1.171/ProjectBackups` and `/mnt/nas/repo-control/RepoControl/repo-control-ii`; `M010.015-test` remains separate. The correction does not authorize provisioning. | No further share-selection action; do not alter the mount or configuration under this assessment. |
+| NAS source/destination decision | PASS | Product Owner correction event `d0fb8f95a73b4f1e8f262efb2b1a90ea` approves `//192.168.1.171/ProjectBackups` and `/mnt/nas/repo-control/RepoControl/repo-control-ii`; `M010.015-test` remains separate. That M010.019 correction did not authorize provisioning at the time. | No further share-selection action; do not alter the mount or configuration under this assessment. |
 | Production destination provisioning | FAIL | The approved `/mnt/nas/repo-control/RepoControl/repo-control-ii` destination is absent. | Host operator: provision only under separate authorization, preserving `M010.015-test` as a distinct disposable target. |
 | Backup-account sibling-project isolation | NOT TESTED | The share root cannot be listed by `chuck`; `RepoControl` and `M010.015-test` appear locally as `0700 chuck:chuck`, the parent is locally writable/searchable, and the approved destination is absent. The CIFS mount uses `nounix`, so these client modes do not prove the server ACL; no write probe was attempted. | NAS operator: before deployment, verify server-side access lets the backup account write the exact approved destination but denies create/write access to sibling project folders; preserve evidence and do not test by writing to production siblings. |
 | Database, staging, restore paths, and backup environment | FAIL | The proposed local database, staging, separate restore path, and `/etc/repo-control/backup.env` are absent. No credentials or environment-file contents were read. | Host operator: provision approved paths for `chuck:chuck` with `0700` directories and `0600` database/backup files; create `/etc/repo-control/backup.env` as `root:root` mode `0600`; then verify service access without displaying credentials. |
 | Recovery-point wiring to every writer | NOT TESTED | No managed SQLite writer is active and the environment file is absent. The example omits `REPOCTL_BACKUP_COVERAGE_PATH`; its code default is `/home/chuck/.local/state/repo-control-backup/staging/.repoctl-verified-recovery-point.json`. The backup units read the environment file, but the active `repo-control.service` has no `EnvironmentFile`, so effective publisher/writer path parity is unverified. | Deployment operator: explicitly configure the same recovery-point path for the backup publisher and each enabled managed writer, then prove they publish/read the same database-, authority-, repository-, and milestone-bound record before permitting writes. |
 | Production backup, restore, and one-hour objective | NOT TESTED | M010.018's disposable CIFS rehearsal passed, but no production backup or separate-path restore was run. Production cadence, outage behavior, and restore duration are unmeasured. | Deployment operator: during a separately authorized deployment, create a fresh verified production backup, restore it to a separate local path, verify integrity/foreign keys and identity/content evidence, and measure restore duration. Do not treat the one-hour loss objective as a restore-time guarantee. |
 
-The approved share and destination are now specified, but the production
-destination is absent, sibling-project isolation is unverified, other required
-paths are absent, and the live runtime does not meet the pinned target.
-Evidence supports planning a bounded preparation step to verify server-side
-access and provision the approved destination only after separate
-authorization; it does not support production activation or live SQLite
-cutover. The existing 45-minute rehearsal validates the guard design on
-disposable data only; it does not establish production backup coverage or
-rollback safety.
+At M010.019 closeout, the approved share and destination were specified, but
+the production destination was absent, sibling-project isolation was
+unverified, other required paths were absent, and the live runtime did not
+meet the pinned target. Evidence supported planning a bounded preparation
+step; it did not support production activation or live SQLite cutover. The
+existing 45-minute rehearsal validates the guard design on disposable data
+only; it does not establish production backup coverage or rollback safety.
 
 ### Ordered checklist for a separately approved deployment
 
@@ -278,3 +302,54 @@ rollback safety.
    writer uses the verified guard. Measure actual backup cadence and outage
    response separately from restore duration; a successful restore does not
    prove the one-hour loss objective or a bounded recovery time.
+
+## M010.020 production backup preparation
+
+M010.020 prepares local paths and reviewable configuration only. It leaves the
+live file-backed service, CIFS mount, systemd activation, production database,
+NAS backup, and recovery-point record unchanged.
+
+| Gate | Result | Evidence | Owner and exact next action |
+|---|---|---|---|
+| Current mount and live authority | PASS | `/mnt/nas/repo-control` is CIFS from `//192.168.1.171/ProjectBackups`; the service remains active as `chuck`, and `/healthz` reports `legacy_files` with a null InformationStore binding. | Preserve the running file-backed service; do not install the proposed unit. |
+| Approved destination exists | PASS (existence only) | Product Owner correction event `bf23be35f93f41678e3319b5b06e8f3d` reports creation; read-only `stat` confirms the exact approved path is a directory on the CIFS mount. Client-presented mode is synthetic and is not ACL evidence. | Do not treat existence or client metadata as access proof. |
+| Approved destination sentinel test | PASS | With the mount verified as `//192.168.1.171/ProjectBackups` (`cifs`, SMB username `repoctl-backup`) and process identity `chuck:chuck`, one unique sentinel was created, read back, and removed in `/mnt/nas/repo-control/RepoControl/repo-control-ii` (event `16909daa18e04eeb92b3278f0129d822`). No payload or other path was written. | The Product Owner-approved write boundary is `ProjectBackups/RepoControl` and its subfolders. Do not write to `M010.015-test`, existing files, or paths outside `RepoControl`. |
+| Isolation from other projects under `ProjectBackups` | NOT TESTED | No NAS-side effective-access/ACL evidence for other projects was available. CIFS client modes and the earlier denied share-root listing do not prove write isolation. No write was attempted outside `RepoControl`. | NAS request event `d449d294ebba4c62920e18e3bd2e8401` asks for sanitized, read-only effective-rights evidence for `repoctl-backup`, including share/folder ACLs, inherited permissions, and group grants. Do not test by writing to other projects. |
+| Local database parent, staging, and restore paths | PASS | The three paths are distinct, on local ext4, owned by `chuck:chuck`, mode `0700`, and accessible to the job identity. The database and recovery-point record do not exist. | No further local-path action; do not initialize the database or create a recovery-point record in this milestone. |
+| Protected backup environment | PASS | Product Owner correction event `bf23be35f93f41678e3319b5b06e8f3d` reports a byte-for-byte match to `ops/backup.env.example`; read-only `stat` confirms a regular file owned by `root:root`, mode `0600`. Contents were not read or displayed. | No further host-file action. Keep CIFS credentials separate and do not print or copy the protected file. |
+| Candidate runtime and source | PASS | The intended interpreter is `/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3-m010014-clean/bin/python`; `ops/verify_sqlite_runtime.py` reports Python 3.12.16 / SQLite 3.51.3 and production eligibility, and `pip check` passes. Its editable `repoctl` source is this checkout at HEAD `3282168bde4221a987e201dd2f80b7d9b178434c`. | Use this interpreter and reviewed source revision for the staged deployment. It lacks optional `_ssl`, `_ctypes`, `_bz2`, `_lzma`, `readline`, and `_curses`; `hashlib` imports successfully. Rebuild before any feature that requires those modules. |
+| Proposed systemd syntax and calendars | PASS (proposals only) | `systemd-analyze verify` passed for the browser service, backup service/timer, and monitor service/timer. Both the 15-minute backup and five-minute monitor calendars parsed. One unrelated legacy `/var/run` warning came from the installed Synology Active Backup unit. | No action until a separate deployment authorization; none of these units was installed or activated. |
+| Recovery-point environment wiring | PASS for proposals; NOT TESTED at runtime | Backup and monitor proposals read `/etc/repo-control/backup.env`; the proposed `repo-control.service` now uses that same file and the pinned interpreter. The active service still has no `EnvironmentFile`. `InformationStore` and backup code read `REPOCTL_BACKUP_COVERAGE_PATH` from each process environment. | For an independent Coder CLI process, explicitly set `REPOCTL_BACKUP_COVERAGE_PATH=/home/chuck/.local/state/repo-control-backup/staging/.repoctl-verified-recovery-point.json` in that process's environment; do not assume it inherits systemd settings. Verify actual parity before enabling any managed writer. |
+| Candidate authority preparation and activation | NOT TESTED | No production database or managed authority exists. Source inspection confirms the publisher requires an active exact selection/authority to create the bound recovery-point record. | In the next separately authorized milestone, prepare and activate the reviewed candidate with writers quiesced and explicit Product Owner/source-parity confirmation. No managed application write is required before the first verified backup. |
+| Production backup, restore, timers, and forward recovery | NOT TESTED | No production NAS payload, recovery record, installed timer, or managed SQLite writer exists. Post-first-managed-write recovery has not been rehearsed. | After authority activation, publish and validate its first verified NAS backup, perform a separate-path restore, then verify controls before Product Owner GO. Before the first managed SQLite-only application write, keep writers paused and use only the explicit pre-first-write abort path if abandoning the candidate. After a managed write, preserve the database and applicable WAL/SHM plus snapshots; rehearse a failure after that write, separate-path restore, and deterministic reconciliation of every post-snapshot write. Do not switch to files or claim recovery readiness until that rehearsal passes. |
+
+The ordering has no requirement to allow an application write before the first
+verified backup: authority and exact selection must be prepared and activated
+first so the backup can bind to them, while managed writers remain quiesced.
+The successful backup can then publish the recovery-point record that permits
+writes. This milestone does not perform that authority activation. An
+independently launched Coder CLI receives no systemd environment implicitly;
+its explicit coverage-path setting must be verified before managed CLI writes
+are allowed.
+
+Activation writes authority metadata to the prepared candidate database, but
+the managed-write boundary remains the first application write. Before that
+boundary, the reviewed explicit abort path is available only with Product
+Owner confirmation and writers quiesced. After it, preserve SQLite authority
+and rehearse forward recovery; do not revert to file-backed authority.
+
+Use the same explicit process setting for each independent Coder CLI write
+invocation; do not source the root-only backup environment or assume that a
+VS Code-launched process inherits a systemd service environment:
+
+```sh
+REPOCTL_BACKUP_COVERAGE_PATH=/home/chuck/.local/state/repo-control-backup/staging/.repoctl-verified-recovery-point.json \
+  /home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3-m010014-clean/bin/python \
+  -m repoctl.cli <exact-Coder-CLI-write-command>
+```
+
+The current disposition is **NO-GO for live SQLite cutover**. The approved
+destination sentinel test passed; the remaining NAS finding is isolation from
+other projects under `ProjectBackups`, which remains NOT TESTED. The protected
+host environment file is present. No backup, timer, service, production
+database, or managed writer was activated in M010.020.
