@@ -43,6 +43,7 @@ from ..scanner.core import (
     StateArtifactLockBusyError,
     StateArtifactLockError,
     StateArtifactLockOrderError,
+    StateArtifactWriteFreezeError,
     run_scan_with_artifacts,
     state_artifact_lock,
     state_artifact_lock_held,
@@ -608,6 +609,13 @@ def create_web_app(
     )
     initial_repository = registry.active()
     effective_state_root = (state_root or DEFAULT_STATE_ROOT).expanduser()
+    resolved_state_root = effective_state_root.resolve(strict=False)
+    if any(
+        resolved_state_root == entry.path.resolve()
+        or resolved_state_root.is_relative_to(entry.path.resolve())
+        for entry in registry.entries
+    ):
+        raise ValueError("The Repo Control state root must be outside every registered repository.")
     if information_store_clients is None:
         from ..store_authority import load_store_authority
         from ..workflow.information_store_fixture import create_managed_information_store_clients
@@ -1084,6 +1092,23 @@ def create_web_app(
             error_message=str(err),
             mutation_note="NO WORKFLOW EVENT OR TARGET GIT MUTATION",
         ), 503
+
+    @app.errorhandler(StateArtifactWriteFreezeError)
+    def _handle_state_artifact_write_freeze(err: StateArtifactWriteFreezeError):
+        if request.path.startswith("/api/architect/"):
+            return _architect_json_response(
+                {
+                    "contract_version": "1",
+                    "error": {"code": "file_backed_writers_frozen", "message": str(err)},
+                },
+                423,
+            )
+        return render_template(
+            "error.html",
+            error_code="file_backed_writers_frozen",
+            error_message=str(err),
+            mutation_note="NO FILE-BACKED WORKFLOW, SELECTION, DISPATCH, OR REPOSITORY DOCUMENT MUTATION",
+        ), 423
 
     @app.errorhandler(StateArtifactLockError)
     def _handle_state_artifact_lock_error(err: StateArtifactLockError):
@@ -3562,7 +3587,7 @@ def create_web_app(
         require_mutation_request()
         action = request.form.get("action", "")
         token = request.form.get("token", "")
-        with repository_action_lock:
+        with repository_action_lock, state_artifact_lock(effective_state_root, mutation=True):
             require_current_repository_selection()
             result = git_actions.confirm(str(current_repository().path), action, token)
         flash(result["message"], "success")

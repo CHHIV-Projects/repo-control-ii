@@ -211,6 +211,8 @@ def _prepared_activation_plan(
     state_root: str | Path,
     registry_path: str | Path,
     generation: str,
+    *,
+    source_state_root: str | Path | None = None,
 ) -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
     from .information_store import (
         _EXPECTED_TABLES,
@@ -237,6 +239,13 @@ def _prepared_activation_plan(
         or database.is_symlink() or database.resolve(strict=True) != database
     ):
         raise StoreAuthorityError("Activation paths must be existing canonical, non-symlink paths.")
+    source_root = Path(source_state_root).expanduser().absolute() if source_state_root is not None else root
+    if (
+        not source_root.is_dir()
+        or source_root.is_symlink()
+        or source_root.resolve(strict=True) != source_root
+    ):
+        raise StoreAuthorityError("The source state root must be an existing canonical, non-symlink directory.")
     registry_bytes = _read_bounded_file(registry_file.parent, registry_file.name, max_bytes=5_000_000)
     if registry_bytes is None:
         raise StoreAuthorityError("The exact registry is unavailable.")
@@ -301,7 +310,7 @@ def _prepared_activation_plan(
         try:
             parity = verify_prepared_source_parity(
                 registry,
-                root,
+                source_root,
                 {entries[row["repository_id"]].key: row["milestone_id"] for row in rows},
                 connection,
             )
@@ -335,6 +344,7 @@ def _prepared_activation_plan(
     plan = {
         **payload,
         "state_root": str(root),
+        "source_state_root": str(source_root),
         "database_identity": database_identity,
         "prepared_data_sha256": data_hash,
         "configuration_sha256": configuration_hash,
@@ -351,12 +361,20 @@ def preview_prepared_authority(
     state_root: str | Path,
     registry_path: str | Path,
     generation: str,
+    *,
+    source_state_root: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(state_root).expanduser().absolute()
     with state_artifact_lock(root):
         if load_store_authority(root) is not None:
             raise StoreAuthorityError("An InformationStore authority is already active.")
-        plan, _, _, markers = _prepared_activation_plan(database_path, root, registry_path, generation)
+        plan, _, _, markers = _prepared_activation_plan(
+            database_path,
+            root,
+            registry_path,
+            generation,
+            source_state_root=source_state_root,
+        )
         if markers:
             raise StoreAuthorityError("The prepared database already has an activation marker.")
         return plan
@@ -372,13 +390,20 @@ def activate_prepared_authority(
     po_confirmed: bool,
     writers_quiesced: bool,
     source_parity_confirmed: bool,
+    source_state_root: str | Path | None = None,
 ) -> StoreAuthorityConfiguration:
     if po_confirmed is not True or writers_quiesced is not True or source_parity_confirmed is not True:
         raise StoreAuthorityError("Activation requires explicit PO, writer-quiescence, and source-parity confirmation.")
     root = Path(state_root).expanduser().absolute()
     guard_name = f".{root.name}.information-store-authority.guard"
     with state_artifact_lock(root):
-        plan, config, guard, markers = _prepared_activation_plan(database_path, root, registry_path, generation)
+        plan, config, guard, markers = _prepared_activation_plan(
+            database_path,
+            root,
+            registry_path,
+            generation,
+            source_state_root=source_state_root,
+        )
         if plan["plan_sha256"] != expected_plan_sha256:
             raise StoreAuthorityError("The activation preflight changed; review and retry.")
         expected_markers = {
@@ -427,6 +452,7 @@ def abort_prepared_authority(
     expected_plan_sha256: str,
     po_confirmed: bool,
     writers_quiesced: bool,
+    source_state_root: str | Path | None = None,
 ) -> None:
     if po_confirmed is not True or writers_quiesced is not True:
         raise StoreAuthorityError("Abort requires explicit PO confirmation and quiesced writers.")
@@ -449,7 +475,13 @@ def abort_prepared_authority(
             connection.close()
         if first_write is not None and first_write[0] == "1":
             raise StoreAuthorityError("A managed write occurred; recover SQLite authority instead of aborting.")
-        plan, config, guard, markers = _prepared_activation_plan(database_path, root, registry_path, generation)
+        plan, config, guard, markers = _prepared_activation_plan(
+            database_path,
+            root,
+            registry_path,
+            generation,
+            source_state_root=source_state_root,
+        )
         if plan["plan_sha256"] != expected_plan_sha256:
             raise StoreAuthorityError("Prepared data or external selection changed; abort is unsafe.")
         expected_markers = {

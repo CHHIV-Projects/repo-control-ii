@@ -252,7 +252,7 @@ class CloseoutPublicationService:
                 "Explicit Product Owner confirmation for this authority is required to materialize the closeout."
             )
         guard = (
-            state_artifact_lock(self.store.selection_state_root)
+            state_artifact_lock(self.store.selection_state_root, mutation=True)
             if self.store.selection_state_root is not None else nullcontext()
         )
         with guard:

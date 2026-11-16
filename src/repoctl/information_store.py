@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from . import backup_guard
-from .scanner.core import state_artifact_lock
+from .scanner.core import DEFAULT_STATE_ROOT, state_artifact_lock
 from .store_authority import (
     StoreAuthorityConfiguration,
     StoreAuthorityError,
@@ -974,7 +974,7 @@ def _validate_fixture_selection_root(value: str | Path, repository_root: str) ->
     return _validate_selection_root(value, repository_root, fixture=True)
 
 
-def _read_fixture_selection_snapshot(state_root: Path, repository_id: str) -> tuple[dict[str, Any], str]:
+def _read_fixture_selection_bytes(state_root: Path, repository_id: str) -> bytes:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", repository_id):
         raise IdentityMismatchError("Repository ID cannot be used as a selection path component.")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -998,13 +998,7 @@ def _read_fixture_selection_snapshot(state_root: Path, repository_id: str) -> tu
             or (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino)
         ):
             raise StaleStateError("External fixture selection changed while being read.")
-        try:
-            payload = json.loads(content)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise StaleStateError("External fixture selection is malformed.") from exc
-        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-            raise StaleStateError("External fixture selection has an unsupported record shape.")
-        return payload, _sha256(content)
+        return content
     except OSError as exc:
         raise StaleStateError(f"External fixture selection is unavailable or unsafe: {exc}") from exc
     finally:
@@ -1012,26 +1006,54 @@ def _read_fixture_selection_snapshot(state_root: Path, repository_id: str) -> tu
             os.close(descriptor)
 
 
+def _read_fixture_selection_snapshot(state_root: Path, repository_id: str) -> tuple[dict[str, Any], str]:
+    content = _read_fixture_selection_bytes(state_root, repository_id)
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StaleStateError("External fixture selection is malformed.") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise StaleStateError("External fixture selection has an unsupported record shape.")
+    return payload, _sha256(content)
+
+
 def _read_fixture_selection(state_root: Path, repository_id: str) -> dict[str, Any]:
     return _read_fixture_selection_snapshot(state_root, repository_id)[0]
 
 
 def _write_fixture_selection(state_root: Path, repository_id: str, payload: Mapping[str, Any]) -> None:
+    content = _json_text(dict(payload), sort_keys=True).encode("utf-8") + b"\n"
+    _write_fixture_selection_bytes(state_root, repository_id, content)
+
+
+def _write_fixture_selection_bytes(state_root: Path, repository_id: str, content: bytes) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", repository_id):
+        raise IdentityMismatchError("Repository ID cannot be used as a selection path component.")
+    if not isinstance(content, bytes) or len(content) > 16_384:
+        raise StaleStateError("External fixture selection must be a bounded byte string.")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptors: list[int] = []
     temporary_name = f".selection-{uuid.uuid4().hex}.tmp"
     created = False
     try:
-        descriptors.append(os.open(state_root, directory_flags))
-        descriptors.append(os.open(repository_id, directory_flags, dir_fd=descriptors[-1]))
-        descriptors.append(os.open("milestones", directory_flags, dir_fd=descriptors[-1]))
+        root = Path(state_root).expanduser()
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if root.is_symlink() or not root.is_dir():
+            raise StaleStateError("External fixture selection root must be a real directory.")
+        descriptors.append(os.open(root, directory_flags))
+        for component in (repository_id, "milestones"):
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=descriptors[-1])
+            except FileExistsError:
+                pass
+            descriptors.append(os.open(component, directory_flags, dir_fd=descriptors[-1]))
         descriptor = os.open(
             temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o600, dir_fd=descriptors[-1],
         )
         created = True
         with os.fdopen(descriptor, "wb") as target:
-            target.write(_json_text(dict(payload), sort_keys=True).encode("utf-8") + b"\n")
+            target.write(content)
             target.flush()
             os.fsync(target.fileno())
         os.replace(
@@ -1200,9 +1222,20 @@ class InformationStore:
         self.creation_mode = creation_mode
         self.authority_configuration = authority_configuration
         self.backup_snapshot_configuration = backup_snapshot_configuration
-        self.backup_coverage_path = (
-            backup_guard.recovery_point_path() if authority_configuration is not None else None
-        )
+        self.backup_coverage_path: Path | None = None
+        if authority_configuration is not None:
+            if authority_configuration.state_root != DEFAULT_STATE_ROOT.expanduser().resolve(strict=False):
+                configured_coverage = os.environ.get("REPOCTL_BACKUP_COVERAGE_PATH")
+                default_coverage = backup_guard.DEFAULT_RECOVERY_POINT_PATH.expanduser().resolve(strict=False)
+                if (
+                    not configured_coverage
+                    or Path(configured_coverage).expanduser().resolve(strict=False) == default_coverage
+                ):
+                    raise BackupCoverageError(
+                        "A non-default managed state root requires its own explicit "
+                        "REPOCTL_BACKUP_COVERAGE_PATH; the live default recovery path is not a candidate path."
+                    )
+            self.backup_coverage_path = backup_guard.recovery_point_path()
         if creation_mode not in {"disposable_fixture", "managed_prepared"}:
             raise ValueError("Unsupported InformationStore creation mode.")
         if authority_configuration is not None and (

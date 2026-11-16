@@ -4,7 +4,9 @@ from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
+import json
 import os
+import secrets
 import shutil
 import stat
 import threading
@@ -37,6 +39,14 @@ class StateArtifactLockBusyError(StateArtifactLockError):
 
 class StateArtifactLockOrderError(StateArtifactLockError):
     pass
+
+
+class StateArtifactWriteFreezeError(StateArtifactLockError):
+    pass
+
+
+_STATE_ARTIFACT_WRITE_FREEZE_NAME = "file-backed-writes.freeze.json"
+_STATE_ARTIFACT_WRITE_FREEZE_MAX_BYTES = 4096
 
 
 def state_artifact_lock_held() -> bool:
@@ -119,8 +129,200 @@ def _verify_state_artifact_lock_path(lock_descriptor: int, directory_descriptor:
         raise StateArtifactLockError("Persistent state lock file was replaced while in use.")
 
 
+def _open_state_lock_directory(state_root: Path) -> int:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        root_descriptor = os.open(state_root, directory_flags)
+    except OSError as exc:
+        raise StateArtifactLockError(f"Could not safely open state root: {exc}") from exc
+    try:
+        descriptor = os.open(".locks", directory_flags, dir_fd=root_descriptor)
+    except OSError as exc:
+        raise StateArtifactLockError(f"Could not safely open state lock directory: {exc}") from exc
+    finally:
+        os.close(root_descriptor)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+        ):
+            raise StateArtifactLockError("State lock directory has unsafe type, ownership, or permissions.")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_state_artifact_write_freeze(state_root: Path) -> dict[str, Any] | None:
+    directory_descriptor = _open_state_lock_directory(state_root)
+    try:
+        try:
+            descriptor = os.open(
+                _STATE_ARTIFACT_WRITE_FREEZE_NAME,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory_descriptor,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise StateArtifactLockError(f"Could not safely read the file-backed writer freeze: {exc}") from exc
+        try:
+            info = os.fstat(descriptor)
+            named_info = os.stat(
+                _STATE_ARTIFACT_WRITE_FREEZE_NAME,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != (named_info.st_dev, named_info.st_ino)
+            ):
+                raise StateArtifactLockError("The file-backed writer freeze has unsafe identity or permissions.")
+            content = os.read(descriptor, _STATE_ARTIFACT_WRITE_FREEZE_MAX_BYTES + 1)
+            if len(content) > _STATE_ARTIFACT_WRITE_FREEZE_MAX_BYTES:
+                raise StateArtifactLockError("The file-backed writer freeze exceeds its safety limit.")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+    try:
+        record = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StateArtifactLockError("The file-backed writer freeze is malformed.") from exc
+    required = {
+        "created_at",
+        "created_by_uid",
+        "freeze_id",
+        "registry_binding_sha256",
+        "schema_version",
+        "source_inventory_sha256",
+    }
+    if (
+        not isinstance(record, dict)
+        or set(record) != required
+        or type(record.get("schema_version")) is not int
+        or record["schema_version"] != 1
+        or type(record.get("created_by_uid")) is not int
+        or not isinstance(record.get("created_at"), str)
+        or not isinstance(record.get("freeze_id"), str)
+        or len(record["freeze_id"]) != 32
+        or any(char not in "0123456789abcdef" for char in record["freeze_id"])
+        or any(
+            not isinstance(record.get(name), str)
+            or len(record[name]) != 64
+            or any(char not in "0123456789abcdef" for char in record[name])
+            for name in ("registry_binding_sha256", "source_inventory_sha256")
+        )
+    ):
+        raise StateArtifactLockError("The file-backed writer freeze has an invalid record shape.")
+    return record
+
+
+def state_artifact_write_freeze_status(state_root: str | Path) -> dict[str, Any] | None:
+    root = Path(state_root).expanduser()
+    with state_artifact_lock(root):
+        return _read_state_artifact_write_freeze(root.resolve(strict=True))
+
+
+def freeze_state_artifact_writes(
+    state_root: str | Path,
+    *,
+    source_inventory_sha256: str,
+    registry_binding_sha256: str,
+) -> dict[str, Any]:
+    for name, value in (
+        ("source inventory", source_inventory_sha256),
+        ("registry binding", registry_binding_sha256),
+    ):
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise StateArtifactWriteFreezeError(f"The {name} fingerprint must be a lowercase SHA-256.")
+    root = Path(state_root).expanduser()
+    with state_artifact_lock(root):
+        canonical_root = root.resolve(strict=True)
+        if _read_state_artifact_write_freeze(canonical_root) is not None:
+            raise StateArtifactWriteFreezeError("File-backed writers are already frozen for this state root.")
+        record = {
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "created_by_uid": os.geteuid(),
+            "freeze_id": secrets.token_hex(16),
+            "registry_binding_sha256": registry_binding_sha256,
+            "schema_version": 1,
+            "source_inventory_sha256": source_inventory_sha256,
+        }
+        content = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        directory_descriptor = _open_state_lock_directory(canonical_root)
+        temporary_name = f".{_STATE_ARTIFACT_WRITE_FREEZE_NAME}.{record['freeze_id']}.tmp"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+            offset = 0
+            while offset < len(content):
+                offset += os.write(descriptor, content[offset:])
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.rename(
+                temporary_name,
+                _STATE_ARTIFACT_WRITE_FREEZE_NAME,
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
+            os.fsync(directory_descriptor)
+        except OSError as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary_name, dir_fd=directory_descriptor)
+            except FileNotFoundError:
+                pass
+            raise StateArtifactWriteFreezeError(f"Could not persist the file-backed writer freeze: {exc}") from exc
+        finally:
+            os.close(directory_descriptor)
+        return record
+
+
+def release_state_artifact_writes(state_root: str | Path, *, freeze_id: str) -> None:
+    if (
+        not isinstance(freeze_id, str)
+        or len(freeze_id) != 32
+        or any(char not in "0123456789abcdef" for char in freeze_id)
+    ):
+        raise StateArtifactWriteFreezeError("The exact active freeze ID is required to release file-backed writers.")
+    root = Path(state_root).expanduser()
+    with state_artifact_lock(root):
+        canonical_root = root.resolve(strict=True)
+        record = _read_state_artifact_write_freeze(canonical_root)
+        if record is None:
+            raise StateArtifactWriteFreezeError("No file-backed writer freeze is active.")
+        if record["freeze_id"] != freeze_id:
+            raise StateArtifactWriteFreezeError("The supplied freeze ID does not match the active writer freeze.")
+        directory_descriptor = _open_state_lock_directory(canonical_root)
+        try:
+            os.unlink(_STATE_ARTIFACT_WRITE_FREEZE_NAME, dir_fd=directory_descriptor)
+            os.fsync(directory_descriptor)
+        except OSError as exc:
+            raise StateArtifactWriteFreezeError(f"Could not release the file-backed writer freeze: {exc}") from exc
+        finally:
+            os.close(directory_descriptor)
+
+
 @contextmanager
-def state_artifact_lock(state_root: str | Path) -> Iterator[None]:
+def state_artifact_lock(state_root: str | Path, *, mutation: bool = False) -> Iterator[None]:
     root = Path(state_root).expanduser()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -133,6 +335,8 @@ def state_artifact_lock(state_root: str | Path) -> Iterator[None]:
             raise StateArtifactLockOrderError(
                 "Nested state-artifact locks must use the same canonical state root."
             )
+        if mutation and _read_state_artifact_write_freeze(canonical_root) is not None:
+            raise StateArtifactWriteFreezeError("File-backed writers are frozen for this state root.")
         held[canonical_root]["depth"] += 1
         try:
             yield
@@ -169,6 +373,8 @@ def state_artifact_lock(state_root: str | Path) -> Iterator[None]:
             _verify_state_artifact_lock_path(descriptor, directory_descriptor)
             _STATE_ARTIFACT_LOCK_LOCAL.held = {canonical_root: {"depth": 1}}
             try:
+                if mutation and _read_state_artifact_write_freeze(canonical_root) is not None:
+                    raise StateArtifactWriteFreezeError("File-backed writers are frozen for this state root.")
                 yield
             finally:
                 del _STATE_ARTIFACT_LOCK_LOCAL.held

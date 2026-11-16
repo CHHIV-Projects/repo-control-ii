@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -12,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from threading import Thread
+from urllib.request import urlopen
 from unittest.mock import Mock, patch
 
 from flask import Flask
@@ -19,6 +22,7 @@ from werkzeug.serving import make_server
 
 from repoctl.cli import main as cli_main
 from repoctl.information_store import (
+    BackupCoverageError,
     DocumentRevisionInput,
     InformationStore,
     InformationStoreError,
@@ -191,8 +195,8 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         (self.state_root / "information-store-authority.json").write_bytes(raw)
         self.create_fixture_recovery_point()
 
-    def create_fixture_recovery_point(self) -> dict:
-        configuration = load_store_authority(self.state_root)
+    def create_fixture_recovery_point(self, state_root: Path | None = None) -> dict:
+        configuration = load_store_authority(state_root or self.state_root)
         if configuration is None:
             raise AssertionError("The isolated managed authority fixture is not active.")
         return create_verified_backup(
@@ -206,8 +210,8 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             coverage_path=self.coverage_path,
         )
 
-    def managed_clients(self):
-        configuration = load_store_authority(self.state_root)
+    def managed_clients(self, state_root: Path | None = None):
+        configuration = load_store_authority(state_root or self.state_root)
         self.assertIsNotNone(configuration)
         return create_managed_information_store_clients(configuration, self.repository)
 
@@ -978,6 +982,13 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
     @patch("repoctl.web.app.generate_milestone_status")
     def test_disposable_operator_cutover_mixed_clients_backup_and_recovery(self, _status) -> None:
         self.selection_path.write_bytes(self.v1_selection)
+        candidate_state_root = self.root / "candidate-state"
+        candidate_state_root.mkdir()
+        candidate_selection_path = (
+            candidate_state_root / self.identity.repository_id / "milestones/selection.json"
+        )
+        source_selection_before = self.selection_path.read_bytes()
+        source_workflow_before = self.workflow_path.read_bytes()
         dispatch_path = self.state_root / self.identity.repository_id / "architect_dispatches.json"
         timestamp = "2026-01-01T00:00:00+00:00"
         imported_dispatch = {
@@ -1012,7 +1023,14 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             return code, output.getvalue(), errors.getvalue()
 
         operator = ["--registry", str(self.registry_path), "--state-root", str(self.state_root)]
-        prepare = ["store-authority", "prepare", *operator, "--destination", str(destination)]
+        code, output, error = invoke(["store-authority", "freeze-writers", *operator])
+        self.assertEqual(code, 0, error)
+        freeze_id = json.loads(output)["freeze_id"]
+        prepare = [
+            "store-authority", "prepare", *operator,
+            "--candidate-state-root", str(candidate_state_root),
+            "--destination", str(destination),
+        ]
         code, _, error = invoke(prepare)
         self.assertNotEqual(code, 0)
         self.assertIn("quiesced", error)
@@ -1025,8 +1043,9 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(imported["mismatch_count"], 0)
         database = Path(imported["prepared_database_path"])
         binding = imported["prepared_selection_bindings"][0]
+        candidate_operator = ["--registry", str(self.registry_path), "--state-root", str(candidate_state_root)]
         bind = [
-            "store-authority", "bind-selection", *operator, "--database", str(database),
+            "store-authority", "bind-selection", *candidate_operator, "--database", str(database),
             "--binding-json", json.dumps(binding),
         ]
         code, _, error = invoke(bind)
@@ -1034,7 +1053,12 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertIn("confirmation", error)
         code, _, error = invoke([*bind, "--po-confirm"])
         self.assertEqual(code, 0, error)
-        common = [*operator, "--database", str(database), "--generation", "f" * 32]
+        common = [
+            *candidate_operator,
+            "--source-state-root", str(self.state_root),
+            "--database", str(database),
+            "--generation", "f" * 32,
+        ]
 
         tampered_path = self.root / "tampered-import.sqlite3"
         original, tampered = sqlite3.connect(database), sqlite3.connect(tampered_path)
@@ -1089,9 +1113,14 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertIsNone(load_store_authority(self.state_root))
         code, _, error = invoke(["store-authority", "activate", *common, *confirmed])
         self.assertEqual(code, 0, error)
-        self.create_fixture_recovery_point()
+        code, output, error = invoke([
+            "store-authority", "release-writers", *operator, "--freeze-id", freeze_id,
+        ])
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["status"], "released")
+        self.create_fixture_recovery_point(candidate_state_root)
 
-        app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        app = create_web_app(repository_registry_path=self.registry_path, state_root=candidate_state_root)
         app.config["TESTING"] = True
         browser = app.test_client()
         clients = app.extensions["repoctl_information_store_clients"]
@@ -1119,6 +1148,169 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             "request_id": prompt["request_id"],
         }
         self.assertEqual(browser.post("/milestones/confirm-imported-prompt", data=confirmation).status_code, 302)
+        backup_report = self.create_fixture_recovery_point(candidate_state_root)
+        server = make_server("127.0.0.1", 0, app, threaded=True)
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            with urlopen(f"http://127.0.0.1:{server.server_port}/healthz", timeout=5) as response:
+                health = json.loads(response.read())
+        finally:
+            server.shutdown()
+            thread.join(5)
+            server.server_close()
+        browser_binding = health["information_store_binding"]
+        self.assertEqual(browser_binding["authority_state_root"], str(candidate_state_root))
+        self.assertEqual(browser_binding["milestone_id"], binding["milestone_id"])
+        self.assertEqual(browser_binding["selection_id"], binding["selection_id"])
+        self.assertEqual(browser_binding["selection_revision"], binding["selection_revision"])
+
+        cli_script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from repoctl.scanner import core as scanner_core\n"
+            "from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry\n"
+            "from repoctl.workflow import coder_interface\n"
+            "repository = Path(sys.argv[1]).resolve()\n"
+            "entry = RepositoryEntry(\n"
+            "    key=sys.argv[2], name='Managed test', path=repository, repository_id=sys.argv[3],\n"
+            "    milestone_root='docs/milestones', documents={'context': 'docs/context/project_context.md'},\n"
+            ")\n"
+            "registry = RepositoryRegistry((entry,), default_key=entry.key)\n"
+            "RepositoryRegistry.from_toml = classmethod(lambda cls, path: registry)\n"
+            "coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH = Path(sys.argv[4])\n"
+            "coder_interface.resolve_repository_entry = lambda repository_path=None, milestone_root=None: entry\n"
+            "scanner_core.DEFAULT_STATE_ROOT = Path(sys.argv[5]).parent / 'unused-default-state'\n"
+            "from repoctl.cli import main\n"
+            "raise SystemExit(main(sys.argv[6:]))\n"
+        )
+        def launch_independent_cli(state_root: Path, environment=None):
+            return subprocess.run(
+                [
+                sys.executable,
+                "-c",
+                cli_script,
+                str(self.repository_root),
+                self.identity.repository_key,
+                self.identity.repository_id,
+                str(self.registry_path),
+                str(state_root),
+                "coder-status",
+                "--repository",
+                str(self.repository_root),
+                "--state-root",
+                str(state_root),
+                "--format",
+                "json",
+                ],
+                cwd=self.repository_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+
+        cli_result = launch_independent_cli(candidate_state_root)
+        self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
+        cli_status = json.loads(cli_result.stdout)
+        self.assertEqual(cli_status["information_store_authority"], "sqlite_managed")
+        self.assertEqual(cli_status["selection"]["milestone_id"], browser_binding["milestone_id"])
+        self.assertEqual(cli_status["selection"]["selection_id"], browser_binding["selection_id"])
+        self.assertEqual(cli_status["selection"]["selection_revision"], browser_binding["selection_revision"])
+        self.assertEqual(
+            cli_status["workflow"]["event_count"],
+            backup_report["snapshot"]["selected_workflow"]["event_count"],
+        )
+        self.assertEqual(
+            backup_report["snapshot"]["selection"],
+            {
+                "milestone_id": browser_binding["milestone_id"],
+                "prompt_path": browser_binding["prompt_path"],
+                "selection_id": browser_binding["selection_id"],
+                "selection_revision": browser_binding["selection_revision"],
+                "prompt_revision_id": browser_binding["prompt_revision_id"],
+            },
+        )
+        recovery_record = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        configuration = load_store_authority(candidate_state_root)
+        self.assertIsNotNone(configuration)
+        expected_backup_binding = backup_guard.authority_binding(
+            configuration,
+            browser_binding["database_identity"],
+            repository_id=browser_binding["repository_id"],
+            repository_key=browser_binding["repository_key"],
+            repository_root=browser_binding["repository_root"],
+            milestone_id=browser_binding["milestone_id"],
+            prompt_path=browser_binding["prompt_path"],
+            selection_id=browser_binding["selection_id"],
+            selection_revision=browser_binding["selection_revision"],
+        )
+        self.assertEqual(recovery_record["authority_binding"], expected_backup_binding)
+        candidate_selection = json.loads(candidate_selection_path.read_text(encoding="utf-8"))
+        self.assertEqual(candidate_selection["milestone_id"], binding["milestone_id"])
+        self.assertEqual(candidate_selection["prompt_path"], binding["prompt_path"])
+        self.assertEqual(candidate_selection["selection_id"], binding["selection_id"])
+        self.assertEqual(candidate_selection["selection_revision"], binding["selection_revision"])
+        self.assertEqual(
+            candidate_selection["v1_selection_sha256"],
+            hashlib.sha256(self.v1_selection).hexdigest(),
+        )
+        self.assertEqual(self.selection_path.read_bytes(), source_selection_before)
+        self.assertEqual(self.workflow_path.read_bytes(), source_workflow_before)
+        self.assertIsNone(load_store_authority(self.state_root))
+
+        missing_state_root = self.root / "missing-candidate-state"
+        missing_state_root.mkdir()
+        missing_app = create_web_app(
+            repository_registry_path=self.registry_path,
+            state_root=missing_state_root,
+        )
+        missing_page = missing_app.test_client().get("/milestones")
+        self.assertEqual(missing_page.status_code, 200)
+        self.assertIn("No milestone selected", missing_page.get_data(as_text=True))
+        missing_cli = launch_independent_cli(missing_state_root)
+        self.assertNotEqual(missing_cli.returncode, 0)
+        self.assertIn("No milestone is currently selected", missing_cli.stderr)
+
+        invalid_state_root = self.root / "invalid-candidate-state"
+        invalid_state_root.mkdir()
+        (invalid_state_root / "information-store-authority.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(StoreAuthorityError, "configuration is incomplete"):
+            create_web_app(
+                repository_registry_path=self.registry_path,
+                state_root=invalid_state_root,
+            )
+        invalid_cli = launch_independent_cli(invalid_state_root)
+        self.assertNotEqual(invalid_cli.returncode, 0)
+        self.assertIn("legacy fallback is disabled", invalid_cli.stderr)
+
+        candidate_environment = os.environ.copy()
+        candidate_environment.pop("REPOCTL_BACKUP_COVERAGE_PATH", None)
+        with patch.dict(os.environ, {"REPOCTL_BACKUP_COVERAGE_PATH": ""}):
+            with self.assertRaisesRegex(BackupCoverageError, "requires its own explicit"):
+                create_web_app(
+                    repository_registry_path=self.registry_path,
+                    state_root=candidate_state_root,
+                )
+        missing_coverage_cli = launch_independent_cli(candidate_state_root, candidate_environment)
+        self.assertNotEqual(missing_coverage_cli.returncode, 0)
+        self.assertIn("requires its own explicit", missing_coverage_cli.stderr)
+        default_coverage_environment = candidate_environment | {
+            "REPOCTL_BACKUP_COVERAGE_PATH": str(backup_guard.DEFAULT_RECOVERY_POINT_PATH),
+        }
+        with patch.dict(
+            os.environ,
+            {"REPOCTL_BACKUP_COVERAGE_PATH": str(backup_guard.DEFAULT_RECOVERY_POINT_PATH)},
+        ):
+            with self.assertRaisesRegex(BackupCoverageError, "live default recovery path"):
+                create_web_app(
+                    repository_registry_path=self.registry_path,
+                    state_root=candidate_state_root,
+                )
+        default_coverage_cli = launch_independent_cli(candidate_state_root, default_coverage_environment)
+        self.assertNotEqual(default_coverage_cli.returncode, 0)
+        self.assertIn("live default recovery path", default_coverage_cli.stderr)
+
         reconcile = {
             **po,
             "reconciliation_history_id": "b" * 32,
@@ -1159,7 +1351,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         connection = Mock()
         connection.getresponse.return_value = response
         verify = [
-            "coder-verify", "--state-root", str(self.state_root), "--trigger", "NEW",
+            "coder-verify", "--state-root", str(candidate_state_root), "--trigger", "NEW",
             "--expected-repository-key", self.identity.repository_key,
             "--expected-repository-id", self.identity.repository_id,
             "--expected-repository-root", self.identity.repository_root,
@@ -1205,7 +1397,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
 
             with patch("repoctl.mcp.architect_adapter.serve_stdio", side_effect=serve_fixture):
                 code, _, error = invoke([
-                    "mcp-architect", "--state-root", str(self.state_root), "--repo-control-url", url,
+                    "mcp-architect", "--state-root", str(candidate_state_root), "--repo-control-url", url,
                 ])
             self.assertEqual(code, 0, error or error_stream.getvalue())
             replies = [json.loads(line) for line in output_stream.getvalue().splitlines()]
@@ -1220,7 +1412,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         )
         decision = {**po, "decision_fingerprint": dispatch_reconciliation_fingerprint(new_dispatch)}
         code, _, error = invoke([
-            "coder-test", "Fixture test result", "--state-root", str(self.state_root),
+            "coder-test", "Fixture test result", "--state-root", str(candidate_state_root),
             "--source", "integrated fixture", "--result", "PASS",
         ])
         self.assertEqual(code, 0, error)
@@ -1228,7 +1420,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         closeout = b"# Integrated fixture closeout\n"
         (self.repository_root / closeout_path).write_bytes(closeout)
         code, _, error = invoke([
-            "coder-closeout", "--state-root", str(self.state_root), "--summary", "Submit fixture closeout",
+            "coder-closeout", "--state-root", str(candidate_state_root), "--summary", "Submit fixture closeout",
             "--draft-file", closeout_path, "--content-sha256", hashlib.sha256(closeout).hexdigest(),
         ])
         self.assertEqual(code, 0, error)
@@ -1278,14 +1470,17 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         finally:
             backup.close()
             target.close()
-        restored = self.managed_clients()
+        restored = self.managed_clients(candidate_state_root)
         self.assertEqual(restored.workflow_snapshot(), before_backup)
         self.assertEqual(browser.post("/milestones/confirm-imported-prompt", data=confirmation).status_code, 302)
         self.assertEqual(restored.store.list_dispatch_history(imported_dispatch["dispatch_id"])[-1]["po_confirmed"], 1)
         code, _, error = invoke(abort)
         self.assertNotEqual(code, 0)
         self.assertIn("A managed write occurred", error)
-        self.assertIsNotNone(load_store_authority(self.state_root))
+        self.assertIsNotNone(load_store_authority(candidate_state_root))
+        self.assertIsNone(load_store_authority(self.state_root))
+        self.assertEqual(self.selection_path.read_bytes(), source_selection_before)
+        self.assertEqual(self.workflow_path.read_bytes(), source_workflow_before)
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_registered_publication_handoff_uses_explicit_po_confirmation(self, _status) -> None:

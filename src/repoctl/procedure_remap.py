@@ -887,7 +887,7 @@ def stage_role_remap(
 ) -> dict[str, Any]:
     if len(approved_plan_sha256) != 64 or any(char not in "0123456789abcdef" for char in approved_plan_sha256):
         raise ProcedureRemapError("The reviewed remap plan SHA-256 is required.")
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         plan = preview_role_remap(
             entry,
             new_documents,
@@ -1244,7 +1244,7 @@ def recover_role_remap(
     operation_id: str,
     state_root: str | Path = DEFAULT_STATE_ROOT,
 ) -> dict[str, Any]:
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         operation_directory, journal = _find_operation(entry, operation_id, state_root)
         if journal["state"] in _TERMINAL_STATES:
             raise ProcedureRemapError("A completed remap operation cannot be rolled back by this recovery path.")
@@ -1418,7 +1418,7 @@ def finalize_role_remap(
     bundle: ProcedureBundle | None = None,
 ) -> dict[str, Any]:
     active_bundle = bundle or load_bundle()
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         operation_directory, journal = _find_operation(entry, operation_id, state_root)
         if journal["state"] not in {"AWAITING_RESTART", "ROLLBACK_AWAITING_RESTART"}:
             raise ProcedureRemapError("The remap operation is not awaiting post-restart verification.")

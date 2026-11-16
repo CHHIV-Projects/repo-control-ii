@@ -827,7 +827,7 @@ def _record_milestone_event_locked(
     _, milestone_dir = _root_paths(root, milestone_root)
     relative_sidecar = _sidecar_path(current_candidate)
     sidecar_path = root / Path(*PurePosixPath(relative_sidecar).parts)
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         if sidecar_path.exists() or sidecar_path.is_symlink():
             try:
                 _contained_file(root, milestone_dir, relative_sidecar)

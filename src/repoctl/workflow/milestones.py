@@ -349,7 +349,7 @@ def save_milestone_selection(
         "milestone_id": milestone_id,
         "prompt_path": candidate["prompt_path"],
     }
-    with state_artifact_lock(external_state_root):
+    with state_artifact_lock(external_state_root, mutation=True):
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

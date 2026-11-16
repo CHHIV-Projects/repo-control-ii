@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     web_repository.add_argument("--repository-registry", help="Server-side TOML registry of known repositories")
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (M009 loopback only)")
     web_parser.add_argument("--port", default=8765, type=int, help="Bind port")
+    web_parser.add_argument("--state-root", help="Repo Control state root (default: managed central state root)")
 
     mcp_parser = subparsers.add_parser("mcp-architect", help="Start read-only Architect MCP stdio adapter")
     mcp_parser.add_argument(
@@ -419,8 +420,21 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = authority_actions.add_parser("prepare", help="Import all registered v1 sources while quiesced")
     prepare.add_argument("--registry", required=True)
     prepare.add_argument("--state-root", required=True)
+    prepare.add_argument("--candidate-state-root", required=True)
     prepare.add_argument("--destination", required=True)
     prepare.add_argument("--writers-quiesced", action="store_true")
+    freeze_writers = authority_actions.add_parser(
+        "freeze-writers", help="Drain cooperating file-backed writers and capture registered-source fingerprints"
+    )
+    freeze_writers.add_argument("--registry", required=True)
+    freeze_writers.add_argument("--state-root", required=True)
+    release_writers = authority_actions.add_parser(
+        "release-writers", help="Release an exact active writer freeze after source parity or explicit abort"
+    )
+    release_writers.add_argument("--registry", required=True)
+    release_writers.add_argument("--state-root", required=True)
+    release_writers.add_argument("--freeze-id", required=True)
+    release_writers.add_argument("--abort-reason")
     bind = authority_actions.add_parser("bind-selection", help="Bind an exact reviewed v1 selection")
     bind.add_argument("--registry", required=True)
     bind.add_argument("--state-root", required=True)
@@ -431,6 +445,10 @@ def build_parser() -> argparse.ArgumentParser:
         command = authority_actions.add_parser(action)
         command.add_argument("--registry", required=True)
         command.add_argument("--state-root", required=True)
+        command.add_argument(
+            "--source-state-root",
+            help="Frozen file-backed source root used for parity checks when activating a separate candidate root",
+        )
         command.add_argument("--database", required=True)
         command.add_argument("--generation", required=True)
         if action != "preview":
@@ -456,7 +474,12 @@ def _run_store_authority_command(args: argparse.Namespace) -> int:
     from dataclasses import asdict
 
     from .information_store import InformationStore, InformationStoreError, StoreIdentity
-    from .migration_rehearsal import MigrationRehearsalError, prepare_managed_repository_imports
+    from .migration_rehearsal import (
+        MigrationRehearsalError,
+        freeze_managed_import_writers,
+        prepare_managed_repository_imports,
+        release_managed_import_writers,
+    )
     from .scanner.core import StateArtifactLockError, state_artifact_lock
     from .store_authority import (
         StoreAuthorityError,
@@ -477,7 +500,20 @@ def _run_store_authority_command(args: argparse.Namespace) -> int:
                 RepositoryRegistry.from_toml(registry_path),
                 args.destination,
                 state_root=args.state_root,
+                candidate_state_root=args.candidate_state_root,
                 writers_quiesced=args.writers_quiesced,
+            )
+        elif args.authority_action == "freeze-writers":
+            result = freeze_managed_import_writers(
+                RepositoryRegistry.from_toml(registry_path),
+                state_root=args.state_root,
+            )
+        elif args.authority_action == "release-writers":
+            result = release_managed_import_writers(
+                RepositoryRegistry.from_toml(registry_path),
+                state_root=args.state_root,
+                freeze_id=args.freeze_id,
+                abort_reason=args.abort_reason,
             )
         elif args.authority_action == "bind-selection":
             binding = json.loads(args.binding_json)
@@ -505,7 +541,13 @@ def _run_store_authority_command(args: argparse.Namespace) -> int:
             )
             result = {"selection": asdict(store.identity), "database_identity": store.database_identity()}
         elif args.authority_action == "preview":
-            result = preview_prepared_authority(args.database, args.state_root, registry_path, args.generation)
+            result = preview_prepared_authority(
+                args.database,
+                args.state_root,
+                registry_path,
+                args.generation,
+                source_state_root=args.source_state_root,
+            )
         elif args.authority_action == "activate":
             configuration = activate_prepared_authority(
                 args.database, args.state_root, registry_path, args.generation,
@@ -513,6 +555,7 @@ def _run_store_authority_command(args: argparse.Namespace) -> int:
                 po_confirmed=args.po_confirm,
                 writers_quiesced=args.writers_quiesced,
                 source_parity_confirmed=args.source_parity_confirmed,
+                source_state_root=args.source_state_root,
             )
             result = {
                 "status": "active",
@@ -525,6 +568,7 @@ def _run_store_authority_command(args: argparse.Namespace) -> int:
                 expected_plan_sha256=args.expected_plan_sha256,
                 po_confirmed=args.po_confirm,
                 writers_quiesced=args.writers_quiesced,
+                source_state_root=args.source_state_root,
             )
             result = {"status": "aborted_before_first_write"}
         else:
@@ -838,6 +882,7 @@ def _main(
                 repository_registry_path=args.repository_registry,
                 host=args.host,
                 port=args.port,
+                state_root=Path(args.state_root) if args.state_root else None,
                 information_store_clients=information_store_clients,
             )
         except ValueError as exc:

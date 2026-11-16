@@ -28,11 +28,18 @@ from .information_store import (
     historical_prompt_path_alias,
     _parse_sidecar_bytes,
     _projection,
+    _read_fixture_selection_bytes,
     _read_fixture_selection_snapshot,
     _validate_selection_root,
+    _write_fixture_selection_bytes,
 )
 from .scanner.util import make_repository_id
-from .scanner.core import state_artifact_lock
+from .scanner.core import (
+    freeze_state_artifact_writes,
+    release_state_artifact_writes,
+    state_artifact_lock,
+    state_artifact_write_freeze_status,
+)
 from .store_authority import load_store_authority
 from .web.repository_registry import RepositoryEntry, RepositoryRegistry
 from .workflow.architect_dispatches import ArchitectDispatchError, read_owner_dispatch_ledger_snapshot
@@ -52,6 +59,125 @@ def _sha256(data: bytes) -> str:
 
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _registry_binding_sha256(registry: RepositoryRegistry) -> str:
+    return _sha256(_canonical_json([
+        {
+            "documents": dict(sorted(entry.documents.items())),
+            "key": entry.key,
+            "milestone_root": entry.milestone_root,
+            "name": entry.name,
+            "path": str(entry.path.resolve(strict=True)),
+            "repository_id": entry.repository_id,
+        }
+        for entry in registry.entries
+    ]))
+
+
+def _managed_registered_source_snapshot(
+    registry: RepositoryRegistry,
+    state_root: Path,
+) -> tuple[dict[str, tuple[dict[str, Any], str, bytes]], RegisteredRepositoryInventory, str, str]:
+    if not registry.entries:
+        raise MigrationRehearsalError("Managed import requires at least one registered repository.")
+    keys = tuple(entry.key for entry in registry.entries)
+    if len(set(keys)) != len(keys):
+        raise MigrationRehearsalError("Managed import registry keys must be unique.")
+
+    pointers: dict[str, tuple[dict[str, Any], str, bytes]] = {}
+    for entry in registry.entries:
+        _validate_selection_root(state_root, str(entry.path), fixture=False)
+        pointer, digest = _read_fixture_selection_snapshot(state_root, entry.repository_id)
+        content = _read_fixture_selection_bytes(state_root, entry.repository_id)
+        if _sha256(content) != digest:
+            raise MigrationRehearsalError("A registered source selection changed while the inventory was captured.")
+        if (
+            set(pointer) != {"schema_version", "repository_id", "milestone_id", "prompt_path"}
+            or pointer["repository_id"] != entry.repository_id
+            or not isinstance(pointer["milestone_id"], str)
+            or not isinstance(pointer["prompt_path"], str)
+        ):
+            raise MigrationRehearsalError(
+                f"Registered repository {entry.key!r} requires an exact unbound v1 selection."
+            )
+        pointers[entry.key] = (pointer, digest, content)
+
+    current_milestones = {
+        key: pointer["milestone_id"] for key, (pointer, _, _) in pointers.items()
+    }
+    inventory = inventory_registered_repositories(
+        registry,
+        authorized_repository_keys=keys,
+        current_milestone_ids=current_milestones,
+        dispatch_state_root=state_root,
+    )
+    if inventory.exclusions or len(inventory.inventories) != len(registry.entries):
+        raise MigrationRehearsalError(f"Registered source inventory is incomplete: {inventory.exclusions}")
+    return (
+        pointers,
+        inventory,
+        inventory.report()["source_inventory_sha256"],
+        _registry_binding_sha256(registry),
+    )
+
+
+def freeze_managed_import_writers(
+    registry: RepositoryRegistry,
+    *,
+    state_root: str | Path,
+) -> dict[str, Any]:
+    root = Path(state_root).expanduser()
+    with state_artifact_lock(root):
+        if load_store_authority(root) is not None:
+            raise MigrationRehearsalError("File-backed writers can only be frozen before SQLite authority is selected.")
+        if state_artifact_write_freeze_status(root) is not None:
+            raise MigrationRehearsalError("File-backed writers are already frozen for this state root.")
+        _, _, source_hash, registry_hash = _managed_registered_source_snapshot(registry, root)
+        record = freeze_state_artifact_writes(
+            root,
+            source_inventory_sha256=source_hash,
+            registry_binding_sha256=registry_hash,
+        )
+        _, _, refreshed_source_hash, refreshed_registry_hash = _managed_registered_source_snapshot(registry, root)
+        if refreshed_source_hash != source_hash or refreshed_registry_hash != registry_hash:
+            release_state_artifact_writes(root, freeze_id=record["freeze_id"])
+            raise MigrationRehearsalError("Registered sources drifted while the writer freeze was being established.")
+        return record
+
+
+def release_managed_import_writers(
+    registry: RepositoryRegistry,
+    *,
+    state_root: str | Path,
+    freeze_id: str,
+    abort_reason: str | None = None,
+) -> dict[str, Any]:
+    if abort_reason is not None:
+        abort_reason = abort_reason.strip()
+        if not abort_reason or len(abort_reason) > 1000:
+            raise MigrationRehearsalError("An explicit abort reason is required and must not exceed 1000 characters.")
+    root = Path(state_root).expanduser()
+    with state_artifact_lock(root):
+        record = state_artifact_write_freeze_status(root)
+        if record is None or record["freeze_id"] != freeze_id:
+            raise MigrationRehearsalError("The exact active writer-freeze ID is required.")
+        if abort_reason is None:
+            _, _, source_hash, registry_hash = _managed_registered_source_snapshot(registry, root)
+            if (
+                source_hash != record["source_inventory_sha256"]
+                or registry_hash != record["registry_binding_sha256"]
+            ):
+                raise MigrationRehearsalError(
+                    "Registered sources drifted; abort the candidate before releasing the writer freeze."
+                )
+        release_state_artifact_writes(root, freeze_id=freeze_id)
+        return {
+            "status": "aborted" if abort_reason is not None else "released",
+            "freeze_id": freeze_id,
+            "abort_reason": abort_reason,
+            "source_inventory_sha256": record["source_inventory_sha256"],
+        }
 
 
 def _is_v1_workflow_record(record: DocumentRecord) -> bool:
@@ -1064,6 +1190,7 @@ def prepare_managed_repository_imports(
     destination_root: str | Path,
     *,
     state_root: str | Path,
+    candidate_state_root: str | Path,
     writers_quiesced: bool,
 ) -> dict[str, Any]:
     if writers_quiesced is not True:
@@ -1071,37 +1198,44 @@ def prepare_managed_repository_imports(
     if not registry.entries:
         raise MigrationRehearsalError("Managed import requires at least one registered repository.")
     root = _validate_selection_root(state_root, str(registry.entries[0].path), fixture=False)
+    candidate_root = _validate_selection_root(
+        candidate_state_root, str(registry.entries[0].path), fixture=False,
+    )
+    if candidate_root == root:
+        raise MigrationRehearsalError("The candidate state root must be separate from the frozen source state root.")
+    if load_store_authority(candidate_root) is not None:
+        raise MigrationRehearsalError("The candidate state root already selects an InformationStore authority.")
+    for entry in registry.entries:
+        _validate_selection_root(candidate_root, str(entry.path), fixture=False)
+        candidate_pointer = candidate_root / entry.repository_id / "milestones" / "selection.json"
+        if candidate_pointer.exists() or candidate_pointer.is_symlink():
+            raise MigrationRehearsalError(
+                f"Candidate selection already exists for {entry.key!r}; refusing to overwrite its binding."
+            )
     destination = _validate_rehearsal_root(destination_root, registry.entries[0].path, require_temporary=False)
+    if (
+        candidate_root == destination
+        or candidate_root.is_relative_to(destination)
+        or destination.is_relative_to(candidate_root)
+    ):
+        raise MigrationRehearsalError("The candidate database destination and candidate state root must be separate.")
     database_path = destination / "managed-prepared.sqlite3"
     if database_path.exists() or database_path.is_symlink():
         raise MigrationRehearsalError("Refusing to overwrite an existing prepared database.")
-    keys = tuple(entry.key for entry in registry.entries)
     with state_artifact_lock(root):
         if load_store_authority(root) is not None:
             raise MigrationRehearsalError("Managed import is offline-only while the legacy authority is selected.")
-        pointers: dict[str, tuple[dict[str, Any], str]] = {}
-        for entry in registry.entries:
-            _validate_selection_root(root, str(entry.path), fixture=False)
-            _validate_rehearsal_root(destination, entry.path, require_temporary=False)
-            pointer, digest = _read_fixture_selection_snapshot(root, entry.repository_id)
-            if (
-                set(pointer) != {"schema_version", "repository_id", "milestone_id", "prompt_path"}
-                or pointer["repository_id"] != entry.repository_id
-                or not isinstance(pointer["milestone_id"], str)
-                or not isinstance(pointer["prompt_path"], str)
-            ):
-                raise MigrationRehearsalError("Every registered repository requires an exact unbound v1 selection.")
-            pointers[entry.key] = (pointer, digest)
-        current_milestones = {key: pointer["milestone_id"] for key, (pointer, _) in pointers.items()}
-        inventory = inventory_registered_repositories(
-            registry,
-            authorized_repository_keys=keys,
-            current_milestone_ids=current_milestones,
-            dispatch_state_root=root,
-        )
-        if inventory.exclusions or len(inventory.inventories) != len(registry.entries):
-            raise MigrationRehearsalError(f"Registered source inventory is incomplete: {inventory.exclusions}")
-        source_hash = inventory.report()["source_inventory_sha256"]
+        freeze_record = state_artifact_write_freeze_status(root)
+        if freeze_record is None:
+            raise MigrationRehearsalError(
+                "Managed import requires an active Repo Control writer freeze; --writers-quiesced alone is not sufficient."
+            )
+        pointers, inventory, source_hash, registry_hash = _managed_registered_source_snapshot(registry, root)
+        if (
+            source_hash != freeze_record["source_inventory_sha256"]
+            or registry_hash != freeze_record["registry_binding_sha256"]
+        ):
+            raise MigrationRehearsalError("Registered sources drifted after the writer freeze; abort and recapture inputs.")
         central = _CentralRehearsal(database_path, managed_prepared=True)
         report = rehearse_registered_repository_imports(
             inventory, destination, central_database=True, _central_rehearsal=central,
@@ -1110,18 +1244,25 @@ def prepare_managed_repository_imports(
             raise MigrationRehearsalError(
                 f"Prepared import has mismatches or refusals; inspect the quarantined database at {database_path}."
             )
+        current_milestones = {
+            key: pointer["milestone_id"] for key, (pointer, _, _) in pointers.items()
+        }
         refreshed = inventory_registered_repositories(
             registry,
-            authorized_repository_keys=keys,
+            authorized_repository_keys=tuple(entry.key for entry in registry.entries),
             current_milestone_ids=current_milestones,
             dispatch_state_root=root,
         )
-        if refreshed.exclusions or refreshed.report()["source_inventory_sha256"] != source_hash:
+        if (
+            refreshed.exclusions
+            or refreshed.report()["source_inventory_sha256"] != source_hash
+            or _registry_binding_sha256(registry) != registry_hash
+        ):
             raise MigrationRehearsalError("V1 source inventory changed during import; the database is not activatable.")
         bindings: list[dict[str, Any]] = []
         for item in inventory.inventories:
             entry = item.repository
-            pointer, pointer_hash = pointers[entry.key]
+            pointer, pointer_hash, _pointer_bytes = pointers[entry.key]
             candidates = [
                 record for record in item.documents
                 if record.logical_type == "PROMPT"
@@ -1147,10 +1288,28 @@ def prepare_managed_repository_imports(
                 raise MigrationRehearsalError("A v1 selection changed during import; the database is not activatable.")
             bindings.append({**asdict(identity), "v1_selection_sha256": pointer_hash})
         report["source_inventory_sha256"] = source_hash
+        report["source_registry_binding_sha256"] = registry_hash
+        report["writer_freeze_id"] = freeze_record["freeze_id"]
         report["prepared_database_path"] = str(database_path)
         report["prepared_selection_bindings"] = bindings
         report["external_selections_changed"] = False
-        return report
+    with state_artifact_lock(candidate_root, mutation=True):
+        if load_store_authority(candidate_root) is not None:
+            raise MigrationRehearsalError("Candidate authority changed during import; selection copy was not published.")
+        for entry in registry.entries:
+            target = candidate_root / entry.repository_id / "milestones" / "selection.json"
+            if target.exists() or target.is_symlink():
+                raise MigrationRehearsalError(
+                    f"Candidate selection appeared during import for {entry.key!r}; refusing to overwrite it."
+                )
+            pointer_bytes = pointers[entry.key][2]
+            _write_fixture_selection_bytes(candidate_root, entry.repository_id, pointer_bytes)
+            if _read_fixture_selection_bytes(candidate_root, entry.repository_id) != pointer_bytes:
+                raise MigrationRehearsalError(
+                    f"Candidate selection copy failed exact-byte verification for {entry.key!r}."
+                )
+    report["candidate_state_root"] = str(candidate_root)
+    return report
 
 
 def verify_prepared_source_parity(

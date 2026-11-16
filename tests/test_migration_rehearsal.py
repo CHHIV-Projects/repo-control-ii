@@ -10,16 +10,20 @@ from unittest.mock import patch
 from repoctl.information_store import InformationStore, RuntimeGateError, StoreIdentity
 from repoctl.migration_rehearsal import (
     MigrationRehearsalError,
+    freeze_managed_import_writers,
     inventory_registered_repositories,
     inventory_selected_repository,
     prepare_managed_repository_imports,
+    release_managed_import_writers,
     rehearse_milestone_imports,
     rehearse_registered_repository_imports,
 )
+from repoctl.scanner.core import StateArtifactWriteFreezeError
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
 from repoctl.document_library import SourceEnumerationError
 from repoctl.workflow import architect_dispatches, lifecycle
+from repoctl.workflow.milestones import save_milestone_selection
 from tests.test_sqlite_workflow_poc import _closeout_history
 
 
@@ -145,21 +149,71 @@ class MigrationRehearsalTests(unittest.TestCase):
         pointer_path.write_bytes(pointer_bytes)
         registry = RepositoryRegistry((self.repository,), default_key=self.repository.key)
         destination = self.root / "managed-import"
+        candidate_state_root = self.root / "candidate-state"
         destination.mkdir()
+        candidate_state_root.mkdir()
+        with self.assertRaisesRegex(MigrationRehearsalError, "active Repo Control writer freeze"):
+            prepare_managed_repository_imports(
+                registry,
+                destination,
+                state_root=self.dispatch_state_root,
+                candidate_state_root=candidate_state_root,
+                writers_quiesced=True,
+            )
+        freeze = freeze_managed_import_writers(registry, state_root=self.dispatch_state_root)
+        dispatch_path = self.dispatch_state_root / self.repository_id / "architect_dispatches.json"
+        workflow_path = self.repository_root / self.workflow_path
+        selection_before = pointer_path.read_bytes()
+        dispatch_before = dispatch_path.read_bytes()
+        workflow_before = workflow_path.read_bytes()
+        with self.assertRaises(StateArtifactWriteFreezeError):
+            save_milestone_selection(self.repository_root, self.dispatch_state_root, "M999.002")
+        with self.assertRaises(StateArtifactWriteFreezeError):
+            architect_dispatches.submit_dispatch(
+                self.repository_root,
+                self.dispatch_state_root,
+                self.repository_id,
+                dispatch_type="INSTRUCTION",
+                milestone_id="M999.001",
+                body="Blocked while the registered source snapshot is frozen.",
+            )
+        with self.assertRaises(StateArtifactWriteFreezeError):
+            lifecycle.record_milestone_event(
+                self.repository_root,
+                self.dispatch_state_root,
+                "docs/milestones",
+                {"milestone_id": "M999.001", "prompt_path": self.prompt_path},
+                event_type="test_result_recorded",
+                summary="Blocked while the registered source snapshot is frozen.",
+                actor_role="coder",
+                evidence_source="disposable fixture",
+                result="PASS",
+            )
+        self.assertEqual(pointer_path.read_bytes(), selection_before)
+        self.assertEqual(dispatch_path.read_bytes(), dispatch_before)
+        self.assertEqual(workflow_path.read_bytes(), workflow_before)
         with patch("repoctl.information_store.sqlite_runtime_status", return_value={"production_eligible": True}):
             report = prepare_managed_repository_imports(
-                registry, destination, state_root=self.dispatch_state_root, writers_quiesced=True,
+                registry,
+                destination,
+                state_root=self.dispatch_state_root,
+                candidate_state_root=candidate_state_root,
+                writers_quiesced=True,
             )
             self.assertEqual(report["storage_layout"], "single_managed_prepared_database")
             self.assertEqual(report["imported_milestone_count"], 2)
             self.assertEqual(report["mismatch_count"], 0)
             self.assertFalse(report["external_selections_changed"])
+            self.assertEqual(report["writer_freeze_id"], freeze["freeze_id"])
+            self.assertEqual(report["source_inventory_sha256"], freeze["source_inventory_sha256"])
             self.assertEqual(pointer_path.read_bytes(), pointer_bytes)
+            candidate_pointer = candidate_state_root / self.repository_id / "milestones/selection.json"
+            self.assertEqual(candidate_pointer.read_bytes(), pointer_bytes)
             binding = dict(report["prepared_selection_bindings"][0])
             expected_hash = binding.pop("v1_selection_sha256")
             identity = StoreIdentity(**binding)
             store = InformationStore.bind_prepared_v1_selection(
-                report["prepared_database_path"], identity, selection_state_root=self.dispatch_state_root,
+                report["prepared_database_path"], identity, selection_state_root=candidate_state_root,
                 expected_v1_sha256=expected_hash, cutover_confirmed=True,
             )
             self.assertEqual(len(store.list_disposable_milestones()["candidates"]), 2)
@@ -167,10 +221,21 @@ class MigrationRehearsalTests(unittest.TestCase):
             self.assertEqual((self.repository_root / self.workflow_path).read_text(encoding="utf-8").count(
                 "repoctl-workflow-ledger:v1"
             ), 1)
+            self.assertNotEqual(candidate_pointer.read_bytes(), pointer_bytes)
+            self.assertEqual(pointer_path.read_bytes(), pointer_bytes)
+        release = release_managed_import_writers(
+            registry,
+            state_root=self.dispatch_state_root,
+            freeze_id=freeze["freeze_id"],
+        )
+        self.assertEqual(release["status"], "released")
 
         rejected_destination = self.root / "unsupported-managed-import"
+        rejected_candidate_state_root = self.root / "rejected-candidate-state"
         rejected_destination.mkdir()
+        rejected_candidate_state_root.mkdir()
         pointer_path.write_bytes(pointer_bytes)
+        failed_runtime_freeze = freeze_managed_import_writers(registry, state_root=self.dispatch_state_root)
         with (
             patch("repoctl.information_store.sqlite_runtime_status", return_value={
                 "production_eligible": False, "sqlite_version": "3.45.1",
@@ -178,9 +243,60 @@ class MigrationRehearsalTests(unittest.TestCase):
             self.assertRaises(RuntimeGateError),
         ):
             prepare_managed_repository_imports(
-                registry, rejected_destination, state_root=self.dispatch_state_root, writers_quiesced=True,
+                registry,
+                rejected_destination,
+                state_root=self.dispatch_state_root,
+                candidate_state_root=rejected_candidate_state_root,
+                writers_quiesced=True,
             )
         self.assertFalse((rejected_destination / "managed-prepared.sqlite3").exists())
+        release_managed_import_writers(
+            registry,
+            state_root=self.dispatch_state_root,
+            freeze_id=failed_runtime_freeze["freeze_id"],
+            abort_reason="The pinned SQLite runtime eligibility check failed.",
+        )
+
+    def test_registered_source_drift_requires_abort_before_writer_release(self) -> None:
+        pointer_path = self.dispatch_state_root / self.repository_id / "milestones/selection.json"
+        pointer_path.parent.mkdir(parents=True)
+        pointer_path.write_text(json.dumps({
+            "schema_version": 1,
+            "repository_id": self.repository_id,
+            "milestone_id": "M999.001",
+            "prompt_path": self.prompt_path,
+        }), encoding="utf-8")
+        registry = RepositoryRegistry((self.repository,), default_key=self.repository.key)
+        freeze = freeze_managed_import_writers(registry, state_root=self.dispatch_state_root)
+        prompt = self.repository_root / self.prompt_path
+        original = prompt.read_bytes()
+        prompt.write_bytes(original + b"\nChanged outside the cooperating writer boundary.\n")
+        destination = self.root / "drifted-import"
+        candidate_state_root = self.root / "drifted-candidate-state"
+        destination.mkdir()
+        candidate_state_root.mkdir()
+        with self.assertRaisesRegex(MigrationRehearsalError, "sources drifted after the writer freeze"):
+            prepare_managed_repository_imports(
+                registry,
+                destination,
+                state_root=self.dispatch_state_root,
+                candidate_state_root=candidate_state_root,
+                writers_quiesced=True,
+            )
+        with self.assertRaisesRegex(MigrationRehearsalError, "abort the candidate"):
+            release_managed_import_writers(
+                registry,
+                state_root=self.dispatch_state_root,
+                freeze_id=freeze["freeze_id"],
+            )
+        aborted = release_managed_import_writers(
+            registry,
+            state_root=self.dispatch_state_root,
+            freeze_id=freeze["freeze_id"],
+            abort_reason="External source drift invalidated the disposable import.",
+        )
+        self.assertEqual(aborted["status"], "aborted")
+        self.assertIn("External source drift", aborted["abort_reason"])
 
     def test_registered_repository_inventory_imports_explicit_roots_without_selection_change(self) -> None:
         dispatch_path = self.dispatch_state_root / self.repository_id / "architect_dispatches.json"

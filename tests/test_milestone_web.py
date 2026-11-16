@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,8 @@ from repoctl.scanner.core import (
     StateArtifactLockBusyError,
     StateArtifactLockError,
     StateArtifactLockOrderError,
+    freeze_state_artifact_writes,
+    release_state_artifact_writes,
     state_artifact_lock,
 )
 from repoctl.scanner.util import make_repository_id
@@ -1667,6 +1670,141 @@ class MilestoneWebTests(unittest.TestCase):
                 ).stdout.strip(),
                 git_index,
             )
+
+    def test_browser_and_independent_coder_cli_writes_are_rejected_while_frozen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = _repo(root, "first", "R003.01")
+            other_repository = _repo(root, "second", "R004.01")
+            registry_path = _registry(root, repository, other_repository)
+            state_root = root / "state"
+            client = create_web_app(
+                repository_registry_path=registry_path,
+                state_root=state_root,
+            ).test_client()
+            client.get("/milestones")
+            csrf = _csrf(client)
+            self.assertEqual(
+                client.post(
+                    "/milestones/select",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                    },
+                ).status_code,
+                302,
+            )
+            selection = load_milestone_selection(repository, state_root)["selection"]
+            workflow = load_milestone_workflow(repository, state_root, "docs/milestones", selection)
+            self.assertEqual(
+                client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": selection["prompt_path"],
+                        "expected_prompt_identity": workflow["prompt_identity"],
+                        "expected_phase": "PLANNING",
+                        "expected_event_count": str(workflow["event_count"]),
+                        "event_type": "approve_and_start",
+                        "summary": "Start the isolated writer-freeze fixture.",
+                    },
+                ).status_code,
+                302,
+            )
+            workflow = load_milestone_workflow(repository, state_root, "docs/milestones", selection)
+            self.assertEqual(workflow["phase"], "IN_PROGRESS")
+            sidecar = repository / workflow["sidecar_path"]
+            before = sidecar.read_bytes()
+            freeze = freeze_state_artifact_writes(
+                state_root,
+                source_inventory_sha256="a" * 64,
+                registry_binding_sha256="b" * 64,
+            )
+            try:
+                self.assertEqual(client.get("/milestones").status_code, 200)
+                browser_response = client.post(
+                    "/milestones/workflow/event",
+                    data={
+                        "csrf_token": csrf,
+                        "repository_key": "first",
+                        "repository_generation": "0",
+                        "milestone_id": "R003.01",
+                        "prompt_path": selection["prompt_path"],
+                        "expected_prompt_identity": workflow["prompt_identity"],
+                        "expected_phase": workflow["phase"],
+                        "expected_event_count": str(workflow["event_count"]),
+                        "event_type": "test_result_recorded",
+                        "summary": "Attempt a frozen browser write.",
+                        "evidence_source": "unit test",
+                        "result": "PASS",
+                    },
+                )
+                self.assertEqual(browser_response.status_code, 423)
+                self.assertIn("writers are frozen", browser_response.get_data(as_text=True))
+                self.assertEqual(sidecar.read_bytes(), before)
+
+                script = (
+                    "import sys\n"
+                    "from pathlib import Path\n"
+                    "from repoctl.workflow import coder_interface\n"
+                    "coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH = Path(sys.argv[1])\n"
+                    "from repoctl.cli import main\n"
+                    "raise SystemExit(main(sys.argv[2:]))\n"
+                )
+                cli_result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        script,
+                        str(registry_path),
+                        "coder-test",
+                        "Attempt a frozen CLI write.",
+                        "--source",
+                        "unit test subprocess",
+                        "--result",
+                        "PASS",
+                        "--repository",
+                        str(repository),
+                        "--state-root",
+                        str(state_root),
+                    ],
+                    cwd=repository,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(cli_result.returncode, 2, cli_result.stderr)
+                self.assertIn("writers are frozen", cli_result.stderr)
+                self.assertEqual(sidecar.read_bytes(), before)
+            finally:
+                release_state_artifact_writes(state_root, freeze_id=freeze["freeze_id"])
+
+    def test_web_cli_passes_candidate_state_root_to_server(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = _repo(root, "repo", "R003.01")
+            state_root = root / "candidate-state"
+            from repoctl.cli import main
+
+            with mock.patch("repoctl.cli.run_web_server") as run_web_server:
+                self.assertEqual(
+                    main(
+                        [
+                            "web",
+                            "--repository",
+                            str(repository),
+                            "--state-root",
+                            str(state_root),
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(run_web_server.call_args.kwargs["state_root"], state_root)
 
 
 if __name__ == "__main__":

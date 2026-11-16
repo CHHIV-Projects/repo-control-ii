@@ -723,7 +723,7 @@ def initialize_overlay_confirmed(
     bundle: ProcedureBundle | None = None,
 ) -> dict[str, Any]:
     active_bundle = bundle or load_bundle()
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         store = _repository_store(state_root, entry.repository_id, create=False)
         active, errors = _active_operations(store, entry)
         if errors:
@@ -1479,7 +1479,7 @@ def apply_confirmed(
 ) -> dict[str, Any]:
     active_bundle = bundle or load_bundle()
     _validate_bundle_targets(active_bundle)
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         store = _repository_store(state_root, entry.repository_id, create=False)
         active, errors = _active_operations(store, entry)
         if errors:
@@ -1963,7 +1963,7 @@ def recover_confirmed(
     active_key: str,
     registry_generation: int,
 ) -> dict[str, Any]:
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         store = _repository_store(state_root, entry.repository_id, create=False)
         active, errors = _active_operations(store, entry)
         if errors or len(active) != 1 or active[0][1]["operation_id"] != operation_id:

@@ -353,3 +353,280 @@ destination sentinel test passed; the remaining NAS finding is isolation from
 other projects under `ProjectBackups`, which remains NOT TESTED. The protected
 host environment file is present. No backup, timer, service, production
 database, or managed writer was activated in M010.020.
+
+## M010.022 safe SQLite staging controls
+
+M010.022 adds a persistent freeze for cooperating file-backed application
+writers and keeps prepared SQLite authority in a distinct candidate state
+root. The freeze marker survives process restart. Acquiring the shared state
+lock drains admitted writers; a new mutation checks the marker while holding
+that lock and fails closed. A bounded lock timeout leaves no freeze marker.
+Normal release requires the exact freeze ID and matching registered-source
+and registry fingerprints. Abort release also requires the exact ID and a
+non-empty reason. The marker has no expiry or automatic restart cleanup.
+
+The freeze governs Repo Control browser, Coder CLI, workflow, selection,
+dispatch, closeout, procedure, and related cooperating file-backed writes.
+It does not stop external editors, Git commands, or noncooperating processes.
+During a separately approved maintenance window, the operator must keep those
+writers quiescent and review registered-source drift. The importer and normal
+release recheck registered inventory and registry fingerprints; on drift,
+do not activate the candidate and use the explicit abort release. The
+`--writers-quiesced` option is an assertion, not a freeze or independent proof.
+
+| Control | Result | Evidence boundary |
+|---|---|---|
+| Cooperating writer freeze, drain, source parity, normal release, and abort | PASS on disposable roots | Pinned-runtime tests prove an admitted writer drains, new process/browser/independent Coder CLI mutations are rejected, the marker persists across processes, lock timeout creates no marker, source drift blocks import/release, and exact-token normal/abort release. This is not a production freeze or a control over external editors/Git. |
+| Separate candidate state-root binding | PASS on disposable data | A separate loopback browser, independent Coder CLI process, and verified backup publisher resolve the same candidate authority, selection, workflow count, and recovery-point binding. The source selection/workflow bytes remain unchanged. Missing candidate selection does not use the source selection; invalid authority and missing/shared-default coverage paths fail closed. |
+| Independent pre-GO candidate writer hold | NOT TESTED | The disposable app-level freeze is not an operator-owned access boundary. The observed service identity is `chuck` (UID 1000); noninteractive `sudo` is unavailable. No root-owned or separate-operator control was installed or exercised, and no same-owner permission change is acceptable evidence. Obtain operator-controlled identity/access evidence and prove that `chuck` cannot release the hold through browser, CLI, default settings, restart, or writable ownership before enabling candidate writes. |
+| Production cutover and recovery operations | NOT TESTED / NO-GO | No live freeze, service change/restart, candidate activation, production database initialization, NAS backup, timer action, or Git mutation was performed. The production backup/restore, installed timer, and operator-owned writer-hold gates remain separate requirements. |
+
+To close the writer-hold gate, retain the exact control path and owner,
+effective access evidence for both the operator and `chuck`, and before/after
+hashes for the candidate database, SQLite sidecars, source selection/workflow,
+and recovery-point record. With fresh valid candidate-bound coverage, prove
+browser and independent CLI writes are denied while reads and backup/restore
+remain viable; repeat the denial after an ordinary process restart; then show
+that only the operator identity can release the hold. Re-run the inclusive
+45-minute stale-coverage test after deliberate release. These observations
+must come from the actual identity boundary, not a same-owner file mode.
+
+### Later separately approved staging procedure
+
+The following is a reviewable procedure, not authorization to run it. Do not
+start the candidate browser or enable managed writes until the independent
+writer-hold gate above has passed. In a later approved window, first verify
+the active service's actual `--state-root`; the value below is the code
+default and is correct only when the running service has no override. The
+candidate directories must be new, local, private, outside all repositories,
+and distinct from the source state root, production database, and live
+recovery-point path.
+
+```sh
+PY=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python
+REPO=/home/chuck/projects/repo-control-ii
+REGISTRY="$REPO/ops/repositories.toml"
+SOURCE_STATE_ROOT=/home/chuck/.local/share/repoctl
+CANDIDATE_STATE_ROOT=/home/chuck/.local/share/repoctl-m010.022-candidate
+IMPORT_DIR=/home/chuck/.local/share/repoctl-sqlite-candidate/m010.022
+IMPORT_REPORT="$IMPORT_DIR/import-report.json"
+FREEZE_REPORT="$IMPORT_DIR/freeze-report.json"
+PLAN_REPORT="$IMPORT_DIR/activation-plan.json"
+CANDIDATE_COVERAGE_PATH="$IMPORT_DIR/.repoctl-candidate-recovery-point.json"
+
+# Run only after separately approved operator preflight; never reuse these paths.
+test ! -e "$CANDIDATE_STATE_ROOT"
+test ! -e "$IMPORT_DIR"
+mkdir -m 0700 "$CANDIDATE_STATE_ROOT"
+mkdir -m 0700 "$IMPORT_DIR"
+```
+
+Confirm the live file-backed service still reports `legacy_files`, the source
+root is the one currently used by that service, the registry is the exact
+canonical `ops/repositories.toml`, and the host has not changed since review.
+Keep the original service and its state-root configuration unchanged. Quiesce
+external editors/Git writers through the approved maintenance procedure, then
+establish and retain the cooperating-writer freeze:
+
+```sh
+"$PY" -m repoctl.cli store-authority freeze-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" > "$FREEZE_REPORT"
+FREEZE_ID=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["freeze_id"])' "$FREEZE_REPORT")
+```
+
+The returned record includes the freeze ID and source/registry hashes. A
+freeze failure or lock timeout is an abort: do not import. Import only into
+the new candidate directory and copy each selection into the new candidate
+state root; never bind or mutate the source-root selection:
+
+```sh
+"$PY" -m repoctl.cli store-authority prepare \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --candidate-state-root "$CANDIDATE_STATE_ROOT" \
+  --destination "$IMPORT_DIR" \
+  --writers-quiesced > "$IMPORT_REPORT"
+DATABASE=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_database_path"])' "$IMPORT_REPORT")
+
+for INDEX in $("$PY" -c 'import json,sys; print(*range(len(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"])))' "$IMPORT_REPORT"); do
+  BINDING_JSON=$("$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"][int(sys.argv[2])], separators=(",", ":")))' "$IMPORT_REPORT" "$INDEX")
+  "$PY" -m repoctl.cli store-authority bind-selection \
+    --registry "$REGISTRY" \
+    --state-root "$CANDIDATE_STATE_ROOT" \
+    --database "$DATABASE" \
+    --binding-json "$BINDING_JSON" \
+    --po-confirm
+done
+```
+
+Review the exact import report and each selection binding. Preview and activate
+with the candidate state root as the authority root and the frozen original
+root as the source-parity root. Keep the same generation and plan hash for
+both commands:
+
+```sh
+GENERATION=$("$PY" -c 'import secrets; print(secrets.token_hex(16))')
+"$PY" -m repoctl.cli store-authority preview \
+  --registry "$REGISTRY" \
+  --state-root "$CANDIDATE_STATE_ROOT" \
+  --source-state-root "$SOURCE_STATE_ROOT" \
+  --database "$DATABASE" \
+  --generation "$GENERATION" > "$PLAN_REPORT"
+PLAN_SHA256=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "$PLAN_REPORT")
+
+# Do not run until the independent candidate writer hold has been proved.
+"$PY" -m repoctl.cli store-authority activate \
+  --registry "$REGISTRY" \
+  --state-root "$CANDIDATE_STATE_ROOT" \
+  --source-state-root "$SOURCE_STATE_ROOT" \
+  --database "$DATABASE" \
+  --generation "$GENERATION" \
+  --expected-plan-sha256 "$PLAN_SHA256" \
+  --po-confirm \
+  --writers-quiesced \
+  --source-parity-confirmed
+```
+
+After successful import and parity review, release the source freeze normally
+with the exact ID. This rechecks the registered-source and registry hashes:
+
+```sh
+"$PY" -m repoctl.cli store-authority release-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --freeze-id "$FREEZE_ID"
+```
+
+Activation's confirmation flags do not substitute for the operator-owned
+writer hold. Before any candidate service is started, choose a private
+candidate-only coverage path under the candidate staging directory, and pass
+that exact absolute path to the candidate browser, every independent Coder
+CLI process, and the backup publisher. A non-default managed state root
+rejects a missing coverage path and rejects the live default recovery-point
+path. Do not source or print the root-only backup environment file in a Coder
+shell.
+
+After the writer hold is independently verified, a candidate browser may be
+started on a separate loopback port using the same canonical registry and
+candidate root:
+
+```sh
+REPOCTL_BACKUP_COVERAGE_PATH="$CANDIDATE_COVERAGE_PATH" \
+  "$PY" -m repoctl.cli web \
+    --repository-registry "$REGISTRY" \
+    --host 127.0.0.1 \
+    --port 18766 \
+    --state-root "$CANDIDATE_STATE_ROOT"
+```
+
+In another terminal, inspect `/healthz` and independently query the Coder
+CLI. The reported `authority_state_root`, database identity, repository,
+milestone, prompt, and selection ID/revision must identify the candidate:
+
+```sh
+curl -fsS http://127.0.0.1:18766/healthz
+REPOCTL_BACKUP_COVERAGE_PATH="$CANDIDATE_COVERAGE_PATH" \
+  "$PY" -m repoctl.cli coder-status \
+    --repository "$REPO" \
+    --state-root "$CANDIDATE_STATE_ROOT" \
+    --format json
+```
+
+The disposable mixed-client rehearsal also ran the actual verified-backup
+publisher function against temporary local staging and destination
+directories. It compared the browser and independent CLI selection/workflow
+with the backup snapshot and authority-bound recovery-point record. It did
+not invoke the host backup command or write to the NAS. A later production
+backup requires a separate approval, a fresh verified candidate, the
+approved mount/source/destination, and a distinct candidate coverage file;
+never point the candidate publisher at the live coverage record. The
+publisher environment must name the exact candidate database, state root,
+coverage path, repository ID/key/root, staging, destination and restore root.
+Do not treat one repository's selection-bound recovery point as coverage for
+another selection. The following publisher/restore and timer checks are
+later production gates, not commands run for M010.022:
+
+```sh
+BACKUP_STAGING=/home/chuck/.local/state/repo-control-backup/candidate-staging
+BACKUP_DESTINATION=/mnt/nas/repo-control/RepoControl/repo-control-ii
+BACKUP_RESTORE_ROOT=/home/chuck/.local/state/repo-control-backup/candidate-restore
+REPO_ID=repo-control-ii--945e7f88eafb
+REPO_KEY=repo-control-ii
+REPO_ROOT=/home/chuck/projects/repo-control-ii
+
+env \
+  REPOCTL_BACKUP_SOURCE="$DATABASE" \
+  REPOCTL_BACKUP_STAGING="$BACKUP_STAGING" \
+  REPOCTL_BACKUP_DESTINATION="$BACKUP_DESTINATION" \
+  REPOCTL_BACKUP_RESTORE_ROOT="$BACKUP_RESTORE_ROOT" \
+  REPOCTL_BACKUP_MOUNTPOINT=/mnt/nas/repo-control \
+  REPOCTL_BACKUP_MOUNT_SOURCE=//192.168.1.171/ProjectBackups \
+  REPOCTL_BACKUP_REPOSITORY_ID="$REPO_ID" \
+  REPOCTL_BACKUP_REPOSITORY_KEY="$REPO_KEY" \
+  REPOCTL_BACKUP_REPOSITORY_ROOT="$REPO_ROOT" \
+  REPOCTL_BACKUP_AUTHORITY_STATE_ROOT="$CANDIDATE_STATE_ROOT" \
+  REPOCTL_BACKUP_COVERAGE_PATH="$CANDIDATE_COVERAGE_PATH" \
+  "$PY" -m repoctl.backup backup
+
+# After a fresh manifest exists, restore it to a new separate local path.
+env \
+  REPOCTL_BACKUP_SOURCE="$DATABASE" \
+  REPOCTL_BACKUP_STAGING="$BACKUP_STAGING" \
+  REPOCTL_BACKUP_DESTINATION="$BACKUP_DESTINATION" \
+  REPOCTL_BACKUP_RESTORE_ROOT="$BACKUP_RESTORE_ROOT" \
+  REPOCTL_BACKUP_MOUNTPOINT=/mnt/nas/repo-control \
+  REPOCTL_BACKUP_MOUNT_SOURCE=//192.168.1.171/ProjectBackups \
+  REPOCTL_BACKUP_REPOSITORY_ID="$REPO_ID" \
+  REPOCTL_BACKUP_REPOSITORY_KEY="$REPO_KEY" \
+  REPOCTL_BACKUP_REPOSITORY_ROOT="$REPO_ROOT" \
+  REPOCTL_BACKUP_AUTHORITY_STATE_ROOT="$CANDIDATE_STATE_ROOT" \
+  REPOCTL_BACKUP_COVERAGE_PATH="$CANDIDATE_COVERAGE_PATH" \
+  "$PY" -m repoctl.backup restore --manifest <exact-verified-manifest> \
+  --restore-name m010022-separate-restore.sqlite3
+
+# Only after separately authorized unit installation:
+systemctl list-timers --all repo-control-backup.timer repo-control-backup-monitor.timer
+```
+
+The backup command writes to the approved NAS destination; do not run it
+without separate operator authorization. Before using these commands, create
+the candidate staging/restore directories with the approved private ownership
+and verify the repository ID/key/root against the exact registry entry. The
+restore must pass integrity, foreign-key, authority, selection, workflow, and
+document-hash checks. Timer listing alone does not prove a successful backup
+or monitor run; inspect the corresponding service journals and verify warning
+and recovery output.
+
+Abort before activation if source parity changes, an import is incomplete, a
+candidate identity differs, or any candidate setting is absent/mismatched.
+Leave the prepared database and candidate files isolated for review; do not
+switch the original service to them. Release the original freeze only by its
+exact ID and an explicit abort reason:
+
+```sh
+"$PY" -m repoctl.cli store-authority release-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --freeze-id "$FREEZE_ID" \
+  --abort-reason "Candidate staging aborted before activation; source remains authoritative."
+```
+
+If a later approved rehearsal activates a candidate but has not made a
+managed application write, stop the candidate server, prove writers are
+quiesced, and use the exact reviewed plan for `store-authority abort` with
+`--state-root "$CANDIDATE_STATE_ROOT"` and
+`--source-state-root "$SOURCE_STATE_ROOT"`, `--po-confirm`, and
+`--writers-quiesced`. Then release any still-active source freeze with an
+explicit abort reason. The original file-backed service must remain pointed
+at the original state root; confirm `/healthz` reports `legacy_files` and a
+null InformationStore binding. If any managed SQLite write occurred, abort
+is refused: preserve the database and applicable WAL/SHM plus verified
+backups, keep writes paused, and use a separately approved forward-recovery
+plan instead of switching back to files.
+
+M010.022 ends at **REVIEW / NO-GO**. A production backup and separate restore,
+installed backup/monitor timer validation, the independent operator-owned
+candidate writer hold, and a separately approved production activation remain
+later gates. The active file-backed service, global selection, production
+database, NAS payloads, timers, and Git state remain outside this milestone.

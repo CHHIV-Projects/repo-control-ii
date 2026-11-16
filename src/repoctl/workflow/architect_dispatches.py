@@ -331,7 +331,7 @@ def submit_dispatch(
         milestone_root=milestone_root,
     )
     path = _state_file(repository_root, state_root, repository_id)
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         ledger = _read_ledger(path, repository_id)
         if len(ledger["dispatches"]) >= MAX_DISPATCHES_PER_REPOSITORY:
             raise ArchitectDispatchError(
@@ -658,7 +658,7 @@ def update_dispatch_status(
     if status not in {"APPROVED", "REJECTED"}:
         raise ArchitectDispatchError("Dispatch can only be approved or rejected.")
     path = _state_file(repository_root, state_root, repository_id)
-    with state_artifact_lock(state_root):
+    with state_artifact_lock(state_root, mutation=True):
         ledger = _read_ledger(path, repository_id)
         record = next((item for item in ledger["dispatches"] if item["dispatch_id"] == dispatch_id), None)
         if record is None:

@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..scanner.core import DEFAULT_STATE_ROOT
+from ..scanner.core import DEFAULT_STATE_ROOT, StateArtifactLockError
 from ..scanner.git_ops import ScanError, validate_git_worktree
 from .architect_dispatches import ArchitectDispatchError, get_dispatch, list_owner_dispatches
 from ..web.repository_registry import RepositoryEntry, RepositoryRegistry, RepositoryRegistryError
@@ -197,7 +197,7 @@ def _resolve_context_and_workflow(
     candidate = selection["selection"]
     try:
         workflow = load_milestone_workflow(entry.path, effective_state_root, entry.milestone_root, candidate)
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(f"Could not load workflow for selected milestone: {exc}") from exc
 
     return entry, effective_state_root, candidate, workflow
@@ -956,7 +956,7 @@ def submit_coder_question(
             waiting_reason=waiting_reason,
             po_approved=False,
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
 
     recorded_event = updated_workflow["event_history"][-1]
@@ -1019,7 +1019,7 @@ def submit_coder_bug(
             summary=clean_summary,
             po_approved=False,
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
 
     recorded_event = updated_workflow["event_history"][-1]
@@ -1088,7 +1088,7 @@ def submit_coder_bug_fix(
             related_event_id=bug_event_id,
             po_approved=False,
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
     recorded_event = updated_workflow["event_history"][-1]
     return {
@@ -1160,7 +1160,7 @@ def submit_coder_test_result(
             result=clean_result,
             po_approved=False,
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
 
     recorded_event = updated_workflow["event_history"][-1]
@@ -1701,7 +1701,7 @@ def submit_coder_context_verification(
             expected_event_count=workflow["event_count"],
             expected_prompt_identity=workflow["prompt_identity"],
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
 
     recorded_event = updated_workflow["event_history"][-1]
@@ -1842,7 +1842,7 @@ def submit_coder_closeout(
             summary=clean_summary,
             po_approved=False,
         )
-    except WorkflowRecordError as exc:
+    except (WorkflowRecordError, StateArtifactLockError) as exc:
         raise CoderInterfaceError(str(exc)) from exc
 
     recorded_event = updated_workflow["event_history"][-1]
