@@ -1138,40 +1138,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         initial = clients.browser_snapshot()
         prompt = initial["workflow"]["unverified_prompt"]
         self.assertEqual(len(initial["workflow"]["unverified_guidance"]), 1)
-        po = {
-            "csrf_token": token,
-            "repository_key": self.repository.key,
-            "repository_generation": "0",
-            "po_confirmation": "confirmed",
-        }
-        confirmation = {
-            **po,
-            "selection_id": binding["selection_id"],
-            "selection_revision": str(binding["selection_revision"]),
-            "store_revision": str(initial["snapshot"]["store_revision"]),
-            "document_id": prompt["document_id"],
-            "revision_id": prompt["revision_id"],
-            "content_sha256": prompt["content_sha256"],
-            "request_id": prompt["request_id"],
-        }
-        self.assertEqual(browser.post("/milestones/confirm-imported-prompt", data=confirmation).status_code, 302)
-        backup_report = self.create_fixture_recovery_point(candidate_state_root)
-        server = make_server("127.0.0.1", 0, app, threaded=True)
-        thread = Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            with urlopen(f"http://127.0.0.1:{server.server_port}/healthz", timeout=5) as response:
-                health = json.loads(response.read())
-        finally:
-            server.shutdown()
-            thread.join(5)
-            server.server_close()
-        browser_binding = health["information_store_binding"]
-        self.assertEqual(browser_binding["authority_state_root"], str(candidate_state_root))
-        self.assertEqual(browser_binding["milestone_id"], binding["milestone_id"])
-        self.assertEqual(browser_binding["selection_id"], binding["selection_id"])
-        self.assertEqual(browser_binding["selection_revision"], binding["selection_revision"])
-
+        workflow_events_before_confirmation = clients.workflow_snapshot()["events"]
         cli_script = (
             "import sys\n"
             "from pathlib import Path\n"
@@ -1191,24 +1158,25 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             "from repoctl.cli import main\n"
             "raise SystemExit(main(sys.argv[6:]))\n"
         )
+
         def launch_independent_cli(state_root: Path, environment=None):
             return subprocess.run(
                 [
-                sys.executable,
-                "-c",
-                cli_script,
-                str(self.repository_root),
-                self.identity.repository_key,
-                self.identity.repository_id,
-                str(self.registry_path),
-                str(state_root),
-                "coder-status",
-                "--repository",
-                str(self.repository_root),
-                "--state-root",
-                str(state_root),
-                "--format",
-                "json",
+                    sys.executable,
+                    "-c",
+                    cli_script,
+                    str(self.repository_root),
+                    self.identity.repository_key,
+                    self.identity.repository_id,
+                    str(self.registry_path),
+                    str(state_root),
+                    "coder-status",
+                    "--repository",
+                    str(self.repository_root),
+                    "--state-root",
+                    str(state_root),
+                    "--format",
+                    "json",
                 ],
                 cwd=self.repository_root,
                 capture_output=True,
@@ -1217,10 +1185,104 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
                 env=environment,
             )
 
+        unconfirmed_cli = launch_independent_cli(candidate_state_root)
+        self.assertNotEqual(unconfirmed_cli.returncode, 0)
+        self.assertIn("InformationStore has no approved selected prompt revision", unconfirmed_cli.stderr)
+        po = {
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "repository_generation": "0",
+            "po_confirmation": "confirmed",
+        }
+        confirmation = {
+            **po,
+            "selection_id": binding["selection_id"],
+            "selection_revision": str(binding["selection_revision"]),
+            "store_revision": str(initial["snapshot"]["store_revision"]),
+            "document_id": prompt["document_id"],
+            "revision_id": prompt["revision_id"],
+            "content_sha256": prompt["content_sha256"],
+            "request_id": prompt["request_id"],
+        }
+        wrong_digest = browser.post(
+            "/milestones/confirm-imported-prompt",
+            data={**confirmation, "content_sha256": "0" * 64},
+        )
+        self.assertEqual(wrong_digest.status_code, 409)
+        with sqlite3.connect(database) as connection:
+            unconfirmed = connection.execute(
+                """
+                SELECT d.approved_revision_id, m.prompt_revision_id,
+                       (SELECT COUNT(*) FROM document_revision_decision
+                        WHERE repository_id = ? AND milestone_id = ?)
+                FROM document d
+                JOIN milestone m USING (repository_id, milestone_id)
+                WHERE d.repository_id = ? AND d.milestone_id = ? AND d.logical_type = 'PROMPT'
+                """,
+                (
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                    self.identity.repository_id,
+                    self.identity.milestone_id,
+                ),
+            ).fetchone()
+        self.assertEqual(unconfirmed, (None, None, 0))
+        self.assertEqual(browser.post("/milestones/confirm-imported-prompt", data=confirmation).status_code, 302)
+        self.assertEqual(clients.workflow_snapshot()["events"], workflow_events_before_confirmation)
+        with sqlite3.connect(database) as connection:
+            decision = connection.execute(
+                """
+                SELECT decision_type, document_id, revision_id, po_confirmed, source_kind
+                FROM document_revision_decision
+                WHERE repository_id = ? AND milestone_id = ?
+                """,
+                (self.identity.repository_id, self.identity.milestone_id),
+            ).fetchone()
+            selected = connection.execute(
+                """
+                SELECT d.approved_revision_id, m.prompt_revision_id, r.content_sha256
+                FROM document d
+                JOIN milestone m USING (repository_id, milestone_id)
+                JOIN document_revision r
+                  ON r.repository_id = d.repository_id AND r.milestone_id = d.milestone_id
+                 AND r.document_id = d.document_id AND r.revision_id = d.approved_revision_id
+                WHERE d.repository_id = ? AND d.milestone_id = ? AND d.logical_type = 'PROMPT'
+                """,
+                (self.identity.repository_id, self.identity.milestone_id),
+            ).fetchone()
+        self.assertEqual(
+            decision,
+            ("APPROVED", prompt["document_id"], prompt["revision_id"], 1, "po_browser_reconfirmation"),
+        )
+        self.assertEqual(
+            selected,
+            (prompt["revision_id"], prompt["revision_id"], prompt["content_sha256"]),
+        )
+        backup_report = self.create_fixture_recovery_point(candidate_state_root)
+        server = make_server("127.0.0.1", 0, app, threaded=True)
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            with urlopen(f"http://127.0.0.1:{server.server_port}/healthz", timeout=5) as response:
+                health = json.loads(response.read())
+        finally:
+            server.shutdown()
+            thread.join(5)
+            server.server_close()
+        browser_binding = health["information_store_binding"]
+        self.assertEqual(browser_binding["authority_state_root"], str(candidate_state_root))
+        self.assertEqual(browser_binding["milestone_id"], binding["milestone_id"])
+        self.assertEqual(browser_binding["selection_id"], binding["selection_id"])
+        self.assertEqual(browser_binding["selection_revision"], binding["selection_revision"])
+
         cli_result = launch_independent_cli(candidate_state_root)
         self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
         cli_status = json.loads(cli_result.stdout)
         self.assertEqual(cli_status["information_store_authority"], "sqlite_managed")
+        self.assertEqual(
+            cli_status["prompt"]["identity"],
+            f"{prompt['document_id']}:{prompt['revision_id']}:{prompt['content_sha256']}",
+        )
         self.assertEqual(cli_status["selection"]["milestone_id"], browser_binding["milestone_id"])
         self.assertEqual(cli_status["selection"]["selection_id"], browser_binding["selection_id"])
         self.assertEqual(cli_status["selection"]["selection_revision"], browser_binding["selection_revision"])

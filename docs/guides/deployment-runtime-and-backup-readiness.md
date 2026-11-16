@@ -1341,3 +1341,44 @@ Keep live-cutover status **NO-GO** until the candidate CLI blocker is
 classified and resolved and all remaining backup/restore/timer evidence
 passes. Do not release the candidate hold or make a live SQLite application
 write under M010.024.
+
+#### M010.025 prompt reconciliation for a future fresh candidate
+
+The M010.024 result above is historical and unchanged. Its candidate remains
+held and stopped; do not confirm, repair, rebuild, or restart it. For a
+separately authorized fresh candidate, the old `prompt_approved` lifecycle
+event does not identify the approved revision, and a later Coder hash does not
+prove which bytes the Product Owner approved. Keep the imported prompt
+unapproved until this explicit reconciliation:
+
+1. Before the initial candidate backup, verify exact source parity, repository
+   identity, candidate state-root binding, selected milestone/path, and the
+   imported prompt revision ID and SHA-256 against its source bytes. In the
+   candidate-bound browser, review the exact prompt shown in the unverified
+   prompt panel. If any identity or byte check is missing or mismatched, stop.
+2. Create a verified candidate-bound recovery point while the prompt remains
+   unapproved. The explicit confirmation is a managed write and requires valid
+   recovery-point evidence. It must not be performed against a read-only
+   operator-held candidate; only a separately authorized fresh staging
+   procedure may permit this candidate-local confirmation.
+3. The Product Owner explicitly confirms that exact revision in the browser's
+   **Confirm exact imported prompt revision** action. This creates a new,
+   candidate-local Product Owner revision decision bound to the repository,
+   milestone, document, revision, and imported source bytes. It does not claim
+   to recover the historical approval time and does not add or rewrite a
+   workflow lifecycle event. Missing, stale, changed, or mismatched identity
+   must stop the run; do not bypass the confirmation.
+4. Launch a fresh Coder CLI process against only the candidate root and verify
+   its JSON reports `sqlite_managed`, the expected repository/milestone/
+   selection, and the same prompt revision and SHA-256. A failure is NO-GO;
+   do not fall back to the source selection or manually alter approval rows.
+5. Before enabling candidate writes or cutover, publish a fresh verified
+   backup that includes the confirmation decision, restore that copy to a
+   separate path and verify integrity/foreign keys, and complete the
+   separately authorized backup/monitor timer checks. These remain independent
+   gates and are not established by prompt confirmation.
+
+M010.025 validates this explicit one-time reconciliation on disposable data;
+it does not authorize another production staging attempt or maintenance
+window. Approval-time revision/hash capture may be proposed as a separate
+follow-up, with no bulk historical backfill.
