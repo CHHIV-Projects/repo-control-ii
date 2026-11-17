@@ -1,0 +1,11 @@
+[Unit]
+Description=Check M010.027 staged Repo Control NAS backup health independently every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=1min
+Persistent=true
+Unit=repo-control-backup-monitor-m010027-staging.service
+
+[Install]
+WantedBy=timers.target

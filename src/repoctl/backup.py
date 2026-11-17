@@ -115,8 +115,8 @@ def _unescape_mount_field(value: str) -> str:
     return _MOUNT_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
-def parse_mountinfo(text: str) -> list[tuple[Path, str, str]]:
-    mounts: list[tuple[Path, str, str]] = []
+def parse_mountinfo(text: str) -> list[tuple[Path, str, str, Path]]:
+    mounts: list[tuple[Path, str, str, Path]] = []
     for line in text.splitlines():
         fields = line.split(" - ", 1)
         if len(fields) != 2:
@@ -125,7 +125,12 @@ def parse_mountinfo(text: str) -> list[tuple[Path, str, str]]:
         left, right = before.split(), after.split()
         if len(left) < 5 or len(right) < 2:
             continue
-        mounts.append((Path(_unescape_mount_field(left[4])), right[0], _unescape_mount_field(right[1])))
+        mounts.append((
+            Path(_unescape_mount_field(left[4])),
+            right[0],
+            _unescape_mount_field(right[1]),
+            Path(_unescape_mount_field(left[3])),
+        ))
     return mounts
 
 
@@ -137,23 +142,43 @@ def verify_destination_mount(
     mountinfo: str | None = None,
     writable: bool = True,
 ) -> None:
-    mount = _require_directory(expected_mountpoint, "Expected NAS mount", writable=writable)
+    mount = _require_directory(expected_mountpoint, "Expected NAS mount", writable=False)
     target = _require_directory(destination, "NAS backup destination", writable=writable)
     if target == mount or not target.is_relative_to(mount):
         raise BackupError("The backup destination must be a child directory of the expected NAS mount.")
     if mountinfo is None:
         mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    mounts = parse_mountinfo(mountinfo)
+    expected_mounts = [item for item in mounts if item[0] == mount]
+    if len(expected_mounts) != 1:
+        raise BackupError("The expected NAS mount is absent or ambiguous.")
+    _, expected_filesystem, mounted_source, expected_root = expected_mounts[0]
+    if expected_filesystem.lower() not in {"cifs", "smb3"} or mounted_source != expected_source:
+        raise BackupError("The expected mount type or NAS share identity does not match the approved target.")
     matching = [
-        item for item in parse_mountinfo(mountinfo)
+        item for item in mounts
         if target == item[0] or target.is_relative_to(item[0])
     ]
     if not matching:
         raise BackupError("The backup destination is not on a mounted filesystem.")
-    actual_mount, filesystem, source = max(matching, key=lambda item: len(str(item[0])))
-    if actual_mount.resolve() != mount:
-        raise BackupError(f"The destination is mounted at {actual_mount}, not the expected mount.")
-    if filesystem.lower() not in {"cifs", "smb3"} or source != expected_source:
-        raise BackupError("The destination mount type or NAS share identity does not match the approved target.")
+    actual_mount = max((item[0] for item in matching), key=lambda path: len(str(path)))
+    nearest_mounts = [item for item in matching if item[0] == actual_mount]
+    if len(nearest_mounts) != 1:
+        raise BackupError("The destination mount is ambiguous.")
+    _, filesystem, source, root = nearest_mounts[0]
+    if actual_mount == mount:
+        if filesystem.lower() != expected_filesystem.lower() or source != expected_source:
+            raise BackupError("The destination mount type or NAS share identity does not match the approved target.")
+    elif actual_mount == target:
+        expected_child_root = expected_root / target.relative_to(mount)
+        if (
+            filesystem.lower() != expected_filesystem.lower()
+            or source != expected_source
+            or root != expected_child_root
+        ):
+            raise BackupError("The destination bind mount is not the exact approved child path on the expected NAS share.")
+    else:
+        raise BackupError("The destination is covered by an unexpected nested mount.")
 
 
 def _open_readonly(path: Path) -> sqlite3.Connection:

@@ -345,7 +345,10 @@ class BackupTests(unittest.TestCase):
         destination = mount / "repo-control-ii"
         destination.mkdir(parents=True, mode=0o700)
         expected = f"31 24 0:42 / {mount} rw,relatime - cifs //192.168.1.171/RepoControl rw"
-        self.assertEqual(parse_mountinfo(expected)[0][1:], ("cifs", "//192.168.1.171/RepoControl"))
+        self.assertEqual(
+            parse_mountinfo(expected)[0][1:],
+            ("cifs", "//192.168.1.171/RepoControl", Path("/")),
+        )
         verify_destination_mount(
             destination,
             mount,
@@ -359,8 +362,95 @@ class BackupTests(unittest.TestCase):
                 "//192.168.1.171/PhotoOrganizer",
                 mountinfo=expected,
             )
-        with self.assertRaisesRegex(BackupError, "mounted filesystem"):
+        with self.assertRaisesRegex(BackupError, "absent or ambiguous"):
             verify_destination_mount(destination, mount, "//192.168.1.171/RepoControl", mountinfo="")
+
+    def test_sandbox_destination_bind_mount_must_match_exact_cifs_child(self) -> None:
+        mount = self.root / "nas-mount"
+        destination = mount / "repo-control-ii"
+        destination.mkdir(parents=True, mode=0o700)
+        expected_source = "//192.168.1.171/ProjectBackups"
+        mountinfo = "\n".join((
+            f"31 24 0:42 / {mount} rw,relatime - cifs {expected_source} rw",
+            f"42 31 0:42 /repo-control-ii {destination} rw,relatime - cifs {expected_source} rw",
+        ))
+
+        verify_destination_mount(
+            destination,
+            mount,
+            expected_source,
+            mountinfo=mountinfo,
+        )
+
+        lines = mountinfo.splitlines()
+        invalid_mountinfo = {
+            "wrong share": "\n".join((
+                lines[0],
+                lines[1].replace(expected_source, "//192.168.1.171/OtherShare"),
+            )),
+            "wrong child path": mountinfo.replace(
+                "/repo-control-ii ",
+                "/other-repository ",
+                1,
+            ),
+            "ambiguous destination mount": mountinfo + "\n" + mountinfo.splitlines()[1],
+        }
+        for reason, invalid in invalid_mountinfo.items():
+            with self.subTest(reason=reason):
+                with self.assertRaises(BackupError):
+                    verify_destination_mount(
+                        destination,
+                        mount,
+                        expected_source,
+                        mountinfo=invalid,
+                    )
+
+    def test_mount_root_needs_traversal_access_but_destination_needs_write_access(self) -> None:
+        mount = self.root / "nas-mount"
+        destination = mount / "repo-control-ii"
+        destination.mkdir(parents=True, mode=0o700)
+        mountinfo = f"31 24 0:42 / {mount} rw,relatime - cifs //192.168.1.171/RepoControl rw"
+        access_checks: list[tuple[Path, int]] = []
+
+        def simulated_access(
+            path: str | os.PathLike[str],
+            mode: int,
+            *,
+            destination_writable: bool = True,
+        ) -> bool:
+            resolved = Path(path)
+            access_checks.append((resolved, mode))
+            if resolved == mount:
+                return not mode & os.W_OK
+            if resolved == destination and not destination_writable and mode & os.W_OK:
+                return False
+            return True
+
+        with patch("repoctl.backup.os.access", side_effect=simulated_access):
+            verify_destination_mount(
+                destination,
+                mount,
+                "//192.168.1.171/RepoControl",
+                mountinfo=mountinfo,
+            )
+
+        self.assertIn((mount, os.R_OK | os.X_OK), access_checks)
+        self.assertIn((destination, os.R_OK | os.X_OK | os.W_OK), access_checks)
+        with patch(
+            "repoctl.backup.os.access",
+            side_effect=lambda path, mode: simulated_access(
+                path,
+                mode,
+                destination_writable=False,
+            ),
+        ):
+            with self.assertRaisesRegex(BackupError, "NAS backup destination is not readable and writable"):
+                verify_destination_mount(
+                    destination,
+                    mount,
+                    "//192.168.1.171/RepoControl",
+                    mountinfo=mountinfo,
+                )
 
     def test_mount_parser_decodes_spaces_without_changing_share_identity(self) -> None:
         mount = self.root / "nas mount"

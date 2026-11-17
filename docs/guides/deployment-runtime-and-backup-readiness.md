@@ -1442,3 +1442,692 @@ digests retroactively.
 The held `/var/lib/repo-control-staging/m010.024` candidate remains untouched.
 Production backup/restore, installed timer verification, candidate writer
 release, cutover, and any maintenance window remain separate NO-GO gates.
+
+## M010.027 fresh SQLite staging and GO/NO-GO review
+
+This section records the renewed M010.027 staging window and current hold
+gate. After the Product Owner answered the Vocab App source question, the
+operator confirmed a new start window, renewed the external-writer pause, and
+reconfirmed the 30-minute interruption and 60-minute post-thaw bounds. The
+live unit remained unchanged. A fresh source freeze was captured, imported,
+bound, and activated only in the isolated M010.027 candidate; the exact freeze
+was then released. The original service was never stopped or restarted and
+remains active on `legacy_files`.
+
+The candidate is activated but not held. No candidate browser or other
+candidate application process has been started, and no M010.027 NAS backup,
+restore, or timer operation has occurred. Pre-hold inspection found the
+database in WAL mode with neither a WAL nor SHM sidecar. The documented
+normal SQLite open and a read transaction both left those sidecars absent.
+After the Product Owner's conditional approval and the
+disposable proof below, the one-time metadata-only sidecar initialization was
+run on the exact candidate. The helper reported final `user_version` 3, the
+main-file hash remained unchanged, and WAL/SHM were created. After the first
+read-only postflight checker failed on its missing SQL binding, the corrected
+read-only check passed: application data and exact approval binding matched
+the baseline, integrity was `ok`, and FK violations were zero. Per the
+Product Owner's answer, no further candidate operation was run; the candidate
+remains offline and unheld pending a separate hold decision. The existing
+`/var/lib/repo-control-staging/m010.024` candidate remains outside this
+procedure and must remain held, stopped, and unchanged.
+
+### Disposable SQLite WAL-sidecar and backup/restore test
+
+On a disposable copy, the pinned SQLite 3.51.3 C API probe enabled
+`SQLITE_FCNTL_PERSIST_WAL` and
+`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, then round-tripped `user_version`. After
+close and read-only reopen, the main-file SHA-256 remained
+`90c6f41981d60586d343c3d4b64f764be5fd76a40d91137c20bffb26be535e94`;
+the nonempty WAL (4,152 bytes) and SHM (32,768 bytes) persisted. The
+`user_version` (3), `schema_version` (31), all 15 non-internal table row
+counts, and integrity/FK checks were unchanged (`ok`, zero violations).
+
+The disposable backup copy exercised the local prepared-store backup path.
+An initial offline attempt against an activated copy correctly failed closed:
+activated stores cannot be opened as offline prepared stores. On the disposable
+copy only, its four `authority_*` rows were removed from `store_metadata` to
+make it an offline prepared-store fixture; application-table counts and
+schema/user versions did not change. Under a same-owner mode simulation
+(parent `0550`, DB/WAL `0440`, SHM `0660`), read-only open and integrity checks
+passed, write-open of DB/WAL was denied, and SHM remained writable. This does
+not prove the root-owned operator boundary.
+
+The actual local `repoctl.backup.create_verified_backup` and
+`restore_verified_backup` functions then produced and restored a separate
+115,965,952-byte verified snapshot. The manifest database SHA-256 is
+`4fec510fce5cb8f810b3c6f6e5ac7b6cfabee62f8a6687daa4a3ca2fa4f78e8c` and the
+snapshot SHA-256 is `24a9c5d32ee9d5e662a46a1f3f2107e647890ff2a6a6c149fd83b5ee941f576f`.
+The manifest and restored copy both passed integrity (`ok`) and FK (zero)
+checks and retained the exact M010.027 selection r104, prompt revision
+`bb1fe9fe9df5a6373c6a8b880dad8108`, and identical table row counts. The
+disposable source DB and WAL hashes remained unchanged through backup/restore;
+the 12,392-byte WAL and 32,768-byte SHM remained present.
+
+The Product Owner also required proof that the `user_version` 3-to-4-to-3
+round-trip is one transaction and that interruption between the changes
+recovers to version 3. On two fresh disposable copies, the pinned C helper
+confirmed autocommit stayed off through both changes and the commit copy
+finished at version 3. A second process flushed version 4 inside the open
+transaction and was interrupted before the 4-to-3 change; read-only recovery
+returned version 3. Both copies retained the original main-file hash,
+schema version, all 15 table digests, and exact M010.027 approval event,
+revision, and selection; integrity was `ok` and FK violations were zero. The
+committed copy retained a 4,152-byte WAL and 32,768-byte SHM. After recovery,
+the interrupted copy had a zero-byte WAL and 32,768-byte SHM.
+
+These disposable tests did not use NAS, active-authority coverage/recovery-point
+publication, the staged candidate for backup/restore, a candidate process, or
+timers. They do not clear the M010.027 hold gate.
+
+### Approved candidate sidecar initialization and read-only postflight
+
+The exact staged database is
+`/var/lib/repo-control-staging/m010.027/prepared/managed-prepared.sqlite3`;
+its pre-operation main-file SHA-256 was
+`90c6f41981d60586d343c3d4b64f764be5fd76a40d91137c20bffb26be535e94`, with no
+WAL or SHM sidecar. Immediately before the approved operation, the candidate
+hash and absent sidecars were rechecked, `fuser` reported no DB holders, the
+original service remained active on `legacy_files` (PID `408204`), and
+candidate port `18767` was idle. The pinned SQLite 3.51.3 helper enabled
+`SQLITE_FCNTL_PERSIST_WAL` and `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, performed
+the single-transaction 3-to-4-to-3 round-trip, and returned
+`final_version=3`. The observed main-file hash remained
+`90c6f41981d60586d343c3d4b64f764be5fd76a40d91137c20bffb26be535e94`; WAL
+(4,152 bytes) and SHM (32,768 bytes) were created.
+
+The first read-only checker stopped with
+`sqlite3.ProgrammingError: Incorrect number of bindings supplied` because its
+`workflow_document_link` query omitted a parameter. Following the blocker
+answer, only the corrected read-only postflight was rerun. Against the
+preserved disposable baseline it confirmed the unchanged main-file hash,
+nonempty persistent WAL and SHM, `user_version` 3, `schema_version` 31,
+identical row counts and table digests across all 15 non-internal tables, and
+the exact M010.027 approval event `134022835ceb45d5a38ca9c383a7ade0`, revision
+`bb1fe9fe9df5a6373c6a8b880dad8108`, and selection r104. Integrity was `ok`
+and FK violations were zero.
+
+No hold change, candidate application process, backup, NAS, restore, timer,
+or cutover action occurred. The candidate remains offline and unheld. Stop
+here as directed; a separate decision is required before applying the hold.
+
+### Current gates
+
+| Gate | Result | Evidence / next action |
+|---|---|---|
+| Exact M010.027 source approval | PASS | The exact-byte approval event is `134022835ceb45d5a38ca9c383a7ade0`; the approved prompt SHA-256 is `b6cb039a00b43aaa864ca8a18e3fdc7b3a7b03b287d4ab941b9f23bf682f1fe0`. The canonical prompt bytes were not changed. |
+| Real importer and independent CLI, isolated | PASS | A disposable pinned-runtime import linked that event to exact revision `bb1fe9fe9df5a6373c6a8b880dad8108`, with one `v1_imported_prompt_approval`, zero mismatches/refusals, source parity, integrity/FK checks, exact retry, and two fresh independent `coder-status` successes. The disposable snapshot hash `1ca1461ce1d099826668a88e9737828f2674335f41942ba87f8373286dd3059d` is **not** a production freeze fingerprint and must not be reused. |
+| Fresh registered-source freeze/import and parity | PASS | Freeze `834eb6870d81ab90bb08a2eda69c7b49` captured at `2026-11-17T05:29:31Z`; inventory SHA-256 `dcff46f803a14888ee1c3cffe642d5b788cd04bec42e30c9eb84b466e37f265a`, registry binding SHA-256 `84336c8139eba6031dae2b0f0ffebffeeef48d782216bffd99ad6590b07d1df2`. The fresh import contains 971 documents, 121 milestones, 1,641 events, 464 sources, and 164 dispatches, with zero mismatches/refusals. Source parity and exact M010.027 approval/revision linkage passed; SQLite integrity was `ok`, foreign-key violations were zero, and all registered worktrees matched the captured baseline after import. |
+| Candidate selection binding and isolated activation | PASS | Only the three reported selections were bound: Repo Control II M010.027 r104, Vocab App M002.007 r15, and Photo Organizer M001.004 r5. Generation `2e329ee9e60c16591a1b4afd1d1bafba` was re-previewed under the active freeze with the Product Owner-confirmed plan SHA-256 `b248e981490a3e7385debc74cef7b2cf8fef3967d295009735e9464c2c6e0ad5`; candidate database identity is `2bff56f7c5d61d0c3680f55bdc7f02586ae98389f154f7229d3a2f184ead1033`. Activation and exact freeze release both succeeded. |
+| Original service after source thaw | PASS | `repo-control.service` remained active with PID `408204`; `/healthz` reported `legacy_files`, null InformationStore binding, and prompt-approval evidence schema 1. Candidate browser port `18767` had no listener. |
+| Negative and compatibility cases | PASS | The accepted [M010.026 closeout](../milestones/M010.026_capture_exact_prompt_approval_at_approve_start_closeout.md) records 17 targeted pinned-runtime tests covering missing, malformed, conflicting, wrong-scope, stale/changed-byte, invented-approval, retry, and legacy-confirmation cases. Not rerun: M010.027 changed documentation and staging proposals, not application behavior. |
+| Candidate/import/backup runtime | PASS | [ops/verify_sqlite_runtime.py](../../ops/verify_sqlite_runtime.py) reports production eligible: CPython 3.12.16 / SQLite 3.51.3. |
+| Running service authority and capability | PASS | The active service is file-backed: `/healthz` reports `legacy_files`, no InformationStore binding, and `prompt_approval_evidence_schema_version: 1`. The process imports the repository source tree at the reviewed starting HEAD, but the health response has no build hash. |
+| Effective service runtime vs. reviewed unit | ATTENTION | The running service uses the repository `.venv` (Python 3.12.3 / SQLite 3.45.1) and has no `EnvironmentFile`; tracked [ops/systemd/repo-control.service](../../ops/systemd/repo-control.service) uses the pinned Python and `/etc/repo-control/backup.env`. The operator approved leaving the current unit unchanged for this file-backed staging; candidate/import/backup work uses the pinned runtime. Do not change or restart the live unit independently. Before any separately authorized managed-service write, reconcile and verify the installed unit/runtime and coverage environment in a separate deployment step. |
+| Post-snapshot forward recovery | PASS in disposable fixture; production NOT TESTED | [M010.021 closeout](../milestones/M010.021_staged_sqlite_deployment_validation_and_cutover_go_review_closeout.md) records one committed post-snapshot event preserved with failed-state DB/WAL/SHM, omitted from a separate earlier restore, then replayed through the guarded transaction API after fresh coverage; final events, projection, and payload hash matched. This does not cover production/NAS recovery, loss of both DB and WAL, or a zero-loss/RTO guarantee. |
+| Operator-controlled candidate hold and candidate browser/CLI identity | NOT TESTED | The sidecar initialization and corrected read-only postflight passed, but the candidate remains offline and unheld. No root-owned hold or candidate browser/CLI identity has been exercised. The Product Owner's answer directed stopping before the hold; await a separate decision before proceeding. |
+| Production NAS backup and separate restore | NOT TESTED | The local disposable verified-backup/restore functions passed, but no candidate-specific active-authority coverage, NAS backup, recovery-point record, or candidate restore was run. |
+| Installed timer/monitor firing and warning/recovery | NOT TESTED | No M010.027 staging units or timers are installed or running. Syntax/calendar checks alone will not satisfy this gate. |
+
+The disposable proof fingerprint is stale by design and must not be reused.
+The production freeze fingerprint above is the exact source snapshot used by
+this candidate. After thaw, the successful `RECOVERY` verification event
+`9546c9a2b3e641cea9b4ca8fcbca9c13` and this guide update were recorded, so the
+candidate is known to predate those source changes. Any later cutover review
+must perform a fresh final drift/parity check and re-import or restage if the
+source moved or the candidate binding changes. The selections listed above
+are the actual imported and bound selections, not substitutes for that later
+check.
+
+Preflight Git snapshot: branch `db-workflow-persistence-architecture`, HEAD
+`28e9a7366bf9ff5ca5a4734a210b44164f246de9`; the tracked worktree was clean,
+with only the M010.027 prompt and workflow sidecar untracked. The live service
+was PID `408204`, instance `0fda4763438cce37ccf4daebcf234db6`, user `chuck`,
+working in `/home/chuck/projects/repo-control-ii`, using the default source
+state root `/home/chuck/.local/share/repoctl`. Its imported module resolves
+under `src/`; the process started after the reviewed HEAD, but no build hash is
+embedded in health. The registered source paths are Repo Control II
+`/home/chuck/projects/repo-control-ii`, Vocab App
+`/home/chuck/projects/vocab-app`, and Photo Organizer
+`/home/chuck/projects/photo-organizer-dev`. These are the expected paths to
+revalidate against the live registry at window start.
+
+The Product Owner resolved the Vocab App worktree question: its six modified
+shared-procedure 1.4.0 files and untracked `AGENTS.md` are expected, may remain
+uncommitted, and must remain untouched. In the next window, capture them as
+they stand and stop if any registered-source input changes during capture or
+import. Vocab App was on `main` at
+`e41683bcda167e0acdc1f7da57726c267f0d63b4` with those six modified paths and
+the untracked `AGENTS.md`; Photo Organizer was clean on `main` at
+`48b9393dc0980ebb55f8b5285d3779e0534deee6`. These are observed reference
+states, not import fingerprints. Do not edit, stage, commit, stash, or revert
+anything in Vocab App.
+
+Initial Repo Control context verification was `VERIFIED` for
+`AUTHORITY_TRANSITION` under supported procedure 1.5.0, snapshot
+`3f0cd127fb1b5b7177dc30dd9c6211a52700bf726810f7c4fb262927dacb3a44`.
+The trigger and Git-boundary acknowledgement are agent-reported; session
+identity and provider-native hook delivery are unverified.
+After the blocker answer and lifecycle resume, another
+`AUTHORITY_TRANSITION` verification returned `VERIFIED` under current
+procedure 1.5.0, snapshot
+`0d6fb154d4302c1d932c5915b04eecacd5b1ee5a72f58c0f64b0c778a7a57c6c`.
+That record does not renew or extend the expired operator window.
+After candidate activation and source-freeze release, the `RECOVERY`
+verification returned `VERIFIED` under procedure 1.5.0, snapshot
+`e8649ce2e7b68d81050ae18dbdf33194c73b6733f14d37dd7174dc9465840ed8`.
+The trigger and Git-boundary acknowledgement are agent-reported; session
+identity and provider-native hook delivery remain unverified.
+
+The previous M010.024 system journal shows the original service stopped at
+17:58:06 UTC and started at 18:11:08 UTC, a measured service interruption of
+13 minutes 2 seconds. For planning only, reserve a 30-minute source
+quiescence/import window and target resuming the original service within 15
+minutes. Reserve a separate bounded observation of up to 60 minutes after
+source thaw for backup recurrence and the 20-minute warning/recovery check;
+the original service remains available during that observation. The
+source-freeze interval itself was not separately measured. Abort staging and
+restore file-backed availability if the service is not healthy within the
+operator-approved 30-minute limit; these are planning bounds, not duration
+guarantees.
+
+### Fresh M010.027 paths and proposals
+
+| Purpose | M010.027 path |
+|---|---|
+| Candidate base | `/var/lib/repo-control-staging/m010.027` |
+| Prepared database | `/var/lib/repo-control-staging/m010.027/prepared/managed-prepared.sqlite3` |
+| Candidate state root | `/var/lib/repo-control-staging/m010.027/state` |
+| Scanner/status/context cache | `/home/chuck/.cache/repoctl/m010.027/scanner` |
+| Freeze/import/plan and validation reports | `/home/chuck/.local/state/repo-control-staging/m010.027` |
+| Backup staging and candidate coverage | `/home/chuck/.local/state/repo-control-backup/staging/m010.027` |
+| Candidate coverage record | `/home/chuck/.local/state/repo-control-backup/staging/m010.027/.repoctl-verified-recovery-point.json` |
+| Separate restore root | `/home/chuck/.local/state/repo-control-backup/restore/m010.027` |
+| Approved NAS destination | `/mnt/nas/repo-control/RepoControl/repo-control-ii` |
+| Candidate browser | `127.0.0.1:18767` |
+| Staging environment, installed only by operator | `/etc/repo-control/backup-m010027-staging.env` |
+
+The tracked environment example is
+[ops/backup.m010027-staging.env.example](../../ops/backup.m010027-staging.env.example).
+The four staging-only proposals are
+[repo-control-backup-m010027-staging.service](../../ops/systemd/repo-control-backup-m010027-staging.service),
+[repo-control-backup-m010027-staging.timer](../../ops/systemd/repo-control-backup-m010027-staging.timer),
+[repo-control-backup-monitor-m010027-staging.service](../../ops/systemd/repo-control-backup-monitor-m010027-staging.service), and
+[repo-control-backup-monitor-m010027-staging.timer](../../ops/systemd/repo-control-backup-monitor-m010027-staging.timer).
+They use the pinned interpreter, target only the M010.027 candidate, and do
+not reference or control `repo-control.service`. The backup timer is every 15
+minutes; the independent monitor timer is every 5 minutes with a 1200-second
+freshness threshold. These are uninstalled proposals; timer syntax is not
+evidence of installation or firing. The NAS destination stays within the accepted
+RepoControl subtree; do not repeat the sentinel, inspect credentials, change
+the mount/ACL, write to `M010.015-test`, or touch existing backups.
+
+### Completed M010.027 source-freeze window
+
+The operator reconfirmed the external-writer pause, the 30-minute interruption
+limit, the effective-unit handling above, and the 60-minute post-thaw bound.
+The original service was healthy before and after the freeze; it was not
+stopped. The fresh freeze was created at `2026-11-17T05:29:31Z`, imported to
+the candidate database, and released immediately after activation. The
+registry, source set, selections, approval, and source hashes matched during
+the import and pre-activation preview.
+
+The following variables and source-freeze/import sequence document the
+executed procedure. The candidate is now populated and active, so do not
+rerun its empty-directory preconditions, initialization, freeze, import,
+binding, or activation. `store-authority prepare` and all candidate work use
+the pinned interpreter. The home-directory report/cache/backup/restore paths
+remain separate from the protected candidate:
+
+```sh
+set -eu
+PY=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python
+REPO=/home/chuck/projects/repo-control-ii
+REGISTRY="$REPO/ops/repositories.toml"
+SOURCE_STATE_ROOT=/home/chuck/.local/share/repoctl
+BASE=/var/lib/repo-control-staging/m010.027
+STATE="$BASE/state"
+IMPORT_DIR="$BASE/prepared"
+DATABASE="$IMPORT_DIR/managed-prepared.sqlite3"
+REPORTS=/home/chuck/.local/state/repo-control-staging/m010.027
+SCANNER_CACHE=/home/chuck/.cache/repoctl/m010.027/scanner
+BACKUP_STAGING=/home/chuck/.local/state/repo-control-backup/staging/m010.027
+RESTORE_ROOT=/home/chuck/.local/state/repo-control-backup/restore/m010.027
+COVERAGE_PATH="$BACKUP_STAGING/.repoctl-verified-recovery-point.json"
+FREEZE_REPORT="$REPORTS/freeze-report.json"
+IMPORT_REPORT="$REPORTS/import-report.json"
+PLAN_REPORT="$REPORTS/activation-plan.json"
+
+test -d "$BASE"
+test "$(stat -c '%U:%G:%a' "$BASE")" = chuck:chuck:700
+test -z "$(find "$BASE" -mindepth 1 -maxdepth 1 -print)"
+test ! -e "$STATE"
+test ! -e "$IMPORT_DIR"
+for path in "$REPORTS" "$SCANNER_CACHE" "$BACKUP_STAGING" "$RESTORE_ROOT"; do
+  test -d "$path"
+  test "$(stat -c '%U:%G:%a' "$path")" = chuck:chuck:700
+  test -z "$(find "$path" -mindepth 1 -maxdepth 1 -print)"
+done
+install -d -m 0700 "$STATE" "$IMPORT_DIR"
+```
+
+The operator first pauses external/non-cooperating writes across all registered
+sources. Stop the original service only if it cannot be shown to cooperate
+with the source freeze; use operator confirmation and the installed unit
+unchanged. If stopped, `systemctl is-active repo-control.service` must report
+`inactive`. Then freeze/drain cooperating writers and prepare only the fresh
+candidate:
+
+```sh
+"$PY" -m repoctl.cli store-authority freeze-writers \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" > "$FREEZE_REPORT"
+FREEZE_ID=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["freeze_id"])' "$FREEZE_REPORT")
+
+"$PY" -m repoctl.cli store-authority prepare \
+  --registry "$REGISTRY" \
+  --state-root "$SOURCE_STATE_ROOT" \
+  --candidate-state-root "$STATE" \
+  --destination "$IMPORT_DIR" \
+  --writers-quiesced > "$IMPORT_REPORT"
+test "$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_database_path"])' "$IMPORT_REPORT")" = "$DATABASE"
+```
+
+Review the report before binding: exact three-repository source set and
+current selections; source/registry fingerprints; counts and representative
+hashes; zero unexplained mismatches/refusals; the single imported
+M010.027 approval event linked to the exact prompt revision; and source parity.
+Any discrepancy is an abort. Bind only the three reported selection objects,
+then preview and activate using one reviewed generation and plan hash:
+
+```sh
+BINDING_COUNT=$("$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"]))' "$IMPORT_REPORT")
+test "$BINDING_COUNT" = 3
+for INDEX in $("$PY" -c 'import json,sys; print(*range(len(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"])))' "$IMPORT_REPORT"); do
+  BINDING_JSON=$("$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8"))["prepared_selection_bindings"][int(sys.argv[2])], separators=(",", ":")))' "$IMPORT_REPORT" "$INDEX")
+  "$PY" -m repoctl.cli store-authority bind-selection \
+    --registry "$REGISTRY" --state-root "$STATE" \
+    --database "$DATABASE" --binding-json "$BINDING_JSON" --po-confirm
+done
+GENERATION=$("$PY" -c 'import secrets; print(secrets.token_hex(16))')
+"$PY" -m repoctl.cli store-authority preview \
+  --registry "$REGISTRY" --state-root "$STATE" \
+  --source-state-root "$SOURCE_STATE_ROOT" --database "$DATABASE" \
+  --generation "$GENERATION" > "$PLAN_REPORT"
+PLAN_SHA256=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["plan_sha256"])' "$PLAN_REPORT")
+```
+
+Do not activate until independent parity review and the operator/Product Owner
+confirm the exact report and plan. After activation, release the source freeze
+immediately and restore the original service if it was stopped; do not keep
+source writers frozen while applying the candidate hold.
+
+```sh
+"$PY" -m repoctl.cli store-authority activate \
+  --registry "$REGISTRY" --state-root "$STATE" \
+  --source-state-root "$SOURCE_STATE_ROOT" --database "$DATABASE" \
+  --generation "$GENERATION" --expected-plan-sha256 "$PLAN_SHA256" \
+  --po-confirm --writers-quiesced --source-parity-confirmed
+"$PY" -m repoctl.cli store-authority release-writers \
+  --registry "$REGISTRY" --state-root "$SOURCE_STATE_ROOT" \
+  --freeze-id "$FREEZE_ID"
+```
+
+If the original service was stopped, the operator starts the same installed
+unit without editing/reloading it and verifies `systemctl is-active` reports
+`active`; `curl -fsS http://127.0.0.1:8765/healthz` must report
+`legacy_files` with a null InformationStore binding. Resume original
+file-backed availability before candidate hold, NAS, restore, or timer work.
+
+With the source thawed and original service healthy, apply and verify an
+operator-controlled hold to the fresh candidate before starting its browser:
+protected candidate parents/directories and DB/WAL/guard/config/selection files
+must be root-controlled and not writable by `chuck`; preserve the approved SHM
+exception and `chuck`-writable lock paths. Derive the exact selection and
+import-scratch inventory from this candidate, check for symlinks/open holders,
+and record before/after hashes. Do not copy M010.024 paths, hashes, scratch
+inventory, or permissions recursively. The scanner cache, reports, coverage,
+backup staging, and restore paths remain outside the held tree. If hold setup
+fails, leave the candidate offline; do not refreeze the live source to
+troubleshoot it.
+
+For the currently registered IDs, verify these leaf names against the fresh
+candidate inventory before any privileged command. The scratch directory
+names are the first 24 hex characters of each repository ID's SHA-256; stop
+and recalculate if a repository ID differs. Continue in the same shell so the
+path variables from the preceding window commands remain bound:
+
+```sh
+set -euo pipefail
+RC_ID=repo-control-ii--945e7f88eafb
+VOCAB_ID=vocab-app--0d81efec80ef
+PHOTO_ID=photo-organizer-dev--84c64acdea9f
+RC_SCRATCH="$IMPORT_DIR/61047c89b60f61a85d61ba3a"
+VOCAB_SCRATCH="$IMPORT_DIR/c07984ec043b5029f6d87480"
+PHOTO_SCRATCH="$IMPORT_DIR/1b12de3f56fa83f1657f41f5"
+GUARD="$BASE/.state.information-store-authority.guard"
+CONFIG="$STATE/information-store-authority.json"
+LOCK_DIR="$STATE/.locks"
+LOCK_FILE="$LOCK_DIR/state-artifacts.lock"
+RC_SELECTION="$STATE/$RC_ID/milestones/selection.json"
+VOCAB_SELECTION="$STATE/$VOCAB_ID/milestones/selection.json"
+PHOTO_SELECTION="$STATE/$PHOTO_ID/milestones/selection.json"
+
+for path in "$BASE" "$IMPORT_DIR" "$STATE" "$DATABASE" \
+  "$GUARD" "$CONFIG" "$RC_SCRATCH" "$VOCAB_SCRATCH" "$PHOTO_SCRATCH" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION" "$LOCK_DIR" "$LOCK_FILE"; do
+  test -e "$path"
+done
+if ! test -e "$DATABASE-shm"; then
+  "$PY" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute("PRAGMA journal_mode").fetchone()[0]); c.close()' "$DATABASE"
+fi
+test -e "$DATABASE-shm"
+namei -l "$BASE" "$DATABASE" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION"
+find "$BASE" -xdev -type l -print > "$REPORTS/candidate-symlinks.txt"
+test ! -s "$REPORTS/candidate-symlinks.txt"
+find "$BASE" -xdev -printf '%p|%y|%u:%g|%m|%d:%i\n' | sort \
+  > "$REPORTS/candidate-before-hold.txt"
+sha256sum "$DATABASE" "$DATABASE-shm" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION" \
+  > "$REPORTS/candidate-before-hold.sha256"
+if test -e "$DATABASE-wal"; then
+  sha256sum "$DATABASE-wal" >> "$REPORTS/candidate-before-hold.sha256"
+fi
+find "$RC_SCRATCH" "$VOCAB_SCRATCH" "$PHOTO_SCRATCH" -mindepth 1 -print \
+  > "$REPORTS/candidate-scratch-contents.txt"
+test ! -s "$REPORTS/candidate-scratch-contents.txt"
+```
+
+The inventory includes any WAL present; do not create an empty WAL/SHM
+sidecar. SHM must exist for this held deployment. The ordinary pinned-runtime
+SQLite open above is only to initialize its normal sidecars when needed; close
+it and record the resulting inventory before continuing. Check for open
+holders before the hold; status 1 with no output is the expected `fuser`
+result:
+
+For the current M010.027 database, the documented open returned
+`journal_mode: wal` but created neither sidecar. A subsequent pinned-runtime
+read transaction (`SELECT COUNT(*) FROM sqlite_master`) also left both absent.
+The required SHM path therefore cannot yet be inventoried or held. Stop here:
+do not fabricate an empty sidecar, make a candidate database write, start the
+candidate browser/CLI, or proceed to backup/timer work. Resolve this blocker
+through Repo Control before continuing.
+
+```sh
+fuser_status=0
+sudo fuser -v "$DATABASE" "$DATABASE-shm" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION" "$LOCK_FILE" \
+  || fuser_status=$?
+test "$fuser_status" -eq 1
+if test -e "$DATABASE-wal"; then
+  fuser_status=0
+  sudo fuser -v "$DATABASE-wal" || fuser_status=$?
+  test "$fuser_status" -eq 1
+fi
+```
+
+After reviewing the exact inventory and confirming no holders, the operator
+applies only these exact paths. Do not use recursive ownership/mode changes.
+The optional WAL commands apply only if the reviewed inventory contains it:
+
+```sh
+set -euo pipefail
+sudo chown root:chuck -- "$BASE" "$IMPORT_DIR" "$RC_SCRATCH" \
+  "$VOCAB_SCRATCH" "$PHOTO_SCRATCH" "$STATE" \
+  "$STATE/$RC_ID" "$STATE/$RC_ID/milestones" \
+  "$STATE/$VOCAB_ID" "$STATE/$VOCAB_ID/milestones" \
+  "$STATE/$PHOTO_ID" "$STATE/$PHOTO_ID/milestones"
+sudo chmod 0750 -- "$BASE" "$IMPORT_DIR" "$RC_SCRATCH" \
+  "$VOCAB_SCRATCH" "$PHOTO_SCRATCH" "$STATE" \
+  "$STATE/$RC_ID" "$STATE/$RC_ID/milestones" \
+  "$STATE/$VOCAB_ID" "$STATE/$VOCAB_ID/milestones" \
+  "$STATE/$PHOTO_ID" "$STATE/$PHOTO_ID/milestones"
+sudo chown root:chuck -- "$GUARD" "$CONFIG" "$RC_SELECTION" \
+  "$VOCAB_SELECTION" "$PHOTO_SELECTION" "$DATABASE"
+sudo chmod 0440 -- "$GUARD" "$CONFIG" "$RC_SELECTION" \
+  "$VOCAB_SELECTION" "$PHOTO_SELECTION" "$DATABASE"
+sudo chown root:chuck -- "$DATABASE-shm"
+sudo chmod 0660 -- "$DATABASE-shm"
+if test -e "$DATABASE-wal"; then
+  sudo chown root:chuck -- "$DATABASE-wal"
+  sudo chmod 0440 -- "$DATABASE-wal"
+fi
+
+sudo -u chuck -- test ! -w "$BASE"
+sudo -u chuck -- test ! -w "$STATE"
+sudo -u chuck -- test ! -w "$DATABASE"
+sudo -u chuck -- test ! -w "$GUARD"
+sudo -u chuck -- test ! -w "$CONFIG"
+sudo -u chuck -- test ! -w "$RC_SELECTION"
+sudo -u chuck -- test ! -w "$VOCAB_SELECTION"
+sudo -u chuck -- test ! -w "$PHOTO_SELECTION"
+sudo -u chuck -- test -w "$DATABASE-shm"
+sudo -u chuck -- test -w "$LOCK_DIR"
+sudo -u chuck -- test -w "$LOCK_FILE"
+find "$BASE" -xdev -printf '%p|%y|%u:%g|%m|%d:%i\n' | sort \
+  > "$REPORTS/candidate-held-inventory.txt"
+sha256sum "$DATABASE" "$DATABASE-shm" "$GUARD" "$CONFIG" \
+  "$RC_SELECTION" "$VOCAB_SELECTION" "$PHOTO_SELECTION" \
+  > "$REPORTS/candidate-held.sha256"
+if test -e "$DATABASE-wal"; then
+  sha256sum "$DATABASE-wal" >> "$REPORTS/candidate-held.sha256"
+fi
+```
+
+Compare both inventories and hash records; only ownership/mode changes
+approved above may differ. If any expected path is missing, a symlink/holder
+exists, a hash changes, or a permission probe disagrees, do not start a
+candidate process or any backup/timer job.
+
+### Held candidate, backup, restore, and timer checks
+
+With the candidate held, start its read-only browser on the separate port and
+check an independent Coder process against the imported approval. The coverage
+path is candidate-specific and must never be replaced by the live coverage
+record:
+
+```sh
+REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  "$PY" -m repoctl.cli web --repository-registry "$REGISTRY" \
+    --host 127.0.0.1 --port 18767 \
+    --state-root "$STATE" --scanner-cache-root "$SCANNER_CACHE"
+
+# In a second terminal:
+curl -fsS http://127.0.0.1:18767/healthz
+REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  "$PY" -m repoctl.cli coder-status \
+    --repository "$REPO" --state-root "$STATE" --format json
+```
+
+Expected: browser health binds to this candidate and reports
+`sqlite_managed`; independent `coder-status` reports M010.027, the exact
+selection/revision/digest, and no second confirmation. Repeat after one
+candidate-browser restart, then stop the browser and verify the hold and
+protected hashes remain unchanged. No candidate application write is allowed.
+
+After confirming the existing CIFS mount source/identity and exact
+RepoControl destination, install only the M010.027 environment and four
+reviewed staging units. Never overwrite the live `backup.env` or install a
+service for the live browser. With the root-only environment file in place,
+run the pinned publisher once and capture its JSON report; the report supplies
+the exact manifest path for a separate restore:
+
+```sh
+test ! -e /etc/repo-control/backup-m010027-staging.env
+sudo install -o root -g root -m 0600 \
+  ops/backup.m010027-staging.env.example \
+  /etc/repo-control/backup-m010027-staging.env
+test ! -e /etc/systemd/system/repo-control-backup-m010027-staging.service
+test ! -e /etc/systemd/system/repo-control-backup-m010027-staging.timer
+test ! -e /etc/systemd/system/repo-control-backup-monitor-m010027-staging.service
+test ! -e /etc/systemd/system/repo-control-backup-monitor-m010027-staging.timer
+sudo install -o root -g root -m 0644 \
+  ops/systemd/repo-control-backup-m010027-staging.service \
+  ops/systemd/repo-control-backup-m010027-staging.timer \
+  ops/systemd/repo-control-backup-monitor-m010027-staging.service \
+  ops/systemd/repo-control-backup-monitor-m010027-staging.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+env \
+  REPOCTL_BACKUP_SOURCE="$DATABASE" \
+  REPOCTL_BACKUP_STAGING="$BACKUP_STAGING" \
+  REPOCTL_BACKUP_DESTINATION=/mnt/nas/repo-control/RepoControl/repo-control-ii \
+  REPOCTL_BACKUP_RESTORE_ROOT="$RESTORE_ROOT" \
+  REPOCTL_BACKUP_MOUNTPOINT=/mnt/nas/repo-control \
+  REPOCTL_BACKUP_MOUNT_SOURCE=//192.168.1.171/ProjectBackups \
+  REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  REPOCTL_BACKUP_AUTHORITY_STATE_ROOT="$STATE" \
+  REPOCTL_BACKUP_REPOSITORY_ID=repo-control-ii--945e7f88eafb \
+  REPOCTL_BACKUP_REPOSITORY_KEY=repo-control-ii \
+  REPOCTL_BACKUP_REPOSITORY_ROOT="$REPO" \
+  "$PY" -m repoctl.backup backup > "$REPORTS/backup-report.json"
+MANIFEST=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["manifest_path"])' "$REPORTS/backup-report.json")
+test -f "$MANIFEST"
+env \
+  REPOCTL_BACKUP_SOURCE="$DATABASE" \
+  REPOCTL_BACKUP_STAGING="$BACKUP_STAGING" \
+  REPOCTL_BACKUP_DESTINATION=/mnt/nas/repo-control/RepoControl/repo-control-ii \
+  REPOCTL_BACKUP_RESTORE_ROOT="$RESTORE_ROOT" \
+  REPOCTL_BACKUP_MOUNTPOINT=/mnt/nas/repo-control \
+  REPOCTL_BACKUP_MOUNT_SOURCE=//192.168.1.171/ProjectBackups \
+  REPOCTL_BACKUP_COVERAGE_PATH="$COVERAGE_PATH" \
+  REPOCTL_BACKUP_AUTHORITY_STATE_ROOT="$STATE" \
+  REPOCTL_BACKUP_REPOSITORY_ID=repo-control-ii--945e7f88eafb \
+  REPOCTL_BACKUP_REPOSITORY_KEY=repo-control-ii \
+  REPOCTL_BACKUP_REPOSITORY_ROOT="$REPO" \
+  "$PY" -m repoctl.backup restore --manifest "$MANIFEST" \
+    --restore-name m010027-separate-restore.sqlite3 \
+    > "$REPORTS/restore-report.txt"
+```
+
+Verify the backup manifest/payload, repository/authority/selection/database
+identity, and fresh coverage record bind to this candidate. Verify the distinct
+restore path, integrity, foreign keys, selected prompt approval/revision/digest,
+representative workflow state and document hashes; record actual restore
+duration. Browser, independent CLI, and publisher must agree on candidate root
+and recovery-point binding. Do not overwrite any existing backup or restore.
+
+Only after those checks pass, start the two candidate-specific timers and
+observe actual journal evidence, not just calendars or `list-timers` output:
+
+```sh
+sudo systemctl start repo-control-backup-m010027-staging.timer \
+  repo-control-backup-monitor-m010027-staging.timer
+systemctl list-timers --all repo-control-backup-m010027-staging.timer \
+  repo-control-backup-monitor-m010027-staging.timer
+journalctl -u repo-control-backup-m010027-staging.service \
+  -u repo-control-backup-monitor-m010027-staging.service --no-pager
+```
+
+Observe successful recurring backup firings 15 minutes apart and monitor
+firings at five-minute intervals. For the 20-minute warning/recovery check,
+use only a bounded staging-only fault/check: stop the M010.027 backup timer
+after a verified backup, let its monitor report stale coverage locally, then
+run a fresh candidate backup and verify a recovery result. Do not disturb the
+live service, NAS mount, or known-good backups; do not add external alerting.
+Keep this observation bounded and preserve all report/journal timestamps.
+Before closing, stop both M010.027 timers and the candidate browser; leave the
+candidate held and offline, the original service active/file-backed, and no
+staging-only job running unless separately approved.
+
+If any step fails, stop candidate/staging-only processes and timers, preserve
+the exact reports/inventory, leave the candidate held/offline, release only
+the exact source freeze ID with an abort reason, and restore the original
+file-backed service promptly. If candidate activation completed but no
+managed application write occurred, a candidate abort requires the exact
+reviewed plan and separately approved `store-authority abort`; do not infer
+permission from this handoff. If any managed SQLite-only application write
+occurred, do not abort or switch back to files: preserve SQLite and applicable
+WAL/SHM plus verified snapshots, pause writes, and use separately authorized
+forward recovery.
+
+### Separate cutover checklist (not authorized by M010.027)
+
+Even a GO recommendation is not cutover permission. Before any later
+separately approved canary:
+
+1. Recheck live service identity/authority, source registry, all registered
+   source inventories, selection, dispatch and approval evidence. If any
+   source moved, re-freeze and re-import/restage; if candidate binding or
+   generation changes, take and verify a new candidate-bound backup and
+   separate restore. Never reuse this review's disposable or stale
+   fingerprints.
+2. Verify fresh recoverable coverage for the exact final candidate, exact
+   restore checks, operator-controlled hold, independent browser/CLI identity,
+   effective pinned service/runtime/coverage configuration, and healthy
+   original service. Obtain fresh operator confirmation and explicit
+   authorization to release only the candidate hold.
+3. Perform read/health checks before a separately authorized canary write.
+   Document and rehearse the pre-first-write return path: pause/quiesce
+   writers, use the exact approved candidate abort plan, retain file-backed
+   state as authoritative, release the exact freeze, and verify the original
+   service is healthy with `legacy_files`.
+4. After the first SQLite-only application write, preserve the managed
+   database and applicable WAL/SHM and all verified snapshots. Never switch
+   back to files or use candidate abort; pause writes and use forward recovery
+   with a separate restore and deterministic reconciliation of post-snapshot
+   writes.
+
+The one-hour maximum-loss objective depends on every managed writer using the
+effective guard and recoverable verified coverage. It is not a restore-time
+or zero-loss guarantee; the isolated M010.021 forward-recovery proof does not
+establish production recovery time or loss behavior.
+
+**Current recommendation: GO for a separately authorized cutover review, not
+for cutover execution.** The exact M010.027 approval/import and source parity,
+original file-backed service restoration, operator-controlled candidate hold,
+read-only candidate browser/CLI identity (including restart), verified NAS
+backup and separate restore all passed. The candidate remains bound to
+generation `2e329ee9e60c16591a1b4afd1d1bafba`, config
+`9531d8b9346afbadd00d19edc19dc5dcb57c57db9107b3f5128a9b7173508a77`, DB
+identity `2bff56f7c5d61d0c3680f55bdc7f02586ae98389f154f7229d3a2f184ead1033`,
+and M010.027 selection r104.
+
+The production source capture used freeze ID
+`834eb6870d81ab90bb08a2eda69c7b49`, source-inventory SHA-256
+`dcff46f803a14888ee1c3cffe642d5b788cd04bec42e30c9eb84b466e37f265a`, and
+activation-plan SHA-256
+`b248e981490a3e7385debc74cef7b2cf8fef3967d295009735e9464c2c6e0ad5`.
+The 464 import sources matched with zero mismatches/refusals and source parity
+passed. The exact M010.027 approval was imported once and bound to revision
+`bb1fe9fe9df5a6373c6a8b880dad8108`.
+
+The metadata-only `user_version` 3→4→3 initialization preserved main-file
+SHA-256 `90c6f41981d60586d343c3d4b64f764be5fd76a40d91137c20bffb26be535e94`.
+The corrected read-only postflight verified WAL (4,152 B) and SHM (32,768 B)
+persistence, `user_version=3`, `schema_version=31`, all 15 application-table
+digests, unchanged approval binding, integrity `ok`, and zero FK violations.
+
+The timer preflight required two in-scope fixes: mount-root validation now
+requires only read/traverse access, while the approved destination retains its
+write-access check; mountinfo validation also permits a nested systemd
+destination mount only when its filesystem, CIFS source, and mounted child
+root prove the exact approved destination. Wrong shares, wrong child paths,
+unexpected nested mounts, and ambiguous mount entries are rejected. The
+focused backup suite passes (12 tests). The initial 06:45 and 16:06 timer
+failures occurred before any NAS write and are resolved by these fixes.
+
+The installed systemd backup service passed in its real sandbox at 16:15 UTC.
+Calendar backup firings at 16:30:06 and 16:45:07 succeeded 15 minutes apart;
+both manifests were verified with integrity `ok`, zero FK violations, and
+coverage bound to the exact candidate. The monitor succeeded on its five-minute
+cadence. Timer backup manifests were
+`repo-control-20261117T163004093777Z-ca586c2f7c9a` and
+`repo-control-20261117T164504088195Z-932598b4af21`. For the controlled
+warning/recovery check, the backup timer was
+stopped after the 16:45 backup while the monitor continued. It reported
+healthy coverage at 20 minutes, then the expected warning at 25 minutes
+(17:10:06). A verified one-shot recovery backup completed at 17:12:34, and the
+17:15:07 monitor reported healthy coverage at 2.5 minutes. Its manifest was
+`repo-control-20261117T171233197682Z-f49fd0db1300`.
+
+At close, both M010.027 timers are stopped and not enabled; no candidate
+browser or staging job is running. The candidate remains held and offline,
+with no hold release, application write, live authority switch, or cutover
+performed. The original service is active on `legacy_files`. Before any later
+cutover, recheck source drift/parity and the final candidate binding, obtain
+fresh verified coverage and operator confirmation, and follow the separate
+cutover/abort checklist above. The one-hour maximum-loss objective depends on
+the effective guard and recoverable coverage; it is not restore time or a
+zero-loss guarantee. The Vocab App dirty shared-procedure files remain
+accepted as-is and untouched; the live Repo Control service was not changed.
