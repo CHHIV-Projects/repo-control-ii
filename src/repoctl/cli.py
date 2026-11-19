@@ -220,6 +220,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply the exact approved-prompt dirty-path preflight for the bound InformationStore",
     )
     coder_verify_parser.add_argument(
+        "--expected-dirty-file",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("PATH", "SHA256"),
+        help=(
+            "Allow one exact unstaged modified or untracked regular file during managed verification; "
+            "repeat for each path"
+        ),
+    )
+    coder_verify_parser.add_argument(
         "--acknowledge-git-boundary",
         action="store_true",
         help="Record the agent's acknowledgement of the no-Git-mutation boundary",
@@ -1293,6 +1304,11 @@ def _main(
         )
 
         try:
+            expected_dirty_files: dict[str, str] = {}
+            for path, digest in args.expected_dirty_file:
+                if path in expected_dirty_files:
+                    raise CoderInterfaceError(f"Duplicate expected dirty-file path: {path}.")
+                expected_dirty_files[path] = digest
             result = submit_coder_context_verification(
                 args.trigger,
                 git_boundary_acknowledged=args.acknowledge_git_boundary,
@@ -1311,6 +1327,7 @@ def _main(
                 expected_prompt_revision_id=args.expected_prompt_revision_id,
                 expected_prompt_sha256=args.expected_prompt_sha256,
                 allow_materialized_prompt=args.allow_materialized_prompt,
+                expected_dirty_files=expected_dirty_files,
             )
         except CoderInterfaceError as exc:
             print(f"coder verification failed: {exc}", file=sys.stderr)

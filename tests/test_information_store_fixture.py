@@ -4,6 +4,7 @@ import unittest
 from copy import deepcopy
 from contextlib import closing, redirect_stderr, redirect_stdout
 from dataclasses import replace
+import hashlib
 from io import StringIO
 import json
 from pathlib import Path
@@ -1730,6 +1731,57 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
             retry_exit = cli_main(verify_arguments, information_store_clients=clients)
         self.assertEqual(retry_exit, 0)
         self.assertTrue(json.loads(retry_output.getvalue())["idempotent"])
+
+        preserved_path = repository.path / "src/repoctl/cli.py"
+        preserved_digest = hashlib.sha256(preserved_path.read_bytes()).hexdigest()
+        preserved_sources = deepcopy(sources)
+        preserved_sources["git_state"]["working_tree"]["entries"] = [
+            {"kind": "ordinary", "xy": ".M", "path": "src/repoctl/cli.py"}
+        ]
+        preserved_output = StringIO()
+        with (
+            patch("repoctl.workflow.coder_interface.collect_verification_sources", return_value=preserved_sources),
+            patch("repoctl.workflow.runtime_compatibility.http.client.HTTPConnection", return_value=connection),
+            redirect_stdout(preserved_output),
+        ):
+            preserved_exit = cli_main(
+                verify_arguments + [
+                    "--expected-dirty-file", "src/repoctl/cli.py", preserved_digest,
+                ],
+                information_store_clients=clients,
+            )
+        self.assertEqual(preserved_exit, 0)
+        preserved_preflight = json.loads(preserved_output.getvalue())["authority_snapshot"][
+            "information_store"
+        ]["materialized_prompt_preflight"]
+        self.assertEqual(
+            preserved_preflight["allowed_dirty_files"],
+            [{
+                "path": "src/repoctl/cli.py",
+                "status": "modified",
+                "content_sha256": preserved_digest,
+            }],
+        )
+        for extra_arguments, expected_message in (
+            (["--expected-dirty-file", "src/repoctl/cli.py", "0" * 64], "hash-mismatched"),
+            ([
+                "--expected-dirty-file", "src/repoctl/cli.py", preserved_digest,
+                "--expected-dirty-file", "src/repoctl/cli.py", preserved_digest,
+            ], "Duplicate expected dirty-file path"),
+        ):
+            error_output = StringIO()
+            event_count = store.snapshot()["event_count"]
+            with (
+                patch("repoctl.workflow.coder_interface.collect_verification_sources", return_value=preserved_sources),
+                redirect_stderr(error_output),
+            ):
+                rejected_exit = cli_main(
+                    verify_arguments + extra_arguments,
+                    information_store_clients=clients,
+                )
+            self.assertEqual(rejected_exit, 2)
+            self.assertIn(expected_message, error_output.getvalue())
+            self.assertEqual(store.snapshot()["event_count"], event_count)
 
         materialized_sources = deepcopy(sources)
         materialized_sources["git_state"]["working_tree"]["entries"] = [

@@ -16,7 +16,7 @@ from .lifecycle import (
 
 
 DEFAULT_RUNTIME_URL = "http://127.0.0.1:8765"
-RUNTIME_TIMEOUT_SECONDS = 1.5
+RUNTIME_TIMEOUT_SECONDS = 5.0
 MAX_RUNTIME_RESPONSE_BYTES = 8_192
 _INSTANCE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 PRODUCER_CONTRACT_ID = "repoctl-workflow-event-writer:v1"

@@ -983,7 +983,7 @@ def create_web_app(
                 ) from exc
             result = refresh_graph(
                 repository,
-                effective_state_root,
+                effective_scanner_cache_root,
                 actor="po_lifecycle",
                 milestone_id=candidate["milestone_id"],
                 registry_generation=g.repository_registry_generation,
@@ -1009,7 +1009,7 @@ def create_web_app(
                     "Supported source appeared after the intelligence availability check; refresh and start again."
                 )
             return
-        current = graph_status(repository, artifact_root(repository, effective_state_root))
+        current = graph_status(repository, artifact_root(repository, effective_scanner_cache_root))
         expected = baseline["graph"]
         if (
             current["state"] != "CURRENT"
@@ -1966,7 +1966,7 @@ def create_web_app(
         with repository_action_lock:
             dispatch_preconditions({"expected_repository_key": key, "expected_generation": expected})
             payload = intelligence_query(
-                current_repository(), effective_state_root, arguments,
+                current_repository(), effective_scanner_cache_root, arguments,
                 consumer="Coder" if request.path.startswith("/api/coder/") else "Architect",
                 registry_generation=g.repository_registry_generation,
             )
@@ -2083,7 +2083,7 @@ def create_web_app(
 
             result = refresh_graph(
                 repository,
-                effective_state_root,
+                effective_scanner_cache_root,
                 actor="coder",
                 milestone_id=candidate["milestone_id"],
                 registry_generation=g.repository_registry_generation,
@@ -2105,14 +2105,14 @@ def create_web_app(
         with repository_action_lock:
             dispatch_preconditions(payload)
             intelligence_measurements.rate(
-                artifact_root(current_repository(), effective_state_root),
+                artifact_root(current_repository(), effective_scanner_cache_root),
                 payload["use_id"], payload["rating"], payload["inspected"],
             )
         return _architect_json_response({"outcome": "OK"})
 
     @app.get("/intelligence")
     def intelligence_page():
-        root = artifact_root(current_repository(), effective_state_root)
+        root = artifact_root(current_repository(), effective_scanner_cache_root)
         try:
             status = graph_status(current_repository(), root)
         except (IntelligenceError, ScanError, OSError, ValueError, KeyError) as exc:
@@ -2645,7 +2645,7 @@ def create_web_app(
             intelligence_form_preconditions()
             result = refresh_graph(
                 current_repository(),
-                effective_state_root,
+                effective_scanner_cache_root,
                 actor="po_manual",
                 registry_generation=g.repository_registry_generation,
             )
@@ -2669,7 +2669,7 @@ def create_web_app(
             if inspected not in {"", "yes", "no"}:
                 raise IntelligenceError("Invalid inspection flag.")
             intelligence_measurements.rate(
-                artifact_root(current_repository(), effective_state_root),
+                artifact_root(current_repository(), effective_scanner_cache_root),
                 request.form.get("use_id", ""), request.form.get("rating", ""),
                 None if not inspected else inspected == "yes",
             )

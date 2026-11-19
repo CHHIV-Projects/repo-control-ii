@@ -46,7 +46,7 @@ class RuntimeCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "COMPATIBLE")
         self.assertEqual(result["runtime_instance_id"], "a" * 32)
-        constructor.assert_called_once_with("127.0.0.1", 8765, timeout=1.5)
+        constructor.assert_called_once_with("127.0.0.1", 8765, timeout=5.0)
         connection.request.assert_called_once_with(
             "GET", "/healthz", headers={"Accept": "application/json"}
         )

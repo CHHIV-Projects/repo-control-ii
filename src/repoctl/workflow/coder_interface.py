@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from ..scanner.core import DEFAULT_STATE_ROOT, StateArtifactLockError
 from ..scanner.git_ops import ScanError, validate_git_worktree
@@ -1194,6 +1194,7 @@ def _submit_information_store_verification(
     expected_prompt_revision_id: str | None,
     expected_prompt_sha256: str | None,
     allow_materialized_prompt: bool,
+    expected_dirty_files: Mapping[str, str],
 ) -> dict[str, Any]:
     from ..information_store import InformationStoreError
     from .approved_prompt_preflight import (
@@ -1319,22 +1320,24 @@ def _submit_information_store_verification(
                 "modified"
             )
             dirty = {"path": path, "status": status_name}
-            if path == identity.prompt_path and allow_materialized_prompt:
-                worktree_prompt = entry.path / identity.prompt_path
+            if (
+                path == identity.prompt_path and allow_materialized_prompt
+            ) or path in expected_dirty_files:
+                worktree_prompt = entry.path / path
                 try:
                     resolved = worktree_prompt.resolve(strict=True)
                     if not resolved.is_relative_to(entry.path) or not resolved.is_file():
-                        raise CoderInterfaceError("Materialized prompt is not a contained regular file.")
+                        raise CoderInterfaceError("Expected dirty path is not a contained regular file.")
                     if any(
-                        (entry.path.joinpath(*Path(identity.prompt_path).parts[:index])).is_symlink()
-                        for index in range(1, len(Path(identity.prompt_path).parts) + 1)
+                        (entry.path.joinpath(*Path(path).parts[:index])).is_symlink()
+                        for index in range(1, len(Path(path).parts) + 1)
                     ):
-                        raise CoderInterfaceError("Materialized prompt cannot contain symlinked path components.")
+                        raise CoderInterfaceError("Expected dirty path cannot contain symlinked path components.")
                     content = resolved.read_bytes()
                 except OSError as exc:
-                    raise CoderInterfaceError(f"Cannot read the materialized prompt: {exc}") from exc
+                    raise CoderInterfaceError(f"Cannot read the expected dirty path: {exc}") from exc
                 if len(content) > 2 * 1024 * 1024:
-                    raise CoderInterfaceError("Materialized prompt exceeds the supported identity size.")
+                    raise CoderInterfaceError("Expected dirty path exceeds the supported identity size.")
                 dirty["content_sha256"] = hashlib.sha256(content).hexdigest()
             dirty_entries.append(dirty)
         try:
@@ -1350,11 +1353,13 @@ def _submit_information_store_verification(
             if information_store_clients.fixture_only:
                 preflight = validate_fixture_prompt_preflight(
                     prompt_binding, observation, dirty_entries, fixture_only=True,
+                    expected_dirty_files=expected_dirty_files,
                 )
             else:
                 preflight = validate_managed_prompt_preflight(
                     prompt_binding, observation, dirty_entries,
                     managed_authority=binding["authority"] == "sqlite_managed",
+                    expected_dirty_files=expected_dirty_files,
                 )
         except PromptPreflightError as exc:
             raise CoderInterfaceError(f"Materialized-prompt preflight failed: {exc}") from exc
@@ -1515,6 +1520,7 @@ def submit_coder_context_verification(
     expected_prompt_revision_id: str | None = None,
     expected_prompt_sha256: str | None = None,
     allow_materialized_prompt: bool = False,
+    expected_dirty_files: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(trigger, str) or trigger not in VERIFICATION_TRIGGERS:
         raise CoderInterfaceError("Choose NEW, HANDOFF, AUTHORITY_TRANSITION, or RECOVERY as the trigger.")
@@ -1529,6 +1535,11 @@ def submit_coder_context_verification(
         or not expected_milestone_id.strip()
     ):
         raise CoderInterfaceError("Expected repository key and milestone ID are required.")
+    if expected_dirty_files is None:
+        expected_dirty_files = {}
+    if not isinstance(expected_dirty_files, Mapping):
+        raise CoderInterfaceError("Expected dirty-file bindings must be a mapping.")
+    expected_dirty_files = dict(expected_dirty_files)
 
     if information_store_clients is not None:
         return _submit_information_store_verification(
@@ -1549,6 +1560,7 @@ def submit_coder_context_verification(
             expected_prompt_revision_id=expected_prompt_revision_id,
             expected_prompt_sha256=expected_prompt_sha256,
             allow_materialized_prompt=allow_materialized_prompt,
+            expected_dirty_files=expected_dirty_files,
         )
     if any(
         value is not None
@@ -1556,7 +1568,7 @@ def submit_coder_context_verification(
             expected_selection_id, expected_selection_revision, expected_prompt_document_id,
             expected_prompt_revision_id, expected_prompt_sha256,
         )
-    ) or allow_materialized_prompt:
+    ) or allow_materialized_prompt or expected_dirty_files:
         raise CoderInterfaceError("InformationStore verification options require an injected store authority.")
 
     entry, effective_state_root, candidate, workflow = _resolve_context_and_workflow(

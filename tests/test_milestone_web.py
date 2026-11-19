@@ -398,6 +398,63 @@ class MilestoneWebTests(unittest.TestCase):
         self.assertNotIn("def entry", receipt_text)
         self.assertNotIn('"query"', receipt_text)
 
+    def test_start_baseline_uses_separate_scanner_cache_root(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        repository = _repo(root, "repo", "R003.01")
+        source = repository / "src" / "entry.py"
+        source.parent.mkdir()
+        source.write_text("def entry():\n    return True\n", encoding="utf-8")
+        _git(repository, "add", "src/entry.py")
+        _git(repository, "commit", "-qm", "add source")
+        state_root = root / "state"
+        scanner_cache_root = root / "scanner-cache"
+        client = create_web_app(
+            repository_path=str(repository),
+            state_root=state_root,
+            scanner_cache_root=scanner_cache_root,
+        ).test_client()
+        client.get("/milestones")
+        csrf = _csrf(client)
+        self.assertEqual(client.post(
+            "/milestones/select",
+            data={
+                "csrf_token": csrf,
+                "repository_key": "default",
+                "repository_generation": "0",
+                "milestone_id": "R003.01",
+            },
+        ).status_code, 302)
+        selection = load_milestone_selection(repository, state_root)["selection"]
+        workflow = load_milestone_workflow(repository, state_root, "docs/milestones", selection)
+        with mock.patch(
+            "repoctl.intelligence.service.GraphifyProvider",
+            return_value=FakeGraphProvider(),
+        ):
+            response = client.post(
+                "/milestones/workflow/event",
+                data={
+                    "csrf_token": csrf,
+                    "repository_key": "default",
+                    "repository_generation": "0",
+                    "milestone_id": selection["milestone_id"],
+                    "prompt_path": selection["prompt_path"],
+                    "expected_prompt_identity": workflow["prompt_identity"],
+                    "expected_phase": "PLANNING",
+                    "expected_event_count": "0",
+                    "event_type": "approve_and_start",
+                    "summary": "Start with a separately rooted scanner cache.",
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        entry = RepositoryRegistry.single(repository).active()
+        self.assertEqual(
+            graph_status(entry, artifact_root(entry, scanner_cache_root))["state"],
+            "CURRENT",
+        )
+        self.assertFalse((state_root / "intelligence").exists())
+
     def test_start_baseline_current_missing_failure_and_ready_parity(self) -> None:
         def create_fixture(name: str):
             temporary = tempfile.TemporaryDirectory()

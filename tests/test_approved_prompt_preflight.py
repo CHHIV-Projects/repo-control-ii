@@ -33,12 +33,15 @@ class ApprovedPromptPreflightTests(unittest.TestCase):
             source_mode="database_revision_materialized",
         )
 
-    def _validate(self, observation=None, dirty_entries=(), *, fixture_only=True):
+    def _validate(
+        self, observation=None, dirty_entries=(), *, fixture_only=True, expected_dirty_files=None,
+    ):
         return validate_fixture_prompt_preflight(
             self.binding,
             observation or self.observation,
             dirty_entries,
             fixture_only=fixture_only,
+            expected_dirty_files=expected_dirty_files,
         )
 
     def test_exact_approved_materialized_prompt_is_the_only_allowed_dirty_path(self) -> None:
@@ -116,6 +119,30 @@ class ApprovedPromptPreflightTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 with self.assertRaises(PromptPreflightError):
                     self._validate(dirty_entries=[entry])
+
+    def test_exact_hash_bound_dirty_baseline_is_allowed_and_fail_closed(self) -> None:
+        path = "src/preserved-repair.py"
+        digest = "c" * 64
+        result = self._validate(
+            dirty_entries=[{"path": path, "status": "modified", "content_sha256": digest}],
+            expected_dirty_files={path: digest},
+        )
+        self.assertEqual(
+            result["allowed_dirty_files"],
+            [{"path": path, "status": "modified", "content_sha256": digest}],
+        )
+        for dirty_entries, expected in (
+            ([{"path": path, "status": "modified", "content_sha256": "d" * 64}], {path: digest}),
+            ([{"path": path, "status": "staged", "content_sha256": digest}], {path: digest}),
+            ([], {path: digest}),
+            ([{"path": path, "status": "modified", "content_sha256": digest}], {}),
+        ):
+            with self.subTest(dirty_entries=dirty_entries, expected=expected):
+                with self.assertRaises(PromptPreflightError):
+                    self._validate(dirty_entries=dirty_entries, expected_dirty_files=expected)
+
+        with self.assertRaisesRegex(PromptPreflightError, "targets the prompt"):
+            self._validate(expected_dirty_files={self.binding.prompt_path: self.binding.content_sha256})
 
     def test_nonfixture_callers_cannot_enable_the_exception(self) -> None:
         with self.assertRaisesRegex(PromptPreflightError, "disposable fixtures"):

@@ -44,10 +44,14 @@ def validate_fixture_prompt_preflight(
     dirty_entries: Sequence[Mapping[str, str]],
     *,
     fixture_only: bool,
+    expected_dirty_files: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     if fixture_only is not True:
         raise PromptPreflightError("This prompt-preflight contract is restricted to disposable fixtures.")
-    return _validate_prompt_preflight(expected, observed, dirty_entries, authority="fixture_only")
+    return _validate_prompt_preflight(
+        expected, observed, dirty_entries, authority="fixture_only",
+        expected_dirty_files=expected_dirty_files,
+    )
 
 
 def validate_managed_prompt_preflight(
@@ -56,10 +60,14 @@ def validate_managed_prompt_preflight(
     dirty_entries: Sequence[Mapping[str, str]],
     *,
     managed_authority: bool,
+    expected_dirty_files: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     if managed_authority is not True:
         raise PromptPreflightError("Managed prompt preflight requires the verified SQLite authority.")
-    return _validate_prompt_preflight(expected, observed, dirty_entries, authority="sqlite_managed")
+    return _validate_prompt_preflight(
+        expected, observed, dirty_entries, authority="sqlite_managed",
+        expected_dirty_files=expected_dirty_files,
+    )
 
 
 def _validate_prompt_preflight(
@@ -68,6 +76,7 @@ def _validate_prompt_preflight(
     dirty_entries: Sequence[Mapping[str, str]],
     *,
     authority: str,
+    expected_dirty_files: Mapping[str, str] | None,
 ) -> dict[str, object]:
     if expected != observed.binding:
         raise PromptPreflightError("Observed repository, milestone, selection, or prompt revision does not match.")
@@ -97,9 +106,25 @@ def _validate_prompt_preflight(
         raise PromptPreflightError("Prompt source mode is unsupported.")
     if not isinstance(dirty_entries, Sequence) or isinstance(dirty_entries, (str, bytes)):
         raise PromptPreflightError("Git dirty-entry observations must be a sequence.")
+    expected_dirty = expected_dirty_files or {}
+    if not isinstance(expected_dirty, Mapping):
+        raise PromptPreflightError("Expected dirty-file bindings must be a mapping.")
+    for path, digest in expected_dirty.items():
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or path == expected.prompt_path
+            or not isinstance(digest, str)
+            or not _SHA256.fullmatch(digest)
+        ):
+            raise PromptPreflightError("An expected dirty-file binding is malformed or targets the prompt.")
 
     seen_paths: set[str] = set()
     allowed_prompt_dirty = False
+    allowed_dirty_files: list[dict[str, str]] = []
     for entry in dirty_entries:
         if not isinstance(entry, Mapping):
             raise PromptPreflightError("A Git dirty-entry observation has an invalid shape.")
@@ -118,6 +143,15 @@ def _validate_prompt_preflight(
         ):
             raise PromptPreflightError("A Git dirty-entry observation is invalid or duplicated.")
         seen_paths.add(path)
+        if path in expected_dirty:
+            if status not in _PROMPT_ARTIFACT_STATUSES or content_sha256 != expected_dirty[path]:
+                raise PromptPreflightError(
+                    f"Expected dirty file is staged, conflicted, or hash-mismatched: {path}."
+                )
+            allowed_dirty_files.append(
+                {"path": path, "status": status, "content_sha256": content_sha256}
+            )
+            continue
         if path != expected.prompt_path:
             raise PromptPreflightError(f"Unrelated dirty Git path is not permitted: {path}.")
         if observed.source_mode != "database_revision_materialized":
@@ -125,6 +159,10 @@ def _validate_prompt_preflight(
         if status not in _PROMPT_ARTIFACT_STATUSES or content_sha256 != expected.content_sha256:
             raise PromptPreflightError("The materialized prompt path is staged, conflicted, or hash-mismatched.")
         allowed_prompt_dirty = True
+
+    missing = sorted(set(expected_dirty) - seen_paths)
+    if missing:
+        raise PromptPreflightError(f"Expected dirty Git path is absent: {missing[0]}.")
 
     return {
         "accepted": True,
@@ -136,5 +174,6 @@ def _validate_prompt_preflight(
         "revision_id": expected.revision_id,
         "content_sha256": expected.content_sha256,
         "allowed_prompt_dirty": allowed_prompt_dirty,
+        "allowed_dirty_files": sorted(allowed_dirty_files, key=lambda item: item["path"]),
         "unrelated_dirty_paths": [],
     }
