@@ -1,0 +1,11 @@
+[Unit]
+Description=Check M010.028 R8 managed Repo Control NAS backup health every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=1min
+Persistent=true
+Unit=repo-control-backup-monitor-m010028-r8.service
+
+[Install]
+WantedBy=timers.target

@@ -2131,3 +2131,579 @@ cutover/abort checklist above. The one-hour maximum-loss objective depends on
 the effective guard and recoverable coverage; it is not restore time or a
 zero-loss guarantee. The Vocab App dirty shared-procedure files remain
 accepted as-is and untouched; the live Repo Control service was not changed.
+
+## M010.028 preflight — proposed final target, not installed
+
+M010.028 is authorized for preflight and preparation only. The exact approved
+prompt hash is
+`f540e5100054bee731af5f286eff1c2853ce9b0789cd541dc6cbd35f3e05a9b6`;
+M010.027 is CLOSED. Repo Control reports the installed shared procedure
+`CURRENT` at release `1.5.0`; Coder context verification schema 2 is
+supported. The current service remains active on `legacy_files`.
+Its installed unit is `/etc/systemd/system/repo-control.service`, has no
+drop-ins or `EnvironmentFile`, and was observed with SHA-256
+`76b2e8ed878ba7952bb495388c49dc022aa4707fd2015e1cd336ce2ef73e5ce3`.
+It starts the repository-local `.venv` on CPython 3.12.3 / SQLite 3.45.1
+(SQLite source ID `2024-01-30 16:01:20 e876e51a0ed5c5b3126f52e532044363a014bc594cfefa87ffb5b82257ccalt1`),
+not the reviewed CPython 3.12.16 / SQLite 3.51.3 runtime. The live health
+endpoint advertises prompt-approval evidence schema 1 and reports
+`legacy_files` with no managed binding. The installed unit differs from the
+tracked `ops/systemd/repo-control.service`; preserve the exact installed file
+and recheck its hash and drop-ins immediately before any authorized switch.
+
+The registered-source drift check found Vocab App HEAD and its six modified
+shared-procedure files plus untracked `AGENTS.md` match the captured M010.027
+pre-import state. Photo Organizer HEAD matches its captured HEAD and has no
+worktree changes (its current `main` is one commit ahead of the recorded
+`origin/main`). Repo Control II remains on
+`db-workflow-persistence-architecture` at
+`794a57ae61ad5845b2862c5fffaa4cb2ce9b456a`. M010.028's prompt/workflow and
+the current preflight proposals are new source records; the test-result event
+events were added to its workflow sidecar. All require a fresh import after
+preparation is complete. The current NAS mount remains
+`//192.168.1.171/ProjectBackups` (CIFS) at
+`/mnt/nas/repo-control`; the accepted destination and parent paths remain
+owned by `chuck:chuck` mode `0700`. M010.024 and M010.027 candidate DB/WAL
+files remain root-controlled mode `0440`, SHM mode `0660`, and their staging
+timers are inactive. No production backup or monitor timer is currently
+loaded or active.
+
+After later workflow events made the first M010.028 candidate stale, it was
+preserved held as evidence. Preparation of `m010.028-r2` was aborted before
+binding because a precheck incorrectly expected old selection IDs; the
+importer generates new IDs for each candidate. The following replacement paths
+identify a fresh candidate proposal; they are not evidence of an import,
+activation, hold, or backup:
+
+| Purpose | M010.028 path |
+|---|---|
+| Candidate base | `/var/lib/repo-control-staging/m010.028-r3` |
+| Prepared database | `/var/lib/repo-control-staging/m010.028-r3/prepared/managed-prepared.sqlite3` |
+| Candidate state root | `/var/lib/repo-control-staging/m010.028-r3/state` |
+| Scanner cache | `/home/chuck/.cache/repoctl/m010.028-r3/scanner` |
+| Reports and evidence | `/home/chuck/.local/state/repo-control-staging/m010.028-r3` |
+| Backup staging / coverage | `/home/chuck/.local/state/repo-control-backup/staging/m010.028-r3` |
+| Separate restore root | `/home/chuck/.local/state/repo-control-backup/restore/m010.028-r3` |
+| Candidate browser during checks | `127.0.0.1:18768` |
+| Final browser | `127.0.0.1:8765` |
+| Browser environment target | `/etc/repo-control/repo-control-m010028.env` |
+| Backup environment target | `/etc/repo-control/backup-m010028.env` |
+
+The proposed browser unit pins the reviewed runtime, explicitly names the
+candidate state root, scanner cache and coverage file, and grants sandbox
+write access only to the candidate DB/WAL/SHM, state lock and scanner cache.
+The filesystem hold remains the independent write barrier until Gate B.
+Candidate-specific backup and monitor units point only at M010.028 and the
+accepted NAS subtree, with 15-minute and five-minute timers respectively.
+The proposals are
+[repo-control-m010028-managed.service](../../ops/systemd/repo-control-m010028-managed.service),
+[repo-control-m010028.env.example](../../ops/repo-control-m010028.env.example),
+[backup.m010028.env.example](../../ops/backup.m010028.env.example),
+[repo-control-backup-m010028.service](../../ops/systemd/repo-control-backup-m010028.service),
+[repo-control-backup-m010028.timer](../../ops/systemd/repo-control-backup-m010028.timer),
+[repo-control-backup-monitor-m010028.service](../../ops/systemd/repo-control-backup-monitor-m010028.service), and
+[repo-control-backup-monitor-m010028.timer](../../ops/systemd/repo-control-backup-monitor-m010028.timer).
+They are uninstalled proposals; timer syntax is not evidence of installation
+or firing. Before the first candidate was prepared, `systemd-analyze verify`
+returned success for the original proposed units, with only an unrelated
+pre-existing Synology unit warning about `/var/run` versus `/run`. The
+replacement paths require their own verification. Neither syntax check proves
+an installed sandbox, live write guard, or timer firing.
+
+### R4 proposals prepared before capture
+
+The R3 candidate is retired and remains preserved. The following separate R4
+files now use only the planned R4 candidate paths; they do not overwrite or
+modify the R3 proposals:
+
+- [repo-control-m010028-r4-managed.service](../../ops/systemd/repo-control-m010028-r4-managed.service)
+- [repo-control-m010028-r4.env.example](../../ops/repo-control-m010028-r4.env.example)
+- [backup.m010028-r4.env.example](../../ops/backup.m010028-r4.env.example)
+- [repo-control-backup-m010028-r4.service](../../ops/systemd/repo-control-backup-m010028-r4.service)
+- [repo-control-backup-m010028-r4.timer](../../ops/systemd/repo-control-backup-m010028-r4.timer)
+- [repo-control-backup-monitor-m010028-r4.service](../../ops/systemd/repo-control-backup-monitor-m010028-r4.service)
+- [repo-control-backup-monitor-m010028-r4.timer](../../ops/systemd/repo-control-backup-monitor-m010028-r4.timer)
+
+They are uninstalled proposals. The backup example contains exactly the 12
+approved non-secret path, identity, mount-source and age bindings, with no
+credential fields. After the candidate is prepared, the operator-installed
+file is exclusively `/etc/repo-control/backup-m010028-r4.env`, owned by
+`root:chuck` mode `0640`; the publisher check requires every parent directory
+to be root-owned and writable only by root. Existing backup settings and NAS
+credentials remain unchanged. The systemd syntax check passed with the same
+unrelated existing Synology `/var/run` warning noted above. This does not
+establish that R4 exists, is held, has a bound publisher, or has a backup or
+restore. Those checks follow the fresh import and exact R4 binding.
+
+### R6 replacement — held, source-stale evidence
+
+R5 remains held as evidence, but legacy workflow records after its capture
+made it source-stale. Its verified recovery point covers R5, not R6.
+Before import, these five roots must be empty, real `chuck:chuck 0700`
+directories with importer read, write and traversal access:
+
+- `/var/lib/repo-control-staging/m010.028-r6`
+- `/home/chuck/.local/state/repo-control-staging/m010.028-r6`
+- `/home/chuck/.cache/repoctl/m010.028-r6`
+- `/home/chuck/.local/state/repo-control-backup/staging/m010.028-r6`
+- `/home/chuck/.local/state/repo-control-backup/restore/m010.028-r6`
+
+The importer needs to write the candidate root. A separately approved hold
+later protects the candidate's database and WAL. The R6-only proposals are:
+
+- [repo-control-m010028-r6-managed.service](../../ops/systemd/repo-control-m010028-r6-managed.service)
+- [repo-control-m010028-r6.env.example](../../ops/repo-control-m010028-r6.env.example)
+- [backup.m010028-r6.env.example](../../ops/backup.m010028-r6.env.example)
+- [repo-control-backup-m010028-r6.service](../../ops/systemd/repo-control-backup-m010028-r6.service)
+- [repo-control-backup-m010028-r6.timer](../../ops/systemd/repo-control-backup-m010028-r6.timer)
+- [repo-control-backup-monitor-m010028-r6.service](../../ops/systemd/repo-control-backup-monitor-m010028-r6.service)
+- [repo-control-backup-monitor-m010028-r6.timer](../../ops/systemd/repo-control-backup-monitor-m010028-r6.timer)
+
+The R6 candidate was imported, bound, activated in isolation, and held. The
+Product Owner approved `root:chuck 0640` for only the new non-secret
+`/etc/repo-control/backup-m010028-r6.env`. The operator installed the R6
+publisher files; binding passed before one backup-service firing. A separate
+restore passed integrity, foreign-key, binding, approval and full source
+parity checks in 3.351 seconds. The backup wrapper reported STOP; independent
+journal and recovery-point checks verified one successful firing, but the
+exact wrapper failure is unproven. It was not retried. R6 publisher services
+are inactive and timers are inactive and disabled.
+
+The required B5 bug, test and classification records changed the legacy
+workflow after capture. R6 is therefore source-stale and must not be used for
+Gate A. Preserve its hold, backup, restore and evidence; a replacement
+candidate needs a fresh capture and its own binding and recovery proof.
+Legacy remains live, and the Product Owner stood down the external-writer
+pause. The R6 recovery point's 20-minute freshness deadline was
+2026-11-18 2:15:16 p.m. Pacific.
+
+### R7 replacement proposal — preparation only
+
+Before import, all five R7 roots must be empty, real `chuck:chuck 0700`
+directories with importer read, write and traversal access:
+
+- `/var/lib/repo-control-staging/m010.028-r7`
+- `/home/chuck/.local/state/repo-control-staging/m010.028-r7`
+- `/home/chuck/.cache/repoctl/m010.028-r7`
+- `/home/chuck/.local/state/repo-control-backup/staging/m010.028-r7`
+- `/home/chuck/.local/state/repo-control-backup/restore/m010.028-r7`
+
+The four home directories were created by the importer and the first root by
+the operator. All five then passed independent importer metadata, ACL, access
+and emptiness checks; repeat those checks before capture. The R7-only
+proposals are:
+
+- [repo-control-m010028-r7-managed.service](../../ops/systemd/repo-control-m010028-r7-managed.service)
+- [repo-control-m010028-r7.env.example](../../ops/repo-control-m010028-r7.env.example)
+- [backup.m010028-r7.env.example](../../ops/backup.m010028-r7.env.example)
+- [repo-control-backup-m010028-r7.service](../../ops/systemd/repo-control-backup-m010028-r7.service)
+- [repo-control-backup-m010028-r7.timer](../../ops/systemd/repo-control-backup-m010028-r7.timer)
+- [repo-control-backup-monitor-m010028-r7.service](../../ops/systemd/repo-control-backup-monitor-m010028-r7.service)
+- [repo-control-backup-monitor-m010028-r7.timer](../../ops/systemd/repo-control-backup-monitor-m010028-r7.timer)
+
+The units passed syntax verification with the same unrelated Synology
+`/var/run` warning. The backup proposal contains only the 12 permitted
+non-secret bindings, and the prospective settings directory's ancestors are
+root-controlled. The Product Owner approved `root:chuck 0640` in chat for
+the new `/etc/repo-control/backup-m010028-r7.env` only; installation still
+requires separate approval. No R7 import, hold, installed publisher, backup,
+restore or service switch has occurred.
+
+On 2026-11-18, the importer rechecked all five empty roots and access; the
+legacy service was healthy and unfrozen, its saved unit matched, the NAS
+destination was accessible, and prior staging publishers were inactive with
+timers disabled. The held R6 inventory and protected hashes remained
+unchanged. A conditional 2026-11-19 capture window was superseded by the
+Product Owner's request to start sooner. On 2026-11-18, the proposed same-day
+window and external-writer pause were not confirmed. Gates A and B remain
+unapproved. Reverify current authority and all volatile checks in a confirmed
+window; record any required context verification before the final source
+capture, not afterward.
+
+The B4 recovery-check fix uses the reviewed candidate coverage path regardless
+of an inherited shell value and restores that value on success or error.
+The legacy workflow records the fixture result as
+`12415c4844754ea4bc9350ca88697897` and the fix as
+`10b412da4169402fbea3d8ad0963509f`; both precede any R6 capture.
+
+Before any service-file replacement in the confirmed window, compare the live
+unit hash with the recorded value, confirm `DropInPaths` is empty, and copy
+`/etc/systemd/system/repo-control.service` into the run-owned reports
+directory. If the hash, fragment path, or drop-in state differs, stop and
+reconcile the rollback image. Install the proposed browser unit as
+`repo-control.service` only after Gate A. The pre-first-write return is:
+stop the managed service, restore the captured exact unit with root ownership
+and mode `0644`, run `systemctl daemon-reload`, restart the original service,
+and verify active health reports `legacy_files` with a null managed binding.
+Do not use this path after a managed application commit or when commit status
+is uncertain. In those cases preserve DB/WAL/SHM and verified snapshots, pause
+writers, and use reviewed forward recovery.
+
+The R6 freeze probe against the same running legacy instance returned 423 for
+the tested workflow submission, versus 400 without the freeze, and the
+workflow hash did not change. This proves only that tested path, not every
+writer. In the confirmed window, verify behavior again; if the process does
+not honor the freeze, use only the explicitly authorized stop and unchanged
+restart procedure. External and non-cooperating writers require a separately
+confirmed pause. Do not freeze, stop, restart, install units, or switch
+authority during preflight.
+
+Isolated candidate activation uses
+`store-authority activate --expected-plan-sha256 ... --po-confirm` only after
+its separate exact-plan approval; it is not the Gate A live switch. For Gate A,
+retain the data-only switch plan and its approval outside frozen source records
+and use the operator switch helper only after exact plan/window approval.
+Gate B is separate: show the exact target and coverage, then include its
+explicit approval and candidate identity in the one planned M010.028
+`coder-test` event payload. The first managed application write then records
+that decision without an extra approval write. If the event cannot carry the
+evidence or its commit result is ambiguous, stop and follow the prompt's
+forward-recovery boundary; do not retry or use a sidecar/SQL edit.
+
+A local `repoctl mcp-architect` process was also observed configured against
+the loopback service. Although most adapter tools are read-only, it exposes
+typed PROMPT, INSTRUCTION, and RESPONSE proposal submissions that write the
+dispatch ledger. Treat clients able to invoke those submissions as writers
+during source freeze: pause them or explicitly stop the adapter for the
+confirmed window, then recheck dispatch/source inventory. This preflight did
+not test whether that long-running adapter honors a source freeze.
+
+### M010.028 incident: unapproved switch to the held R3 candidate
+
+On 2026-11-17 the copyable Gate A commands in a stand-down handoff (marked
+"do not run now") were executed without Gate A approval. Live authority was
+the held R3 candidate from 22:06:27 to 22:12:38 UTC and served only GET
+requests. The guarded pre-write return restored the saved legacy unit. The
+return verified `legacy_files` health with a null managed binding, an inactive
+freeze, an unchanged hold, and inactive, disabled timers. No managed
+application commit occurred: the R3 DB and WAL stayed `root:chuck 0440` under
+root `0750` directories while the service ran as `chuck` with
+`NoNewPrivileges`, and the 22-path inventory, inodes, and hashes were
+unchanged. The cause of the operator's SSH disconnect is **unproven**. The
+suspected mechanism is a bare `set -euo pipefail` left active in the
+long-lived operator shell. The incident is recorded as a Repo Control bug, and
+its evidence is sealed (0400, `SHA256SUMS`) under
+`~/.local/state/repo-control-staging/m010.028-r3/incident-20261117-unapproved-switch/`.
+R3 is retired as a Gate A target and preserved; it remains held.
+
+### M010.028 Gate A handoff procedure (replaces pasted command blocks)
+
+[gate_a.py](../../ops/m010028/gate_a.py),
+[gate-a-switch.sh](../../ops/m010028/gate-a-switch.sh), and
+[gate-a-return.sh](../../ops/m010028/gate-a-return.sh) replace copyable
+privileged command blocks:
+
+1. **Review is data only.** `gate_a.py review --plan P` validates a strict
+   plan, which allows only exact keys and pattern-checked values, a window of
+   at most four hours, and a 5–120 s readiness bound. It prints the plan hash,
+   the window, and the exact approval phrase
+   `GATE A APPROVED plan_sha256=<sha> window=<start>/<end>`. It executes no
+   programs and cannot reach systemd, which is enforced by an strace test
+   with negative controls. A review never contains executable switch
+   commands. This is the authorized switch-start window, not necessarily
+   the full maintenance window. Its end must be early enough to complete
+   readiness and a safe pre-write return before the agreed safe-stop; a
+   maintenance-window end later than that safe-stop is not a switch deadline.
+2. **Execution requires exact Product Owner approval.** Run
+   `gate_a.py record-approval` only with the Product Owner's verbatim phrase.
+   It writes an O_EXCL `0400` record bound to the plan hash, the window, and
+   the switch and return script hashes. Missing, altered or mismatched
+   approval, an expired window, or changed scripts cause refusal before
+   stopping the service.
+3. **Preflight immediately before switching.** The preflight checks:
+   - the window;
+   - the saved legacy unit (root:root 0644, hash);
+   - that the installed unit is legacy with no drop-ins;
+   - the managed unit and env source hashes;
+   - the managed unit's executable contract and every systemd namespace path:
+     pinned interpreter, CLI module, registry, loopback port, state root,
+     candidate-specific scanner cache, exact non-optional `ReadWritePaths`,
+     hardening directives, scanner ownership/mode, and a one-attempt start
+     limit; every required file or directory must already exist;
+   - the held-path inventory and hashes;
+   - source and registry parity;
+   - that the recovery point covers the expected generation, database
+     identity, and selection;
+   - publisher binding.
+   The recovery check uses the reviewed candidate coverage path even if the
+   operator's shell has no coverage variable or a different inherited value.
+   It restores the caller's environment on both success and failure.
+   The script checks before authentication, repeats the full preflight and
+   exact approval after `sudo -v`, installs the reviewed environment using
+   `sudo -n`, and repeats the preflight and approval immediately before the
+   service stop. Each repeated preflight uses one verified plan and verifies
+   that approval again afterward. Source parity and recovery freshness are
+   checked after the longer publisher checks, and the window is checked again
+   after preflight. Later privileged commands use `sudo -n` so an
+   authentication prompt cannot silently reopen the gap. This does not
+   replace confirmed writer quiescence or guarantee hard real-time execution.
+4. **Operator shell discipline.** Never paste `set -e` or `set -euo pipefail`
+   into an interactive shell. Do not source the scripts; they refuse when
+   sourced. Run exactly:
+   `if bash ops/m010028/gate-a-switch.sh --plan P --approval-record R --approval-sha256 H; then echo "GATE A: PASS"; else echo "GATE A: STOPPED (exit $?)"; fi`.
+   Exit 2 means the service was not stopped; the message states whether
+   managed-environment installation was attempted and may need inspection.
+   Exit 3 means the service may have been stopped; the script prints the
+   return command.
+5. **Bounded readiness.** After start, readiness uses one monotonic plan
+   deadline, reserving 0.1 s for timeout cleanup. The remaining budget bounds
+   `systemctl show`, loopback connection and response reads, and retry sleeps.
+   The health endpoint must respond directly with a successful HTTP status;
+   redirects are not readiness. Operating-system scheduling and local unit-file
+   reads are not hard real-time guarantees. It fails fast on:
+   - a wrong unit path, hash, or drop-in;
+   - a failed state;
+   - any authority or binding field that differs from the plan.
+
+   A unit reported `active` with no listener is not success.
+6. **Return from a fresh SSH session.** `bash ops/m010028/gate-a-return.sh
+   --plan P` works from a new session without inherited shell state. It
+   verifies the saved legacy unit and the held paths before changing
+   anything. After restoring the unit, it requires legacy health, a hold
+   that is still unchanged or shows only expected activity, and an inactive
+   freeze.
+   `gate_a.py held-check` reports one of three outcomes:
+   - `UNCHANGED`: every held hash and the full inventory match.
+   - `EXPECTED_ACTIVITY`: only the WAL-index (`-shm`) content differs, which
+     ordinary readers rewrite. Lock-file `flock`/mtime activity is not
+     compared. The database, WAL, other held files, and every path's type,
+     owner, mode, and inode are unchanged. The return proceeds.
+   - `COMMIT UNCERTAIN` (exit 4): the database or WAL content changed, any
+     path appeared or disappeared (for example a rollback journal), any
+     owner, mode, or inode changed (including a recreated `-shm` or lock
+     file), or a held path could not be read. A WAL-mode commit must change
+     the WAL or database, so only this outcome can hide a commit. The return
+     refuses before any change. If this happens after a switch, the switch
+     exits 4 and does not offer the return. Pause writers and use reviewed
+     forward recovery.
+7. **Publisher binding before the first R4 backup.**
+   `gate_a.py publisher-binding --plan P` must pass before any R4 backup timer
+   or manual backup. It checks:
+   - that the installed backup env binds only to the R4 candidate and its
+     coverage path;
+   - the hashes of the backup and monitor units and their timers;
+   - that the units have no drop-ins;
+   - that `ReadWritePaths` stays within the allowed roots;
+   - that no other `repo-control-backup*` unit is active or enabled.
+
+   Product Owner decision (2026-11-18): the new R4 backup env only is
+   installed as `root:chuck 0640` at the candidate-specific path
+   `/etc/repo-control/backup-m010028-r4.env`. The check enforces that
+   decision's conditions:
+   - every ancestor directory is root-owned and writable only by root;
+   - the file holds exactly the 12 approved non-secret path, identity,
+     mount-source, and age bindings, with no credentials or unknown keys.
+
+   Existing backup env files and the NAS credentials are unchanged and stay
+   root `0600`.
+
+The fixture suite is
+[test_m010028_gate_a.py](../../tests/test_m010028_gate_a.py). It stubs sudo,
+install, and systemctl, fakes root ownership, and uses a temporary loopback
+sshd. It does not exercise the live privileged path.
+
+### M010.028 R7 failed-start investigation and corrective design
+
+Gate A on 2026-11-18 did not reach Repo Control application startup. The
+reviewed R7 unit named
+`/home/chuck/.cache/repoctl/m010.028-r7/scanner` in both
+`--scanner-cache-root` and `ReadWritePaths`, but preparation created and
+validated only its parent. systemd therefore failed mount-namespace setup
+with `226/NAMESPACE`. `Restart=on-failure` caused fourteen attempts before
+bounded readiness stopped. The guarded return restored the saved legacy unit;
+legacy health reported `legacy_files` with a null managed binding, and the R7
+database, WAL, and held inventory remained unchanged. R7 is source-stale
+evidence and must not be repaired or retried.
+
+The replacement proposal is R8. Its browser environment, backup environment,
+managed unit, backup/monitor services, and 15-/five-minute timers are new
+R8-only files under `ops/` and `ops/systemd/`. They are not installed, and no
+R8 root, candidate, binding, hold, backup, restore, plan, or approval exists.
+The R8 managed unit includes `StartLimitBurst=1` and the exact R8 scanner
+child in both ExecStart and `ReadWritePaths`; the child must be created and
+verified as `chuck:chuck 0700` before capture. `systemd-analyze verify` passed
+for all five R8 units, with only the unrelated pre-existing Synology
+`/var/run` warning. Syntax success is not runtime proof; the static contract
+and transient namespace probe remain mandatory before capture.
+
+This was not an SQLite, NAS, backup, or data-parity failure. It had two causes:
+
+1. **Direct implementation error:** the R7 preparation checklist lost a known
+   prerequisite. M010.027 had explicitly created the scanner child, but the
+   copied R7 root list named only the parent. The unit and preparation steps
+   were maintained separately, so they drifted.
+2. **Validation-design error:** `systemd-analyze verify` proved unit syntax,
+   not runtime path existence. The Gate A fixtures made their `systemctl`
+   stub report `active` and served health from an independent stub; they never
+   attempted systemd mount namespacing. The isolated candidate process also
+   bypassed the production unit sandbox. Consequently, all tests could pass
+   while the exact production unit could not start.
+
+The durable B6 correction is in `ops/m010028/gate_a.py`. Every preflight now
+parses the hashed managed unit and binds its `ExecStart` arguments to the
+approved plan. It requires the exact database, WAL, SHM, lock, and scanner
+paths in non-optional `ReadWritePaths`; verifies all exist with the right
+file/directory type; requires the candidate scanner directory to be owned by
+the service user/group at mode `0700`; checks the pinned runtime, repository,
+registry, loopback endpoint, state root, environment, and sandbox hardening;
+and requires `StartLimitBurst=1`. This runs before `sudo -v`, after
+authentication, and immediately before service stop. A missing scanner path
+now refuses while legacy is still live, and an early namespace defect cannot
+produce a restart loop.
+
+The regression suite contains negative cases for the exact R7 omission,
+optional or mismatched `ReadWritePaths`, incorrect scanner permissions, and
+an unbounded restart policy. `gate_a.py sandbox-probe --plan P` supplies the
+production-shaped namespace rehearsal: when separately run by the operator as
+root, it uses a collected transient oneshot with the reviewed User, Group,
+WorkingDirectory, `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`,
+`ProtectSystem`, and exact `ReadWritePaths`, but executes only `/usr/bin/true`
+with `Restart=no`. It therefore exercises systemd's real mount-namespace
+setup without starting Repo Control or accessing the application endpoint.
+Run it on the replacement candidate before final capture; a
+`226/NAMESPACE` or any other failure is a stop. The final candidate is a data
+refresh, not the first integration test.
+
+Two operator-process findings also apply to the next attempt:
+
+- The R6 and R7 backup wrapper inferred oneshot completion from volatile
+  `ExecMain*TimestampMonotonic` properties. A completed/garbage-collected
+  oneshot can expose zeros, so the wrapper reported STOP even though the
+  journal and recovery-point verification proved the backup succeeded. Use
+  blocking `systemctl start <exact-backup.service>` and judge success from its
+  exit status plus the bound recovery-point verification; do not poll those
+  timestamps and do not repeat a verified backup or restore.
+- Gate B must be fully reviewed before the next final capture: exact approval
+  binding, the exact root-only hold-release operation, one named canary,
+  read-only resolution of ambiguous commit status, post-canary backup/restore,
+  and the forward-recovery boundary. Do not treat a successful Gate A as
+  permission or sufficient tooling for Gate B.
+
+No further live attempt is ready until a replacement unit containing the
+one-attempt limit has passed the production-shaped sandbox rehearsal and the
+Gate B operator path above is concrete and tested. The 20-minute configured
+backup limit is intentionally stricter than the prompt's 45-minute Gate B
+maximum; it is not a conflicting weaker guard.
+
+### M010.028 Gate B exact-plan procedure
+
+[gate_b.py](../../ops/m010028/gate_b.py) and
+[gate-b-canary.sh](../../ops/m010028/gate-b-canary.sh) supply the previously
+missing production Gate B boundary. They are preparation artifacts only until
+an exact replacement candidate has passed Gate A; their existence is not Gate
+B approval and they have not released a live hold or made a managed write.
+
+After a successful read-only Gate A, `gate_b.py build-plan` reads the exact
+Gate A plan and refuses unless live health reports that managed binding, the
+held inventory is unchanged, source parity is current, and publisher/recovery
+coverage is valid. It binds:
+
+- the exact Gate A plan and both Gate B helper/runner hashes;
+- a Gate B window of at most four hours;
+- exactly four root-owned, service-group targets by path, device, inode,
+  owner, group, type, held mode, and released mode: `prepared`, DB, WAL, and
+  SHM;
+- one unique nonce-bearing `coder-test` payload; and
+- one O_EXCL canary evidence path.
+
+`gate_b.py review` is data only. It prints every permission transition, the
+one canary payload, the significance of crossing the first-write boundary,
+and the exact phrase
+`GATE B APPROVED plan_sha256=<sha> window=<start>/<end> canary_nonce=<nonce>`.
+Approval recording uses an O_EXCL mode-0400 record. The runner verifies that
+approval and the full held/source/coverage/publisher/live binding before and
+after authentication. The root action re-verifies the approval and exact
+metadata, then applies only the three required mode changes; it performs no
+recursive operation and refuses a symlink or replaced inode.
+
+Immediately before invoking the canary, the unprivileged path again verifies
+source parity, recovery freshness, publisher binding, managed health, the
+window, and all released metadata. It calls `repoctl coder-test` exactly once
+against the explicit candidate state root and coverage path, captures the
+returned event ID, and reads that exact ID and payload back through
+`coder-status`. Any failure after invocation is `COMMIT UNCERTAIN` (exit 4):
+never rerun the canary or use the legacy return; resolve the unique nonce and
+event read-only under forward recovery.
+
+After a confirmed canary, the runner obtains the exact backup service from
+the approval-bound Gate A plan and uses blocking `systemctl start`. It does
+not inspect volatile oneshot `ExecMain*TimestampMonotonic` properties. The
+new recovery point must be candidate-bound and no older than the committed
+event. The helper then restores that exact manifest to a new separate target
+and opens it read-only to require the exact canary event ID, type, summary,
+source, and result. A post-write backup or restore failure stops under forward
+recovery and never repeats the canary.
+
+The fixture suite is
+[test_m010028_gate_b.py](../../tests/test_m010028_gate_b.py). It proves exact
+approval binding, root-only and inode-bound release, one invocation, exact
+event readback, commit-uncertain no-retry behavior, blocking backup startup,
+newer recovery coverage, and exact restored payload. sudo, systemd, the
+canary CLI, and the restored database are isolated fixture substitutes; the
+next candidate still requires the prompt's separately approved live gates.
+
+### M010.028 R8 live cutover acceptance (2026-11-19)
+
+R8 is the accepted production authority. The final source inventory SHA-256
+is `60c72880060c6afdb9a9e5b30f3fa500751429254f765943fa19e6655e4c0e7a`;
+the isolated activation used plan
+`7b81828e3b4cbca0136a15c1974463b1108c73aab77728bc9cd701a52c57ffd2`,
+generation `63137936ea4a4f7db30c6b6b2ea4c59b`, and database identity
+`5a41c08550c6de11fe777e94ed1ad29f19ed9e739c25b9ad1f2856d241018a17`.
+Import parity, SQLite integrity, foreign keys, the selected M010.028 prompt,
+and all 72 captured workflow events passed. The exact production-shaped
+transient namespace probe passed before the hold; it started no Repo Control
+application process. The final hold covered 22 unchanged paths with protected
+DB/WAL and only the reviewed SHM/lock exceptions.
+
+The first R8 NAS backup completed successfully at
+`2026-11-19T01:02:28.721841+00:00`; a distinct restore passed integrity,
+foreign keys, binding, approval, selection, and 72-event chronology in 3.3703
+seconds. The one-time wrapper nevertheless printed STOP because it had
+accidentally copied the obsolete R7 `ExecMain*TimestampMonotonic` poll even
+though this guide and the tested Gate B runner already required blocking
+`systemctl start`. systemd garbage-collected the completed static oneshot and
+returned zero timestamps. Read-only journal, service-result, recovery-record,
+manifest, and invocation-ID evidence proved exactly one successful firing, so
+the backup was not repeated. The missing restore was completed against that
+exact recovery point, and the local R8 wrapper was corrected to blocking
+`systemctl start`. This was a runbook-generation error, not an SQLite, NAS,
+publisher, or production-service failure.
+
+Gate A used plan
+`dbad28f71582671a8997ab7acdf2c8c50093ef9aba42ddf84803ae010233db0d`.
+The exact Product Owner approval passed every pre-stop revalidation. Live
+health and an independent CLI with the explicit candidate coverage binding
+both reported `sqlite_managed`, the exact R8 generation/database, selection
+`4b21850796c04bd8953f07ca2e753ef6@105`, and the approved prompt revision.
+The hold remained unchanged and Gate A made no application write.
+
+Gate B used plan
+`9a9e9605536fc340a7881da7806deb0db4e1e88127e01d87f6563fd62b371f16`
+and nonce `64e3afdeb9ee03fe5df9120fc6ebc97a`. It released only the four
+device/inode-bound R8 targets and committed exactly one nonbinding
+`test_result_recorded` event,
+`91a0e61c43854d2bb8b0586d7b42fd8f`. Read-only live status matched its exact
+summary, source, and result. A blocking post-canary backup verified at
+`2026-11-19T01:21:56.329278+00:00`, and a separate restore contained the exact
+event with integrity `ok` and zero foreign-key violations. No legacy source
+artifact or Git state changed during either gate.
+
+Only the R8 production timers are enabled. The five-minute monitor fired at
+`01:25:03Z` and completed successfully; it fired successfully again at
+`01:30:03Z`. The 15-minute backup fired at `01:30:03Z` and completed with
+integrity `ok`, zero foreign-key violations, and fresh coverage at
+`2026-11-19T01:30:06.453200+00:00`. Its manifest is
+`repo-control-20261119T013004095578Z-d8af08d2df23.manifest.json`; its database
+SHA-256 is `75290d6962cea09f2a030ee67ac1c7b3aed1dc5b5e21b977f06741181f9ab669`.
+Direct immutable inspection of that verified NAS payload found the exact
+canary as workflow event 73. The next scheduled boundaries were monitor
+`01:35Z` and backup `01:45Z`. The existing Architect tunnel returned active
+and connected to the managed service.
+
+The first-write boundary has been crossed. The saved legacy unit and earlier
+snapshots remain recovery evidence, but the pre-write legacy return is no
+longer valid; any incident now uses reviewed forward recovery from the managed
+database/WAL and verified snapshots. Normal managed writers may resume. Do
+not re-enable an older publisher, import file-backed workflow state over this
+authority, or use the Gate A return procedure.

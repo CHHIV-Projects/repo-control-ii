@@ -1,0 +1,24 @@
+[Unit]
+Description=Repo Control browser on the held M010.028 R8 managed candidate
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=1
+
+[Service]
+Type=simple
+User=chuck
+Group=chuck
+WorkingDirectory=/home/chuck/projects/repo-control-ii
+EnvironmentFile=/etc/repo-control/repo-control-m010028-r8.env
+ExecStart=/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.cli web --repository-registry /home/chuck/projects/repo-control-ii/ops/repositories.toml --host 127.0.0.1 --port 8765 --state-root /var/lib/repo-control-staging/m010.028-r8/state --scanner-cache-root /home/chuck/.cache/repoctl/m010.028-r8/scanner
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/repo-control-staging/m010.028-r8/prepared/managed-prepared.sqlite3 /var/lib/repo-control-staging/m010.028-r8/prepared/managed-prepared.sqlite3-wal /var/lib/repo-control-staging/m010.028-r8/prepared/managed-prepared.sqlite3-shm /var/lib/repo-control-staging/m010.028-r8/state/.locks /home/chuck/.cache/repoctl/m010.028-r8/scanner
+
+[Install]
+WantedBy=multi-user.target

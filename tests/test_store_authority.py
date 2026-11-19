@@ -37,7 +37,7 @@ from repoctl.migration_rehearsal import MigrationRehearsalError, verify_prepared
 from repoctl import information_store
 from repoctl import backup_guard
 from repoctl.mcp import architect_adapter
-from repoctl.backup import create_verified_backup, restore_verified_backup
+from repoctl.backup import BackupError, create_verified_backup, restore_verified_backup
 from repoctl.scanner.util import make_repository_id
 from repoctl import store_authority
 from repoctl.store_authority import (
@@ -510,6 +510,71 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         InformationStore.initialize_disposable(fixture_path, self.identity)
         with self.assertRaises(SchemaMismatchError):
             InformationStore._open(fixture_path, self.identity, creation_mode="managed_prepared")
+
+    def test_gate_a_recovery_uses_planned_coverage_without_inherited_environment(self) -> None:
+        from tests.test_m010028_gate_a import gate_a
+
+        self.activate_fixture_configuration()
+        configuration = load_store_authority(self.state_root)
+        assert configuration is not None
+        store = InformationStore.open_managed_from_external_selection(
+            configuration,
+            repository_id=self.identity.repository_id,
+            repository_key=self.identity.repository_key,
+            repository_root=self.identity.repository_root,
+        )
+        mountpoint = self.root / "nas"
+        mountpoint.mkdir(mode=0o700)
+        values = {
+            "REPOCTL_BACKUP_SOURCE": str(self.database_path),
+            "REPOCTL_BACKUP_STAGING": str(self.backup_staging),
+            "REPOCTL_BACKUP_DESTINATION": str(self.backup_destination),
+            "REPOCTL_BACKUP_RESTORE_ROOT": str(self.restore_root),
+            "REPOCTL_BACKUP_MOUNTPOINT": str(mountpoint),
+            "REPOCTL_BACKUP_MOUNT_SOURCE": "//server/share",
+            "REPOCTL_BACKUP_COVERAGE_PATH": str(self.coverage_path),
+            "REPOCTL_BACKUP_AUTHORITY_STATE_ROOT": str(self.state_root),
+            "REPOCTL_BACKUP_REPOSITORY_ID": self.identity.repository_id,
+            "REPOCTL_BACKUP_REPOSITORY_KEY": self.identity.repository_key,
+            "REPOCTL_BACKUP_REPOSITORY_ROOT": self.identity.repository_root,
+            "REPOCTL_BACKUP_MAX_AGE_SECONDS": "1200",
+        }
+        source = self.root / "backup.env"
+        source.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
+        plan = {
+            "publisher": {"backup_env_source": str(source)},
+            "expected_binding": {
+                "authority_generation": configuration.generation,
+                "database_identity": store.database_identity(),
+                "selection_id": self.identity.selection_id,
+                "selection_revision": self.identity.selection_revision,
+            },
+        }
+        key = "REPOCTL_BACKUP_COVERAGE_PATH"
+        for inherited in (None, str(backup_guard.DEFAULT_RECOVERY_POINT_PATH)):
+            with self.subTest(inherited=inherited), patch.dict(os.environ):
+                if inherited is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = inherited
+                record = gate_a.check_recovery_point(plan)
+                self.assertEqual(Path(record["manifest_path"]).parent, self.backup_destination)
+                self.assertEqual(os.environ.get(key), inherited)
+
+        wrong_binding = {
+            **plan,
+            "expected_binding": {**plan["expected_binding"], "database_identity": "0" * 64},
+        }
+        with patch.dict(os.environ, {key: "/tmp/unrelated-coverage.json"}):
+            with self.assertRaisesRegex(gate_a.GateAError, "different candidate"):
+                gate_a.check_recovery_point(wrong_binding)
+            self.assertEqual(os.environ[key], "/tmp/unrelated-coverage.json")
+
+        self.coverage_path.unlink()
+        with patch.dict(os.environ, {key: "/tmp/unrelated-coverage.json"}):
+            with self.assertRaisesRegex(BackupError, "No verified recovery-point evidence"):
+                gate_a.check_recovery_point(plan)
+            self.assertEqual(os.environ[key], "/tmp/unrelated-coverage.json")
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_browser_cli_architect_share_guarded_authority_without_dual_write(self, _status) -> None:
