@@ -2707,3 +2707,49 @@ longer valid; any incident now uses reviewed forward recovery from the managed
 database/WAL and verified snapshots. Normal managed writers may resume. Do
 not re-enable an older publisher, import file-backed workflow state over this
 authority, or use the Gate A return procedure.
+
+### M010.030 reproducible R8 configuration and bounded Git repair
+
+The live browser has always received its R8 state root and central registry
+explicitly from `repo-control.service`. Before this repair, an ordinary Coder
+CLI in a fresh shell did not: it followed the scanner's legacy default state
+root and could therefore report an obsolete milestone. The durable binding is
+now the root-controlled, non-secret JSON file installed as
+`/etc/repo-control/managed-authority.d/r8.json` from
+`ops/repo-control-managed-cli-r8.json`. Supported Coder/status/workflow
+commands use it only when the caller did not supply an explicit state root.
+An absent installation directory preserves nonmanaged deployments; a present
+but missing, ambiguous, insecure, malformed, stale or conflicting binding
+fails closed instead of falling back to legacy state. Explicit fixture state
+roots remain explicit.
+
+The two previously host-only R8 write exceptions are versioned as the
+selection-pointer and SQLite-runtime drop-ins. Browser Stage and Commit need
+one additional exception for
+`/home/chuck/projects/repo-control-ii/.git`: Git must create `index.lock`, and
+a commit also writes objects, refs, reflogs and its message inside that
+directory. The service still has `ProtectHome=read-only` and does not receive
+write access to the worktree, `/home`, or another registered repository.
+This differs from the earlier selection-pointer failure, whose target was the
+managed state tree and required both its exact systemd exception and the
+reviewed `root:chuck` mode/ACL.
+
+The exact capture/install/verify/undo procedure is
+`ops/m010030/reproducible-r8-repair.sh`; its operator notes are in
+`ops/m010030/README.md`. Undo restores only captured configuration and ACL,
+restarts on the same managed R8 database, and never invokes the pre-first-write
+legacy return.
+
+The first M010.030 live install exposed an operator-script readiness race, not
+an application or binding failure. The service started successfully, but the
+script queried `/healthz` before Flask began listening and returned failure.
+An immediate operator retry then stopped that healthy process and the existing
+`StartLimitBurst=1` guard rejected the second start. Read-only journal evidence
+distinguished the two conditions. Recovery used one `reset-failed` and start
+of the same installed managed configuration; no database, authority or
+permission rollback occurred. The procedure now waits up to 60 seconds for
+health, verifies an already-installed active configuration without another
+restart, and refuses to restart an inactive exact installation automatically.
+Its CLI verification uses the successful managed binding checks plus the
+public `coder-status` authority/selection fields; it does not expect the
+browser-only detailed binding object in Coder status.

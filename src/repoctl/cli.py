@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Protocol
@@ -627,11 +628,29 @@ def main(
     information_store_clients: _InformationStoreCoderClients | None = None,
 ) -> int:
     if information_store_clients is None:
+        from .managed_cli_binding import ManagedCliBindingError, load_managed_cli_binding
         from .scanner.core import DEFAULT_STATE_ROOT
         from .store_authority import StoreAuthorityError, load_store_authority
 
         args = build_parser().parse_args(argv)
-        requested_root = Path(getattr(args, "state_root", None) or DEFAULT_STATE_ROOT).expanduser().resolve()
+        explicit_state_root = getattr(args, "state_root", None)
+        auto_binding_commands = {
+            "scan", "context", "snapshot", "compare", "analyze", "milestone", "mcp-architect",
+        }
+        managed_cli_binding = None
+        if (
+            explicit_state_root is None
+            and (args.command in auto_binding_commands or args.command.startswith("coder-"))
+        ):
+            try:
+                managed_cli_binding = load_managed_cli_binding()
+            except ManagedCliBindingError as exc:
+                print(f"Managed CLI binding unavailable: {exc}", file=sys.stderr)
+                return 2
+        requested_root = Path(
+            explicit_state_root
+            or (managed_cli_binding.state_root if managed_cli_binding is not None else DEFAULT_STATE_ROOT)
+        ).expanduser().resolve()
         default_root = DEFAULT_STATE_ROOT.expanduser().resolve()
         if args.command == "store-authority":
             if requested_root != default_root:
@@ -653,6 +672,26 @@ def main(
         except StoreAuthorityError as exc:
             print(f"InformationStore authority unavailable: {exc}", file=sys.stderr)
             return 2
+        if managed_cli_binding is not None:
+            if configuration is None:
+                print("Managed CLI binding unavailable: configured SQLite authority is absent.", file=sys.stderr)
+                return 2
+            configured_coverage = os.environ.get("REPOCTL_BACKUP_COVERAGE_PATH")
+            expected_coverage = str(managed_cli_binding.backup_coverage_path)
+            if configured_coverage is not None and Path(configured_coverage).expanduser().resolve() != Path(
+                expected_coverage
+            ).resolve():
+                print("Managed CLI binding unavailable: backup coverage override conflicts with installation.", file=sys.stderr)
+                return 2
+            if (
+                configuration.state_root != managed_cli_binding.state_root.resolve()
+                or configuration.registry_path != managed_cli_binding.registry_path
+                or configuration.configuration_sha256 != managed_cli_binding.authority_configuration_sha256
+                or configuration.generation != managed_cli_binding.authority_generation
+            ):
+                print("Managed CLI binding unavailable: installed authority binding is stale or conflicting.", file=sys.stderr)
+                return 2
+            os.environ["REPOCTL_BACKUP_COVERAGE_PATH"] = expected_coverage
         if configuration is None:
             return _main(argv)
         if args.command == "web":
@@ -684,6 +723,18 @@ def main(
                 getattr(args, "repository", None), getattr(args, "milestone_root", None),
             )
             information_store_clients = create_managed_information_store_clients(configuration, entry)
+            if managed_cli_binding is not None:
+                runtime_binding = information_store_clients.runtime_binding()
+                if (
+                    runtime_binding["database_identity"] != managed_cli_binding.database_identity
+                    or runtime_binding["authority_state_root"] != str(managed_cli_binding.state_root)
+                    or runtime_binding["authority_configuration_sha256"]
+                    != managed_cli_binding.authority_configuration_sha256
+                    or runtime_binding["authority_generation"] != managed_cli_binding.authority_generation
+                ):
+                    raise CoderInterfaceError(
+                        "Installed managed CLI binding differs from the selected database authority."
+                    )
         except (CoderInterfaceError, FixtureIntegrationError, InformationStoreError, StoreAuthorityError, ValueError) as exc:
             print(f"InformationStore authority unavailable: {exc}", file=sys.stderr)
             return 2

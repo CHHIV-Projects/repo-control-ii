@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "authority": "sqlite_managed",
+  "state_root": "/var/lib/repo-control-staging/m010.028-r8/state",
+  "backup_coverage_path": "/home/chuck/.local/state/repo-control-backup/staging/m010.028-r8/.repoctl-verified-recovery-point.json",
+  "registry_path": "/home/chuck/projects/repo-control-ii/ops/repositories.toml",
+  "authority_configuration_sha256": "266f722946a7a85a417bbf79752562514598aa0c11696ea530c7b5cc9bc6676b",
+  "authority_generation": "63137936ea4a4f7db30c6b6b2ea4c59b",
+  "database_identity": "5a41c08550c6de11fe777e94ed1ad29f19ed9e739c25b9ad1f2856d241018a17"
+}

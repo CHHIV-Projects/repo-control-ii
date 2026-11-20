@@ -1205,8 +1205,9 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(len(initial["workflow"]["unverified_guidance"]), 1)
         workflow_events_before_confirmation = clients.workflow_snapshot()["events"]
         cli_script = (
-            "import sys\n"
+            "import os, sys\n"
             "from pathlib import Path\n"
+            "from repoctl import managed_cli_binding\n"
             "from repoctl.scanner import core as scanner_core\n"
             "from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry\n"
             "from repoctl.workflow import coder_interface\n"
@@ -1220,11 +1221,25 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             "coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH = Path(sys.argv[4])\n"
             "coder_interface.resolve_repository_entry = lambda repository_path=None, milestone_root=None: entry\n"
             "scanner_core.DEFAULT_STATE_ROOT = Path(sys.argv[5]).parent / 'unused-default-state'\n"
+            "real_binding_loader = managed_cli_binding.load_managed_cli_binding\n"
+            "managed_cli_binding.load_managed_cli_binding = lambda: real_binding_loader(\n"
+            "    Path(sys.argv[6]), required_owner_uid=os.geteuid(),\n"
+            ")\n"
             "from repoctl.cli import main\n"
-            "raise SystemExit(main(sys.argv[6:]))\n"
+            "raise SystemExit(main(sys.argv[7:]))\n"
         )
 
-        def launch_independent_cli(state_root: Path, environment=None):
+        managed_binding_directory = self.root / "managed-authority.d"
+
+        def launch_independent_cli(state_root: Path, environment=None, *, automatic_binding=False):
+            command = [
+                "coder-status",
+                "--repository",
+                str(self.repository_root),
+            ]
+            if not automatic_binding:
+                command.extend(["--state-root", str(state_root)])
+            command.extend(["--format", "json"])
             return subprocess.run(
                 [
                     sys.executable,
@@ -1235,13 +1250,8 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
                     self.identity.repository_id,
                     str(self.registry_path),
                     str(state_root),
-                    "coder-status",
-                    "--repository",
-                    str(self.repository_root),
-                    "--state-root",
-                    str(state_root),
-                    "--format",
-                    "json",
+                    str(managed_binding_directory),
+                    *command,
                 ],
                 cwd=self.repository_root,
                 capture_output=True,
@@ -1340,7 +1350,24 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(browser_binding["selection_id"], binding["selection_id"])
         self.assertEqual(browser_binding["selection_revision"], binding["selection_revision"])
 
-        cli_result = launch_independent_cli(candidate_state_root)
+        configuration = load_store_authority(candidate_state_root)
+        self.assertIsNotNone(configuration)
+        managed_binding_directory.mkdir(mode=0o755)
+        managed_binding_path = managed_binding_directory / "r8.json"
+        managed_binding_payload = {
+            "schema_version": 1,
+            "authority": "sqlite_managed",
+            "state_root": str(candidate_state_root),
+            "backup_coverage_path": str(self.coverage_path),
+            "registry_path": str(self.registry_path),
+            "authority_configuration_sha256": configuration.configuration_sha256,
+            "authority_generation": configuration.generation,
+            "database_identity": browser_binding["database_identity"],
+        }
+        managed_binding_path.write_text(json.dumps(managed_binding_payload), encoding="utf-8")
+        managed_binding_path.chmod(0o644)
+
+        cli_result = launch_independent_cli(candidate_state_root, automatic_binding=True)
         self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
         cli_status = json.loads(cli_result.stdout)
         self.assertEqual(cli_status["information_store_authority"], "sqlite_managed")
@@ -1366,8 +1393,6 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             },
         )
         recovery_record = json.loads(self.coverage_path.read_text(encoding="utf-8"))
-        configuration = load_store_authority(candidate_state_root)
-        self.assertIsNotNone(configuration)
         expected_backup_binding = backup_guard.authority_binding(
             configuration,
             browser_binding["database_identity"],
@@ -1392,6 +1417,25 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(self.selection_path.read_bytes(), source_selection_before)
         self.assertEqual(self.workflow_path.read_bytes(), source_workflow_before)
         self.assertIsNone(load_store_authority(self.state_root))
+
+        managed_binding_path.write_text(
+            json.dumps({**managed_binding_payload, "database_identity": "0" * 64}),
+            encoding="utf-8",
+        )
+        stale_binding_cli = launch_independent_cli(candidate_state_root, automatic_binding=True)
+        self.assertNotEqual(stale_binding_cli.returncode, 0)
+        self.assertIn("differs from the selected database authority", stale_binding_cli.stderr)
+        managed_binding_path.write_text(json.dumps(managed_binding_payload), encoding="utf-8")
+        conflicting_environment = os.environ.copy() | {
+            "REPOCTL_BACKUP_COVERAGE_PATH": str(self.root / "conflicting-coverage.json"),
+        }
+        conflicting_binding_cli = launch_independent_cli(
+            candidate_state_root,
+            conflicting_environment,
+            automatic_binding=True,
+        )
+        self.assertNotEqual(conflicting_binding_cli.returncode, 0)
+        self.assertIn("coverage override conflicts", conflicting_binding_cli.stderr)
 
         missing_state_root = self.root / "missing-candidate-state"
         missing_state_root.mkdir()

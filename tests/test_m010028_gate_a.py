@@ -1236,6 +1236,36 @@ class BackupEnvironmentTests(FixtureCase):
         self.assertIn("StartLimitBurst=1", unit)
         self.assertEqual(unit.count("/home/chuck/.cache/repoctl/m010.028-r8/scanner"), 2)
         self.assertNotIn("m010.028-r7", unit)
+        dropins = {
+            path.name: path.read_text()
+            for path in (REPO / "ops" / "systemd").glob("repo-control-m010028-r8-*.conf")
+        }
+        self.assertEqual(
+            dropins["repo-control-m010028-r8-selection-pointer.conf"],
+            "[Service]\nReadWritePaths=/var/lib/repo-control-staging/m010.028-r8/state/"
+            "repo-control-ii--945e7f88eafb/milestones\n",
+        )
+        self.assertEqual(
+            dropins["repo-control-m010028-r8-sqlite-runtime.conf"],
+            "[Service]\nReadWritePaths=/var/lib/repo-control-staging/m010.028-r8/prepared\n",
+        )
+        self.assertEqual(
+            dropins["repo-control-m010028-r8-git.conf"],
+            "[Service]\nReadWritePaths=/home/chuck/projects/repo-control-ii/.git\n",
+        )
+        cli_binding = json.loads((REPO / "ops" / "repo-control-managed-cli-r8.json").read_text())
+        self.assertEqual(cli_binding["authority"], "sqlite_managed")
+        self.assertEqual(cli_binding["state_root"], "/var/lib/repo-control-staging/m010.028-r8/state")
+        self.assertEqual(
+            cli_binding["backup_coverage_path"],
+            "/home/chuck/.local/state/repo-control-backup/staging/m010.028-r8/"
+            ".repoctl-verified-recovery-point.json",
+        )
+        repair = (REPO / "ops" / "m010030" / "reproducible-r8-repair.sh").read_text()
+        self.assertIn("for _ in {1..60}", repair)
+        self.assertIn("PASS exact configuration already installed; restart not repeated", repair)
+        self.assertIn("Exact configuration is installed but the service is inactive", repair)
+        self.assertEqual(repair.count("systemctl restart repo-control.service"), 2)
 
 
 if __name__ == "__main__":
