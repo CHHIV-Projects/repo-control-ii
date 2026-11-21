@@ -43,12 +43,19 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_JOURNAL_BYTES = 256 * 1024
 MAX_HISTORY = 10
 CONFIRMATION_TTL_SECONDS = 300
+TRANSACTION_ROOT_ENV = "REPOCTL_PROCEDURE_TRANSACTION_ROOT"
 _ACTIVE_STATES = {"PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED"}
 _TERMINAL_STATES = {"VERIFIED", "RECOVERED"}
+_REQUEST_ACTIONS = {"apply", "overlay_initialize", "recover"}
+_REQUEST_PENDING_STATES = {"CONFIRMED", "EXECUTING"}
 
 
 class ProcedureTransactionError(RuntimeError):
     pass
+
+
+class ProcedureTransactionStorageUnavailable(ProcedureTransactionError):
+    """The configured private transaction store cannot be used safely."""
 
 
 def _safe_permissions(mode: int, gid: int) -> bool:
@@ -70,16 +77,67 @@ def _stable_parent(state_root: str | Path) -> Path:
     try:
         metadata = parent.stat()
     except OSError as exc:
-        raise ProcedureTransactionError(f"Transaction storage parent is unavailable: {exc}") from exc
+        raise ProcedureTransactionStorageUnavailable(
+            f"Transaction storage parent is unavailable: {exc}"
+        ) from exc
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or metadata.st_uid != os.geteuid()
         or metadata.st_mode & 0o022
     ):
-        raise ProcedureTransactionError(
+        raise ProcedureTransactionStorageUnavailable(
             "Transaction storage parent must be an owned, non-symlink directory not writable by group or others."
         )
     return parent
+
+
+def _configured_transaction_root(state_root: str | Path, *, create: bool) -> Path:
+    configured_root = os.environ.get(TRANSACTION_ROOT_ENV)
+    if not configured_root:
+        parent = _stable_parent(state_root)
+        return parent / f".{Path(state_root).expanduser().name}-procedure-transactions"
+    root = Path(configured_root).expanduser()
+    if not root.is_absolute():
+        raise ProcedureTransactionStorageUnavailable(
+            f"{TRANSACTION_ROOT_ENV} must be an absolute path."
+        )
+    root = Path(os.path.abspath(root))
+    current = Path(root.anchor)
+    try:
+        for part in root.parts[1:]:
+            current /= part
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise ProcedureTransactionStorageUnavailable(
+                    "Configured procedure transaction storage path may not contain symlinks."
+                )
+    except FileNotFoundError as exc:
+        raise ProcedureTransactionStorageUnavailable(
+            "Configured procedure transaction storage does not exist; provision its private directory first."
+        ) from exc
+    except OSError as exc:
+        raise ProcedureTransactionStorageUnavailable(
+            f"Configured procedure transaction storage is unavailable: {exc}"
+        ) from exc
+    try:
+        metadata = root.lstat()
+    except FileNotFoundError as exc:
+        raise ProcedureTransactionStorageUnavailable(
+            "Configured procedure transaction storage does not exist; provision its private directory first."
+        ) from exc
+    except OSError as exc:
+        raise ProcedureTransactionStorageUnavailable(
+            f"Configured procedure transaction storage is unavailable: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise ProcedureTransactionStorageUnavailable(
+            "Configured procedure transaction storage must be an owned, non-symlink directory with mode 0700."
+        )
+    return root
 
 
 def _checked_directory(path: Path, *, create: bool) -> Path:
@@ -118,8 +176,7 @@ def _checked_directory(path: Path, *, create: bool) -> Path:
 def _repository_store(state_root: str | Path, repository_id: str, *, create: bool) -> Path:
     if not repository_id or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in repository_id):
         raise ProcedureTransactionError("Repository identity is not safe for transaction storage.")
-    parent = _stable_parent(state_root)
-    root = parent / f".{Path(state_root).expanduser().name}-procedure-transactions"
+    root = _configured_transaction_root(state_root, create=create)
     if create:
         _checked_directory(root, create=True)
     elif not root.exists() and not root.is_symlink():
@@ -134,7 +191,7 @@ def _repository_store(state_root: str | Path, repository_id: str, *, create: boo
     else:
         _checked_directory(repository_store, create=False)
     for child in repository_store.iterdir():
-        if child.name not in {"transactions", "confirmations"}:
+        if child.name not in {"transactions", "confirmations", "requests"}:
             raise ProcedureTransactionError("Transaction storage contains an unknown repository-state entry.")
     return repository_store
 
@@ -276,11 +333,29 @@ def _read_journal(operation_directory: Path, repository: RepositoryEntry) -> dic
         expected_targets = target_paths
         expected_lock_index = len(expected_targets) - 1
     elif operation_type == "overlay_initialize":
-        try:
-            overlay_path = _repository_overlay_path(repository)
-        except ProcedureGovernanceError as exc:
-            raise ProcedureTransactionError("Overlay transaction has no valid registered overlay path.") from exc
-        expected_targets = [overlay_path]
+        target_paths = [item.get("path") for item in journal["targets"] if isinstance(item, dict)]
+        if len(target_paths) != 1 or not isinstance(target_paths[0], str):
+            raise ProcedureTransactionError("Overlay transaction journal has an invalid target set.")
+        if journal["state"] in _ACTIVE_STATES:
+            try:
+                overlay_path = _repository_overlay_path(repository)
+            except ProcedureGovernanceError as exc:
+                raise ProcedureTransactionError("Overlay transaction has no valid registered overlay path.") from exc
+            expected_targets = [overlay_path]
+        else:
+            # A terminal overlay journal is historical evidence, not a source
+            # for target writes.  Registry remaps may legitimately change the
+            # current overlay after verification, so retain any confined
+            # repository-relative path that the original journal recorded.
+            historical = target_paths[0]
+            parts = historical.split("/")
+            if (
+                "\\" in historical
+                or PurePosixPath(historical).is_absolute()
+                or any(part in {"", ".", ".."} for part in parts)
+            ):
+                raise ProcedureTransactionError("Terminal overlay journal has an unsafe historical target.")
+            expected_targets = [historical]
         expected_lock_index = None
     else:
         raise ProcedureTransactionError("Procedure transaction journal has an unsupported operation type.")
@@ -697,7 +772,7 @@ def review_overlay_initialization(
         active, errors = _active_operations(store, entry)
         if errors:
             raise ProcedureTransactionError(f"Transaction state requires operator review: {errors[0]}")
-        if active:
+        if active or _has_pending_execution_request(store, entry):
             raise ProcedureTransactionError("An unresolved transaction blocks overlay initialization.")
         plan = preview_overlay_initialization(entry, active_bundle)
         digest = overlay_initialization_plan_digest(entry, active_bundle, plan)
@@ -885,6 +960,217 @@ def _consume_token(
         raise ProcedureTransactionError("Confirmation token is expired or no longer matches reviewed state.")
     record_path.unlink()
     _fsync_directory(directory)
+
+
+def _request_directory(store: Path, *, create: bool) -> Path:
+    directory = store / "requests"
+    if create:
+        _checked_directory(directory, create=True)
+    elif directory.exists() or directory.is_symlink():
+        _checked_directory(directory, create=False)
+    return directory
+
+
+def _request_payload_digest(record: dict[str, Any]) -> str:
+    return _digest_json({key: value for key, value in record.items() if key != "request_sha256"})
+
+
+def _read_execution_request(path: Path, entry: RepositoryEntry) -> dict[str, Any]:
+    raw = _read_regular(path, MAX_JOURNAL_BYTES)
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProcedureTransactionError("Procedure execution request is malformed.") from exc
+    binding = record.get("binding") if isinstance(record, dict) else None
+    if (
+        not isinstance(record, dict)
+        or record.get("schema_version") != SCHEMA_VERSION
+        or record.get("action") not in _REQUEST_ACTIONS
+        or record.get("state") not in {*_REQUEST_PENDING_STATES, "EXECUTED", "FAILED"}
+        or not isinstance(record.get("request_id"), str)
+        or len(record["request_id"]) != 32
+        or any(character not in "0123456789abcdef" for character in record["request_id"])
+        or path.name != f"{record['request_id']}.json"
+        or record.get("repository_key") != entry.key
+        or record.get("repository_id") != entry.repository_id
+        or record.get("repository_path") != str(entry.path)
+        or not isinstance(binding, dict)
+        or not isinstance(record.get("request_sha256"), str)
+        or not secrets.compare_digest(record["request_sha256"], _request_payload_digest(record))
+    ):
+        raise ProcedureTransactionError("Procedure execution request identity or integrity is invalid.")
+    if (
+        binding.get("repository_key") != entry.key
+        or binding.get("repository_id") != entry.repository_id
+        or binding.get("repository_path") != str(entry.path)
+        or not isinstance(binding.get("active_key"), str)
+        or type(binding.get("registry_generation")) is not int
+        or binding["registry_generation"] < 0
+    ):
+        raise ProcedureTransactionError("Procedure execution request binding is invalid.")
+    if record["action"] == "recover":
+        if (
+            not isinstance(record.get("operation_id"), str)
+            or binding.get("operation_id") != record["operation_id"]
+            or not isinstance(binding.get("journal_sha256"), str)
+            or len(binding["journal_sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in binding["journal_sha256"])
+        ):
+            raise ProcedureTransactionError("Recovery execution request binding is invalid.")
+    elif (
+        record.get("operation_id") is not None
+        or not isinstance(binding.get("plan_sha256"), str)
+        or len(binding["plan_sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in binding["plan_sha256"])
+    ):
+        raise ProcedureTransactionError("Procedure execution request plan binding is invalid.")
+    return record
+
+
+def _execution_requests(store: Path, entry: RepositoryEntry) -> list[tuple[Path, dict[str, Any]]]:
+    directory = _request_directory(store, create=False)
+    if not directory.exists():
+        return []
+    requests = []
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.is_symlink() or not path.is_file() or not path.name.endswith(".json"):
+            raise ProcedureTransactionError("Procedure execution request storage contains an unsafe entry.")
+        requests.append((path, _read_execution_request(path, entry)))
+    return requests
+
+
+def _has_pending_execution_request(store: Path, entry: RepositoryEntry) -> bool:
+    return any(
+        record["state"] in _REQUEST_PENDING_STATES
+        for _, record in _execution_requests(store, entry)
+    )
+
+
+def _prune_execution_requests(store: Path, entry: RepositoryEntry) -> None:
+    terminal = [
+        (record.get("updated_at", ""), path)
+        for path, record in _execution_requests(store, entry)
+        if record["state"] in {"EXECUTED", "FAILED"}
+    ]
+    remove_count = max(0, len(terminal) - MAX_HISTORY + 1)
+    if not remove_count:
+        return
+    directory = _request_directory(store, create=False)
+    for _, path in sorted(terminal)[:remove_count]:
+        path.unlink()
+    _fsync_directory(directory)
+
+
+def seal_execution_request(
+    entry: RepositoryEntry,
+    *,
+    action: str,
+    token: str,
+    state_root: str | Path = DEFAULT_STATE_ROOT,
+    active_key: str,
+    registry_generation: int,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
+    if action not in _REQUEST_ACTIONS:
+        raise ProcedureTransactionError("Procedure execution request action is invalid.")
+    purpose = "overlay_initialize" if action == "overlay_initialize" else action
+    with state_artifact_lock(state_root, mutation=True):
+        store = _repository_store(state_root, entry.repository_id, create=True)
+        pending = [
+            (path, record)
+            for path, record in _execution_requests(store, entry)
+            if record["state"] in _REQUEST_PENDING_STATES
+        ]
+        token_id = _token_id(token)
+        confirmation_path = _token_directory(store, create=False) / f"{token_id}.json"
+        raw = _read_regular(confirmation_path, MAX_JOURNAL_BYTES, required=False)
+        if raw is None:
+            raise ProcedureTransactionError("Confirmation token is unknown, expired, or already used.")
+        try:
+            confirmation = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProcedureTransactionError("Confirmation token record is malformed; no request was sealed.") from exc
+        binding = confirmation.get("binding")
+        if (
+            confirmation.get("schema_version") != SCHEMA_VERSION
+            or confirmation.get("token_id") != token_id
+            or confirmation.get("purpose") != purpose
+            or type(confirmation.get("expires_at")) is not int
+            or confirmation.get("expires_at", 0) < int(time.time())
+            or not isinstance(binding, dict)
+            or binding.get("repository_key") != entry.key
+            or binding.get("repository_id") != entry.repository_id
+            or binding.get("repository_path") != str(entry.path)
+            or binding.get("active_key") != active_key
+            or binding.get("registry_generation") != registry_generation
+            or not isinstance(confirmation.get("token_sha256"), str)
+            or not secrets.compare_digest(confirmation["token_sha256"], _sha256(token.encode("ascii")))
+        ):
+            raise ProcedureTransactionError("Confirmation token is expired or no longer matches reviewed state.")
+        if action == "recover" and binding.get("operation_id") != operation_id:
+            raise ProcedureTransactionError("Recovery confirmation no longer matches the reviewed operation.")
+        if action != "recover" and operation_id is not None:
+            raise ProcedureTransactionError("Only recovery requests may name an operation.")
+        if pending:
+            superseded_path = None
+            superseded = None
+            if action == "recover" and len(pending) == 1:
+                candidate_path, candidate = pending[0]
+                active, errors = _active_operations(store, entry)
+                if (
+                    not errors
+                    and len(active) == 1
+                    and candidate["state"] == "EXECUTING"
+                    and candidate["action"] in {"apply", "overlay_initialize"}
+                    and active[0][1]["operation_id"] == operation_id
+                ):
+                    superseded_path = candidate_path
+                    superseded = candidate
+            if superseded_path is None or superseded is None:
+                raise ProcedureTransactionError("A confirmed procedure execution request is already pending.")
+            superseded.pop("confirmation_token", None)
+            superseded["state"] = "FAILED"
+            superseded["error"] = (
+                f"Interrupted execution superseded by explicit recovery review for operation {operation_id}."
+            )
+            superseded["updated_at"] = _now()
+            superseded["request_sha256"] = _request_payload_digest(superseded)
+            _atomic_write(
+                superseded_path,
+                json.dumps(superseded, sort_keys=True, separators=(",", ":")).encode("ascii"),
+            )
+        _prune_execution_requests(store, entry)
+        directory = _request_directory(store, create=True)
+        if len(list(directory.iterdir())) >= 32:
+            raise ProcedureTransactionError("Too many procedure execution requests require operator review.")
+        request_id = uuid.uuid4().hex
+        record = {
+            "schema_version": SCHEMA_VERSION,
+            "request_id": request_id,
+            "action": action,
+            "state": "CONFIRMED",
+            "repository_key": entry.key,
+            "repository_id": entry.repository_id,
+            "repository_path": str(entry.path),
+            "operation_id": operation_id,
+            "binding": binding,
+            "confirmation_token": token,
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        record["request_sha256"] = _request_payload_digest(record)
+        _atomic_write(
+            directory / f"{request_id}.json",
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii"),
+        )
+        _fsync_directory(directory)
+        return {
+            "request_id": request_id,
+            "action": action,
+            "repository_key": entry.key,
+            "state": "CONFIRMED",
+            "operator_unit": f"repo-control-procedure-update@{entry.key}.service",
+        }
 
 
 def _invalidate_apply_tokens(store: Path, entry: RepositoryEntry) -> None:
@@ -1453,7 +1739,7 @@ def review_apply(
         active, errors = _active_operations(store, entry)
         if errors:
             raise ProcedureTransactionError(f"Transaction state requires operator review: {errors[0]}")
-        if active:
+        if active or _has_pending_execution_request(store, entry):
             raise ProcedureTransactionError("An unresolved procedure transaction blocks another Apply.")
         plan = preview_reconciliation(entry, active_bundle)
         if plan.blockers or not plan.can_materialize:
@@ -1835,6 +2121,15 @@ def inspect_transaction(
             store = _repository_store(state_root, entry.repository_id, create=False)
             if not store.exists():
                 return None
+            requests = _execution_requests(store, entry)
+            pending_requests = [record for _, record in requests if record["state"] in _REQUEST_PENDING_STATES]
+            if len(pending_requests) > 1:
+                return {
+                    "state": "CORRUPT",
+                    "blocked": True,
+                    "error": "More than one confirmed procedure execution request exists.",
+                    "operation_id": None,
+                }
             active, errors = _active_operations(store, entry)
             if errors:
                 return {"state": "CORRUPT", "blocked": True, "error": errors[0], "operation_id": None}
@@ -1844,6 +2139,26 @@ def inspect_transaction(
                     "blocked": True,
                     "error": "More than one unresolved procedure transaction exists.",
                     "operation_id": None,
+                }
+            # A newly confirmed request remains visible even when it is a
+            # reviewed recovery for an active journal.  Once execution starts,
+            # however, an active journal is stronger evidence: a crash may have
+            # changed targets and must expose the recovery path rather than
+            # indefinitely advertising the original execution command.
+            confirmed_requests = [
+                request for request in pending_requests if request["state"] == "CONFIRMED"
+            ]
+            if confirmed_requests:
+                request = confirmed_requests[0]
+                return {
+                    "state": "EXECUTION_PENDING",
+                    "blocked": True,
+                    "recoverable": False,
+                    "operation_id": request.get("operation_id"),
+                    "request_id": request["request_id"],
+                    "request_action": request["action"],
+                    "operator_unit": f"repo-control-procedure-update@{entry.key}.service",
+                    "created_at": request["created_at"],
                 }
             if active:
                 operation_directory, journal = active[0]
@@ -1866,6 +2181,18 @@ def inspect_transaction(
                         "error": str(exc),
                         "operation_id": journal["operation_id"],
                     }
+            if pending_requests:
+                request = pending_requests[0]
+                return {
+                    "state": "EXECUTION_PENDING",
+                    "blocked": True,
+                    "recoverable": False,
+                    "operation_id": request.get("operation_id"),
+                    "request_id": request["request_id"],
+                    "request_action": request["action"],
+                    "operator_unit": f"repo-control-procedure-update@{entry.key}.service",
+                    "created_at": request["created_at"],
+                }
             transactions = _transaction_directories(store, create=False)
             if not transactions.exists():
                 return None
@@ -1890,6 +2217,13 @@ def inspect_transaction(
                     for operation in transactions.iterdir()
                     for child in operation.iterdir()
                 ),
+            }
+        except ProcedureTransactionStorageUnavailable as exc:
+            return {
+                "state": "STORAGE_UNAVAILABLE",
+                "blocked": True,
+                "error": str(exc),
+                "operation_id": None,
             }
         except (OSError, ProcedureTransactionError) as exc:
             return {"state": "CORRUPT", "blocked": True, "error": str(exc), "operation_id": None}
@@ -2009,3 +2343,86 @@ def recover_confirmed(
             "cleanup_pending": cleanup_error is not None,
             "cleanup_error": cleanup_error,
         }
+
+
+def execute_sealed_request(
+    entry: RepositoryEntry,
+    state_root: str | Path = DEFAULT_STATE_ROOT,
+    *,
+    active_key: str,
+    registry_generation: int,
+) -> dict[str, Any]:
+    store = _repository_store(state_root, entry.repository_id, create=False)
+    requests = _execution_requests(store, entry)
+    pending = [(path, record) for path, record in requests if record["state"] in _REQUEST_PENDING_STATES]
+    if len(pending) != 1:
+        raise ProcedureTransactionError(
+            "Exactly one confirmed procedure execution request is required for this repository."
+        )
+    path, record = pending[0]
+    token = record.get("confirmation_token")
+    if not isinstance(token, str):
+        raise ProcedureTransactionError("Procedure execution request has no valid confirmation token.")
+    binding = record["binding"]
+    try:
+        _assert_active_binding(active_key, registry_generation, binding)
+    except ProcedureTransactionError as exc:
+        record.pop("confirmation_token", None)
+        record["state"] = "FAILED"
+        record["error"] = str(exc)
+        record["updated_at"] = _now()
+        record["request_sha256"] = _request_payload_digest(record)
+        _atomic_write(path, json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii"))
+        raise
+    record["state"] = "EXECUTING"
+    record["updated_at"] = _now()
+    record["request_sha256"] = _request_payload_digest(record)
+    _atomic_write(path, json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii"))
+    try:
+        if record["action"] == "apply":
+            result = apply_confirmed(
+                entry,
+                token,
+                state_root,
+                active_key=binding["active_key"],
+                registry_generation=binding["registry_generation"],
+            )
+        elif record["action"] == "overlay_initialize":
+            result = initialize_overlay_confirmed(
+                entry,
+                token,
+                state_root,
+                active_key=binding["active_key"],
+                registry_generation=binding["registry_generation"],
+            )
+        else:
+            result = recover_confirmed(
+                entry,
+                record["operation_id"],
+                token,
+                state_root,
+                active_key=binding["active_key"],
+                registry_generation=binding["registry_generation"],
+            )
+    except Exception as exc:
+        record.pop("confirmation_token", None)
+        record["state"] = "FAILED"
+        record["error"] = str(exc)[:1000]
+        record["updated_at"] = _now()
+        record["request_sha256"] = _request_payload_digest(record)
+        _atomic_write(path, json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii"))
+        raise
+    record.pop("confirmation_token", None)
+    record["state"] = "EXECUTED"
+    record["result"] = {
+        key: result[key]
+        for key in (
+            "operation_id", "state", "repository_key", "repository_id", "release",
+            "status", "completed_at", "cleanup_pending",
+        )
+        if key in result
+    }
+    record["updated_at"] = _now()
+    record["request_sha256"] = _request_payload_digest(record)
+    _atomic_write(path, json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii"))
+    return {"request_id": record["request_id"], "action": record["action"], **result}

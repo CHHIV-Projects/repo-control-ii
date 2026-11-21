@@ -2412,7 +2412,7 @@ def create_web_app(
 
     @app.post("/procedure-updates/overlay-initialize")
     def procedure_overlay_initialize():
-        from ..procedure_transactions import ProcedureTransactionError, initialize_overlay_confirmed
+        from ..procedure_transactions import ProcedureTransactionError, seal_execution_request
 
         entry = procedure_action_preconditions(
             frozenset({"confirmation_token"}),
@@ -2437,26 +2437,22 @@ def create_web_app(
         session.pop("procedure_overlay_review", None)
         active_repository, generation = registry.snapshot()
         try:
-            result = initialize_overlay_confirmed(
+            result = seal_execution_request(
                 entry,
-                token,
-                effective_state_root,
+                action="overlay_initialize",
+                token=token,
+                state_root=effective_state_root,
                 active_key=active_repository.key,
                 registry_generation=generation,
             )
             flash(
-                f"Overlay contract verified for {result['overlay_path']}; original rules were preserved. "
-                f"Shared procedure status remains {result['procedure_status']}. Review and separately confirm "
-                "the ordinary generated-procedure Apply. Coder verification remains non-VERIFIED until then.",
-                "success",
+                f"Overlay request {result['request_id']} is sealed for {entry.key}. "
+                f"Run sudo systemctl start {result['operator_unit']} to execute the exact confirmed request; "
+                "no worktree file was changed by the browser service.",
+                "info",
             )
-            if result["cleanup_pending"]:
-                flash(
-                    f"Overlay transaction recovery-image cleanup needs operator review: {result['cleanup_error']}",
-                    "warning",
-                )
         except (ProcedureTransactionError, OSError) as exc:
-            flash(f"Overlay initialization did not report success: {str(exc)[:1200]}", "error")
+            flash(f"Overlay execution request was not sealed: {str(exc)[:1200]}", "error")
         return redirect(url_for("procedure_updates_page", repository=entry.key))
 
     @app.post("/procedure-updates/apply-review")
@@ -2507,7 +2503,7 @@ def create_web_app(
 
     @app.post("/procedure-updates/apply")
     def procedure_apply_confirm():
-        from ..procedure_transactions import ProcedureTransactionError, apply_confirmed
+        from ..procedure_transactions import ProcedureTransactionError, seal_execution_request
 
         entry = procedure_action_preconditions(
             frozenset({"confirmation_token"}),
@@ -2529,30 +2525,22 @@ def create_web_app(
         session.pop("procedure_apply_review", None)
         active_repository, generation = registry.snapshot()
         try:
-            result = apply_confirmed(
+            result = seal_execution_request(
                 entry,
-                token,
-                effective_state_root,
+                action="apply",
+                token=token,
+                state_root=effective_state_root,
                 active_key=active_repository.key,
                 registry_generation=generation,
             )
-            if result["no_op"]:
-                flash(
-                    f"Operation {result['operation_id']} was already CURRENT; no files changed. "
-                    f"Verified release {result['release']}.",
-                    "success",
-                )
-            else:
-                flash(
-                    f"Operation {result['operation_id']} applied and independently verified CURRENT at "
-                    f"release {result['release']}; {len(result['affected_files'])} paths changed. "
-                    "Use ordinary Git Review separately.",
-                    "success",
-                )
-            if result["cleanup_pending"]:
-                flash(f"Verified state is intact, but recovery-image cleanup needs operator review: {result['cleanup_error']}", "warning")
+            flash(
+                f"Apply request {result['request_id']} is sealed for {entry.key}. "
+                f"Run sudo systemctl start {result['operator_unit']} to execute the exact confirmed request; "
+                "no worktree file was changed by the browser service.",
+                "info",
+            )
         except (ProcedureTransactionError, OSError) as exc:
-            flash(f"Apply did not report success: {str(exc)[:1200]}", "error")
+            flash(f"Apply execution request was not sealed: {str(exc)[:1200]}", "error")
         return redirect(url_for("procedure_updates_page", repository=entry.key))
 
     @app.post("/procedure-updates/recovery-review")
@@ -2590,7 +2578,7 @@ def create_web_app(
 
     @app.post("/procedure-updates/recover")
     def procedure_recover_confirm():
-        from ..procedure_transactions import ProcedureTransactionError, recover_confirmed
+        from ..procedure_transactions import ProcedureTransactionError, seal_execution_request
 
         entry = procedure_action_preconditions(
             frozenset({"operation_id", "confirmation_token"}),
@@ -2614,23 +2602,23 @@ def create_web_app(
         session.pop("procedure_recovery_review", None)
         active_repository, generation = registry.snapshot()
         try:
-            result = recover_confirmed(
+            result = seal_execution_request(
                 entry,
-                operation_id,
-                token,
-                effective_state_root,
+                action="recover",
+                token=token,
+                state_root=effective_state_root,
                 active_key=active_repository.key,
                 registry_generation=generation,
+                operation_id=operation_id,
             )
             flash(
-                f"Operation {result['operation_id']} was recovered to its exact original files. "
-                "Review procedure status; Apply requires a new review.",
-                "success",
+                f"Recovery request {result['request_id']} is sealed for {entry.key}. "
+                f"Run sudo systemctl start {result['operator_unit']} to execute the exact confirmed recovery; "
+                "no worktree file was changed by the browser service.",
+                "warning",
             )
-            if result["cleanup_pending"]:
-                flash(f"Recovery-image cleanup needs operator review: {result['cleanup_error']}", "warning")
         except (ProcedureTransactionError, OSError) as exc:
-            flash(f"Recovery did not complete: {str(exc)[:1200]}", "error")
+            flash(f"Recovery execution request was not sealed: {str(exc)[:1200]}", "error")
         return redirect(url_for("procedure_updates_page", repository=entry.key))
 
     def intelligence_form_preconditions(allowed_fields: frozenset[str] = frozenset()) -> None:

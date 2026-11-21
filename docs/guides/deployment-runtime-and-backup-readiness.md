@@ -2753,3 +2753,48 @@ restart, and refuses to restart an inactive exact installation automatically.
 Its CLI verification uses the successful managed binding checks plus the
 public `coder-status` authority/selection fields; it does not expect the
 browser-only detailed binding object in Coder status.
+
+### M011.001 procedure journals and bounded worktree execution
+
+Procedure transaction storage is not part of the managed SQLite state tree.
+The live R8 parent is intentionally root-owned, so deriving a service-user
+transaction sibling from that parent is an invalid deployment contract. The
+configured root is instead the existing private service-user directory
+`/home/chuck/.local/share/.repoctl-procedure-transactions`, which remains
+`chuck:chuck` mode `0700`. The application requires an absolute, existing,
+non-symlink path with no symlink component and exact private ownership/mode.
+An inaccessible or unsafe configured root is `STORAGE_UNAVAILABLE`; `CORRUPT`
+is reserved for content that was actually read and failed transaction/request
+schema or integrity checks. Existing terminal journals are retained.
+
+The continuously running browser receives write access only to that journal
+root in addition to its already reviewed R8 paths. Review and Preview remain
+read-only. Product Owner Confirm seals a repository-, selection-, plan-,
+target- and hash-bound request in the private store and makes no worktree
+change. The UI then supplies the exact inactive instance to start. The
+same-UID `repo-control-procedure-update@.service` template revalidates and
+executes one sealed request, then exits.
+
+Atomic replacement of root `AGENTS.md` requires repository-parent rename
+rights, so only the selected instance temporarily receives the selected
+registered repository root as writable. Its nested `.git`, `docs/context`,
+and `docs/milestones` remain read-only; all nonselected repositories remain
+read-only. The generated-target allowlist, exact repository identity, reviewed
+hashes, current target snapshots and confirmation expiry constrain the
+operation. This is not a general file manager, privileged daemon, persistent
+worktree exception or Git authorization.
+
+An executor death before journal creation leaves a retryable sealed request.
+Once an active journal exists, status exposes the recovery state rather than
+mislabeling it as merely pending. Only a separately reviewed Recover for the
+same operation may supersede the matching interrupted execution request, and
+it restores verified original images. Multiple, stale, changed, tampered,
+symlinked or cross-repository states fail closed.
+
+The automated three-repository effective-sandbox proof and the separately
+authorized capture/install/verify/undo plan are documented in
+`ops/m011001/README.md`. Installation adds only one main-service journal-store
+drop-in, the inactive template, and three exact instance write-surface
+drop-ins; it requires one bounded main-service restart and starts no executor.
+It does not change managed R8 identity, SQLite, recovery timers, registry,
+selection, ACLs, Git state, or either stale repository's installed procedure.

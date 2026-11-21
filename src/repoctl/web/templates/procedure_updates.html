@@ -4,10 +4,11 @@
   <h2>Shared Procedure Updates</h2>
   <p>Review the canonical shared Coder procedure release and per-repository drift. Status and preview are read-only;
      a separately confirmed POST is required before any generated file is changed.</p>
-  <p>Product Owner role attribution is not identity authentication. Generated-procedure Apply and Recover remain
-     loopback service operations for one registered repository; they do not change Git or milestone state and never
-     write the five local <code>docs/context</code> authorities. A separate, explicitly confirmed overlay-initialization
-     transaction may update only the selected repository's existing mapped Coder overlay.</p>
+  <p>Product Owner role attribution is not identity authentication. Generated-procedure Apply and Recover are sealed
+     by the loopback service, then executed by a bounded same-user one-shot for one registered repository; they do not
+     change Git or milestone state and never write the five local <code>docs/context</code> authorities. A separate,
+     explicitly confirmed overlay-initialization transaction may update only the selected repository's existing mapped
+     Coder overlay through the same sealed-request boundary.</p>
   {% if release_preparation.authorized %}
   <div class="card error">
        <strong>{{ release_preparation.status }} — Apply is disabled; safe transaction recovery remains available.</strong>
@@ -181,7 +182,7 @@
     {% endfor %}</tbody>
   </table></div>
   <p>Removals: {{ preview.removals|length }}. No generated file is deleted by this preview.</p>
-  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT", "STORAGE_UNAVAILABLE", "EXECUTION_PENDING"] %}
   {% elif release_preparation.authorized %}
   <p>Apply is blocked while canonical release preparation is authorized, even when the currently published bundle is valid.</p>
   {% elif preview.materialization_available %}
@@ -223,12 +224,19 @@
   </section>
   {% endif %}
   {% endif %}
-  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT"] %}
+  {% if selected_transaction and selected_transaction.state in ["PREPARING", "PREPARED", "APPLYING", "RECOVERY_REQUIRED", "RECOVERY_BLOCKED", "CORRUPT", "STORAGE_UNAVAILABLE", "EXECUTION_PENDING"] %}
   <section class="card error">
     <h4>Transaction recovery: {{ selected_transaction.state }}</h4>
     {% if selected_transaction.operation_id %}<p>Operation: <code>{{ selected_transaction.operation_id }}</code></p>{% endif %}
+    {% if selected_transaction.request_id %}<p>Confirmed request: <code>{{ selected_transaction.request_id }}</code></p>{% endif %}
     {% if selected_transaction.error %}<p>{{ selected_transaction.error }}</p>{% endif %}
     {% if selected_transaction.conflicts %}<p>Conflicting targets: {{ selected_transaction.conflicts|join(", ") }}</p>{% endif %}
+    {% if selected_transaction.state == "EXECUTION_PENDING" %}
+    <p>No worktree file has changed. Run <code>sudo systemctl start {{ selected_transaction.operator_unit }}</code>
+       to execute only this sealed request in the bounded one-shot sandbox.</p>
+    {% elif selected_transaction.state == "STORAGE_UNAVAILABLE" %}
+    <p>This is a storage/configuration failure, not evidence that a transaction journal is corrupt.</p>
+    {% else %}
     <p>Apply remains blocked. Recovery is independently reviewed and only restores verified original images; it does not use or publish the canonical bundle.</p>
     {% if selected_transaction.recoverable and selected_transaction.operation_id %}
     <form method="post" action="{{ url_for('procedure_recovery_review') }}">
@@ -241,6 +249,7 @@
     </form>
     {% else %}
     <p>Recovery is blocked. Preserve the journal and images and escalate for operator investigation; no target was reconciled.</p>
+    {% endif %}
     {% endif %}
   </section>
   {% endif %}
@@ -276,8 +285,8 @@
   </ul>
   <p>Milestone prompts, decisions, workflow sidecars, and closeouts follow their own repository and lifecycle authority.
      Host-level project instructions and tool settings are controlled by the user/PO in that host; Repo Control cannot install them.</p>
-  <p>Apply journals and recovery images are stored in the service user's private transaction sibling directory, outside
-     managed worktrees and scanner-replaced state. Interrupted transactions block new Apply. Recover is an explicit,
+  <p>Apply journals, sealed requests, and recovery images are stored in the configured service-user-private transaction
+     directory, outside managed worktrees and scanner-replaced state. Interrupted transactions block new Apply. Recover is an explicit,
      separate PO confirmation and restores only the verified original state; changed files that match neither known image
      require manual escalation. The journal provides crash detection and recovery, not simultaneous six-file visibility
      or a guarantee against non-cooperating external writers.</p>

@@ -26,6 +26,7 @@ from repoctl.procedure_governance import (
 from repoctl import procedure_transactions
 from repoctl.procedure_transactions import (
     apply_confirmed,
+    execute_sealed_request,
     inspect_transaction,
     procedure_plan_digest,
     review_apply,
@@ -627,6 +628,15 @@ class WebTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(applied.status_code, 302)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+                entry = RepositoryRegistry.from_toml(registry_path).entries[0]
+                pending = inspect_transaction(entry, state_root)
+                self.assertEqual(pending["state"], "EXECUTION_PENDING")
+                self.assertEqual(pending["request_action"], "apply")
+                executed = execute_sealed_request(
+                    entry, state_root, active_key="fixture", registry_generation=0
+                )
+                self.assertEqual(executed["state"], "VERIFIED")
                 self.assertTrue((repo / ".github/copilot-instructions.md").is_file())
                 self.assertEqual(overlay.read_bytes(), original_overlay)
                 self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
@@ -1106,6 +1116,13 @@ class WebTests(unittest.TestCase):
                         },
                     )
                     self.assertEqual(recovered.status_code, 302)
+                    sealed = inspect_transaction(entry, state_root)
+                    self.assertEqual(sealed["state"], "EXECUTION_PENDING")
+                    self.assertEqual(sealed["request_action"], "recover")
+                    executed = execute_sealed_request(
+                        entry, state_root, active_key="fixture", registry_generation=0
+                    )
+                    self.assertEqual(executed["state"], "RECOVERED")
                 self.assertFalse((repo / ".github/copilot-instructions.md").exists())
                 self.assertEqual(inspect_transaction(entry, state_root)["state"], "RECOVERED")
                 with mock.patch(

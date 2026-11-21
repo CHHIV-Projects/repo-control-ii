@@ -262,6 +262,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["text", "json"], default="text", help="Output format (default: text)"
     )
 
+    procedure_execute_parser = subparsers.add_parser(
+        "procedure-execute-request",
+        help="Operator-only execution of one browser-confirmed procedure request",
+    )
+    procedure_execute_parser.add_argument("--repository-key", required=True)
+    procedure_execute_parser.add_argument("--repository-registry", required=True)
+    procedure_execute_parser.add_argument("--state-root", required=True)
+    procedure_execute_parser.add_argument("--transaction-root", required=True)
+    procedure_execute_parser.add_argument(
+        "--runtime-health-url",
+        required=True,
+        help="Loopback health endpoint used to revalidate active repository selection",
+    )
+
     remap_roles = ("context", "architecture", "workflow", "coding_agent_rules", "parking_lot")
     for command, help_text in (
         ("coder-procedure-remap-preview", "Preview a PO-controlled five-role remap without writing"),
@@ -694,7 +708,7 @@ def main(
             os.environ["REPOCTL_BACKUP_COVERAGE_PATH"] = expected_coverage
         if configuration is None:
             return _main(argv)
-        if args.command == "web":
+        if args.command in {"web", "procedure-execute-request"}:
             return _main(argv)
         if args.command not in {
             "scan", "context", "snapshot", "compare", "analyze", "milestone",
@@ -766,6 +780,60 @@ def _main(
 
     if args.command == "store-authority":
         return _run_store_authority_command(args)
+
+    if args.command == "procedure-execute-request":
+        from .procedure_transactions import (
+            ProcedureTransactionError,
+            TRANSACTION_ROOT_ENV,
+            execute_sealed_request,
+        )
+        from .web.repository_registry import RepositoryRegistry, RepositoryRegistryError
+        from urllib.error import URLError
+        from urllib.request import urlopen
+
+        try:
+            registry = RepositoryRegistry.from_toml(Path(args.repository_registry).expanduser())
+            entry = next((item for item in registry.entries if item.key == args.repository_key), None)
+            if entry is None:
+                raise ProcedureTransactionError("Select a repository from the configured registry.")
+            transaction_root = Path(args.transaction_root).expanduser()
+            if not transaction_root.is_absolute():
+                raise ProcedureTransactionError("Transaction root must be absolute.")
+            previous_root = os.environ.get(TRANSACTION_ROOT_ENV)
+            os.environ[TRANSACTION_ROOT_ENV] = str(transaction_root)
+            try:
+                with urlopen(args.runtime_health_url, timeout=5) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                active_key = health.get("active_repository")
+                registry_generation = health.get("active_repository_generation")
+                if not isinstance(active_key, str) or type(registry_generation) is not int:
+                    raise ProcedureTransactionError(
+                        "Live Repo Control health omitted the active repository binding."
+                    )
+                result = execute_sealed_request(
+                    entry,
+                    Path(args.state_root).expanduser(),
+                    active_key=active_key,
+                    registry_generation=registry_generation,
+                )
+            finally:
+                if previous_root is None:
+                    os.environ.pop(TRANSACTION_ROOT_ENV, None)
+                else:
+                    os.environ[TRANSACTION_ROOT_ENV] = previous_root
+        except (
+            ProcedureTransactionError,
+            RepositoryRegistryError,
+            OSError,
+            URLError,
+            ValueError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
+            print(f"procedure request execution failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if information_store_clients is not None and args.command not in {
         "scan",
