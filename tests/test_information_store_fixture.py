@@ -19,6 +19,7 @@ from repoctl.information_store import (
     DispatchDecisionError,
     DocumentRevisionInput,
     InformationStore,
+    RevisionConflictError,
     StoreIdentity,
     V1FixtureBundle,
     WorkflowDocumentLink,
@@ -37,6 +38,7 @@ from repoctl.workflow import lifecycle
 from repoctl.workflow.coder_interface import (
     CoderInterfaceError,
     get_coder_context,
+    get_coder_status,
     read_coder_milestone_document_page,
     submit_coder_question,
 )
@@ -77,6 +79,16 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
             self.library,
             fixture_only=True,
         )
+
+    def test_historical_closed_milestone_without_exact_closeout_link_remains_readable(self) -> None:
+        with patch.object(
+            self.fixture.store,
+            "get_event_document_link",
+            side_effect=RevisionConflictError("historical acceptance has no exact link"),
+        ):
+            snapshot = self.clients.browser_snapshot()
+        self.assertEqual(snapshot["workflow"]["phase"], "CLOSED")
+        self.assertIsNone(snapshot["workflow"]["accepted_closeout"])
 
     def test_browser_coder_architect_workflow_dispatch_and_publication_share_fixture_binding(self) -> None:
         prompt_document = next(
@@ -717,6 +729,57 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
             result = cli_main(["coder-context", "--format", "json"], information_store_clients=clients)
         self.assertEqual(result, 0)
         self.assertEqual(json.loads(output.getvalue())["milestone"]["phase"], "IN_PROGRESS")
+
+    def test_imported_closed_selection_is_reportable_without_inventing_prompt_or_closeout_approval(self) -> None:
+        repository = self.library.providers[0].sources[0].repository
+        identity = replace(self.identity, selection_id="imported-closed-selection")
+        store = InformationStore.initialize_disposable(
+            Path(self.fixture.temporary.name) / "imported-closed.sqlite3",
+            identity,
+            allow_unsupported_runtime_for_fixture=True,
+        )
+        events = deepcopy(_closeout_history())
+        closeout_path = identity.prompt_path.removesuffix("_prompt.md") + "_closeout.md"
+        submitted = next(
+            index for index, event in enumerate(events)
+            if event["event_type"] == "closeout_submitted"
+        )
+        events[submitted] = {**events[submitted], "evidence_path": closeout_path}
+        ledger = lifecycle._empty_ledger(
+            identity.repository_id,
+            {"milestone_id": identity.milestone_id, "prompt_path": identity.prompt_path},
+        )
+        ledger["events"] = events
+        workflow_bytes = lifecycle._render_sidecar(ledger).encode("utf-8")
+        store.import_v1_fixture(V1FixtureBundle(
+            prompt_path=identity.prompt_path,
+            closeout_path=closeout_path,
+            workflow_path=identity.prompt_path.removesuffix("_prompt.md") + "_workflow.md",
+            prompt_bytes=b"# Imported historical prompt\n",
+            closeout_bytes=b"# Imported historical closeout\n",
+            workflow_bytes=workflow_bytes,
+        ))
+        clients = FixtureInformationStoreClients(
+            store,
+            DocumentLibrary(
+                [GitFileProvider([GitRepositoryContext(repository)]), SQLiteRevisionProvider(store)]
+            ),
+            fixture_only=True,
+        )
+
+        with patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=repository):
+            status = get_coder_status(information_store_clients=clients)
+            with self.assertRaisesRegex(
+                FixtureIntegrationError, "no approved selected prompt revision"
+            ):
+                get_coder_context(information_store_clients=clients)
+
+        self.assertEqual(status["selection"]["milestone_id"], identity.milestone_id)
+        self.assertEqual(status["milestone"]["phase"], "CLOSED")
+        self.assertEqual(status["authorization"]["status"], "UNVERIFIED_PROMPT")
+        self.assertFalse(status["prompt"]["authority_verified"])
+        self.assertIsNone(store.snapshot()["prompt_revision_id"])
+        self.assertIsNone(clients.browser_snapshot()["workflow"]["accepted_closeout"])
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_dispatch_pages_cover_other_milestones_and_reject_stale_cursors(self, _status) -> None:

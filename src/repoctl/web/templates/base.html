@@ -36,9 +36,6 @@
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('git_review_page') }}">Git Review</a>
       <a href="{{ url_for('milestone_page') }}">Milestone</a>
-      {% if managed_publication_available %}
-        <a href="{{ url_for('managed_closeout_publication.index') }}">Publish Closeout</a>
-      {% endif %}
       <a href="{{ url_for('architect_dispatches_page') }}">Architect Dispatches</a>
       <a href="{{ url_for('intelligence_page') }}">Intelligence Value</a>
       <a href="{{ url_for('procedure_updates_page') }}">Procedure Updates</a>

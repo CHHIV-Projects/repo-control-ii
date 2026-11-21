@@ -10,6 +10,9 @@ import json
 import shutil
 from pathlib import Path
 from unittest import mock
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from werkzeug.test import Client
+from werkzeug.wrappers import Response
 
 from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.provider import ModelIdentity
@@ -135,6 +138,72 @@ class WebTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 create_web_app(repository_path=str(repo), host="0.0.0.0", state_root=root / "state")
+
+    def test_concurrent_loopback_instances_isolate_session_and_csrf_cookies(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repository = root / "repository"
+            (repository / "docs/milestones").mkdir(parents=True)
+            (repository / "docs/milestones/R003.01_fixture_prompt.md").write_text(
+                "# Fixture prompt\n", encoding="utf-8"
+            )
+            entry = RepositoryEntry(
+                key="fixture",
+                name="Fixture",
+                path=repository,
+                repository_id=make_repository_id(repository),
+                milestone_root="docs/milestones",
+                documents={},
+            )
+            registry = RepositoryRegistry((entry,), entry.key)
+            live_state = root / "live-state"
+            fixture_state = root / "fixture-state"
+            for state_root in (live_state, fixture_state):
+                state_root.mkdir()
+                (state_root / ".locks").mkdir(mode=0o700)
+
+            with (
+                mock.patch("repoctl.web.app.RepositoryRegistry.single", return_value=registry),
+                mock.patch("repoctl.web.app.generate_milestone_status"),
+            ):
+                live = create_web_app(
+                    repository_path=str(repository), port=8765, state_root=live_state
+                )
+                fixture = create_web_app(
+                    repository_path=str(repository), port=8877, state_root=fixture_state
+                )
+
+            self.assertNotEqual(
+                live.config["SESSION_COOKIE_NAME"], fixture.config["SESSION_COOKIE_NAME"]
+            )
+            browser = Client(
+                DispatcherMiddleware(live, {"/fixture": fixture}),
+                Response,
+                use_cookies=True,
+            )
+            live_page = browser.get("/milestones")
+            fixture_page = browser.get("/fixture/milestones")
+            live_token = re.search(
+                r'name="csrf_token" value="([^"]+)"', live_page.get_data(as_text=True)
+            ).group(1)
+            fixture_token = re.search(
+                r'name="csrf_token" value="([^"]+)"', fixture_page.get_data(as_text=True)
+            ).group(1)
+
+            # Revisit both instances before posting, reproducing the shared-host
+            # interleaving that invalidated the fixture when both used "session".
+            browser.get("/milestones")
+            browser.get("/fixture/milestones")
+            live_post = browser.post(
+                "/repositories/select",
+                data={"csrf_token": live_token, "repository_key": entry.key},
+            )
+            fixture_post = browser.post(
+                "/fixture/repositories/select",
+                data={"csrf_token": fixture_token, "repository_key": entry.key},
+            )
+            self.assertEqual(live_post.status_code, 302)
+            self.assertEqual(fixture_post.status_code, 302)
 
     def test_registry_selection_is_server_controlled_and_invalidates_prepared_actions(self) -> None:
         with tempfile.TemporaryDirectory() as td:

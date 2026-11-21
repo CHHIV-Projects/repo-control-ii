@@ -65,6 +65,8 @@ class InformationStoreCoderClients(Protocol):
 
     def coder_snapshot(self) -> dict[str, Any]: ...
 
+    def workflow_snapshot(self) -> dict[str, Any]: ...
+
     def runtime_binding(self) -> dict[str, Any]: ...
 
     def list_documents(self, *, after_order: int = 0) -> dict[str, Any]: ...
@@ -228,11 +230,91 @@ def _validate_information_store_overrides(
     return entry
 
 
+def _information_store_status_snapshot(
+    information_store_clients: InformationStoreCoderClients,
+) -> dict[str, Any]:
+    """Resolve a report-only prompt view without manufacturing authority.
+
+    Closed milestones imported from historical v1 state can preserve a valid
+    Product Owner approval event while lacking event-time bytes that bind the
+    decision to the imported prompt revision.  The selection remains useful
+    status information, but it must never authorize Coder work.
+    """
+
+    snapshot = information_store_clients.workflow_snapshot()
+    if snapshot["prompt_revision_id"] is not None:
+        return information_store_clients.coder_snapshot()
+    approval_events = [
+        event for event in snapshot["events"]
+        if event.get("event_type") == "prompt_approved"
+        and event.get("actor_role") == "product_owner"
+        and event.get("po_approved") is True
+    ]
+    if snapshot["projection"]["phase"] != "CLOSED" or len(approval_events) != 1:
+        return information_store_clients.coder_snapshot()
+
+    identity = information_store_clients.identity
+    documents: list[dict[str, Any]] = []
+    cursor = 0
+    while True:
+        page = information_store_clients.list_documents(after_order=cursor)
+        documents.extend(page["documents"])
+        if page["next_cursor"] is None:
+            break
+        cursor = page["next_cursor"]
+    prompts = [
+        item for item in documents
+        if item["source_path"] == identity.prompt_path and item["logical_type"] == "PROMPT"
+    ]
+    if (
+        len(prompts) != 1
+        or prompts[0]["approved_revision_id"] is not None
+        or not prompts[0]["draft_revision_id"]
+    ):
+        raise CoderInterfaceError(
+            "Historical selection does not have one unambiguous unverified prompt revision."
+        )
+    revision = information_store_clients.get_revision(
+        prompts[0]["document_id"], prompts[0]["draft_revision_id"]
+    )
+    verified_snapshot = information_store_clients.workflow_snapshot()
+    if (
+        snapshot["store_revision"] != verified_snapshot["store_revision"]
+        or snapshot["prompt_revision_id"] != verified_snapshot["prompt_revision_id"]
+        or snapshot["guidance_sha256"] != verified_snapshot["guidance_sha256"]
+    ):
+        raise CoderInterfaceError("Store state changed while resolving the Coder status snapshot.")
+    return {
+        "identity": identity,
+        "snapshot": verified_snapshot,
+        "prompt": {
+            "repository_id": identity.repository_id,
+            "repository_key": identity.repository_key,
+            "repository_root": identity.repository_root,
+            "milestone_id": identity.milestone_id,
+            "prompt_path": identity.prompt_path,
+            "selection_id": identity.selection_id,
+            "selection_revision": identity.selection_revision,
+            "document_id": revision["document_id"],
+            "revision_id": revision["revision_id"],
+            "content_sha256": revision["content_sha256"],
+            "content": revision["content"],
+            "approval_state": "unverified_historical_import",
+            "store_authority": snapshot["authority"],
+        },
+        "prompt_authority_verified": False,
+        "approved_architect_dispatches": list(reversed(verified_snapshot["confirmed_guidance"])),
+        "unverified_approved_architect_dispatches": verified_snapshot["unverified_guidance"],
+    }
+
+
 def _information_store_coder_context(
     information_store_clients: InformationStoreCoderClients,
     repository_path: str | Path | None = None,
     state_root: str | Path | None = None,
     milestone_root: str | None = None,
+    *,
+    require_authoritative_prompt: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from .lifecycle import _open_bug_ids, _open_question_ids
     from ..procedure_release import inspect_procedure_release_preparation
@@ -240,7 +322,11 @@ def _information_store_coder_context(
     entry = _validate_information_store_overrides(
         information_store_clients, repository_path, state_root, milestone_root
     )
-    context = information_store_clients.coder_snapshot()
+    context = (
+        information_store_clients.coder_snapshot()
+        if require_authoritative_prompt
+        else _information_store_status_snapshot(information_store_clients)
+    )
     identity = information_store_clients.identity
     snapshot = context["snapshot"]
     events = snapshot["events"]
@@ -265,6 +351,16 @@ def _information_store_coder_context(
         phase,
         _is_correction_mode({"phase": phase, "event_history": events}),
     )
+    if context.get("prompt_authority_verified") is False:
+        authorization = {
+            "authorized": False,
+            "can_preflight": False,
+            "status": "UNVERIFIED_PROMPT",
+            "message": (
+                "NO — the imported historical approval does not bind exact prompt bytes; "
+                "the selection is reportable but cannot authorize Coder work."
+            ),
+        }
     unverified_guidance = context["unverified_approved_architect_dispatches"]
     if unverified_guidance and authorization["authorized"]:
         authorization = {
@@ -364,6 +460,7 @@ def _information_store_coder_context(
             "path": identity.prompt_path,
             "size_bytes": len(context["prompt"]["content"].encode("utf-8")),
             "identity": workflow["prompt_identity"],
+            "authority_verified": context.get("prompt_authority_verified", True),
         },
         "information_store_authority": snapshot["authority"],
         "unverified_approved_architect_dispatches": [
@@ -381,7 +478,8 @@ def get_coder_status(
 ) -> dict[str, Any]:
     if information_store_clients is not None:
         status_data, _ = _information_store_coder_context(
-            information_store_clients, repository_path, state_root, milestone_root
+            information_store_clients, repository_path, state_root, milestone_root,
+            require_authoritative_prompt=False,
         )
         return status_data
     entry, _, candidate, workflow = _resolve_context_and_workflow(

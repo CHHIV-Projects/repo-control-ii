@@ -168,6 +168,8 @@ class InformationStoreClientProvider(Protocol):
 
     def runtime_binding(self) -> dict[str, Any]: ...
 
+    def backup_coverage_status(self) -> dict[str, Any]: ...
+
     def browser_snapshot(self) -> dict[str, Any]: ...
 
     def selection_scope(self) -> AbstractContextManager[None]: ...
@@ -660,6 +662,13 @@ def create_web_app(
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = secrets.token_hex(32)
+    session_scope = hashlib.sha256(
+        f"{bound_host}\0{port}\0{resolved_state_root}".encode("utf-8")
+    ).hexdigest()[:16]
+    # Cookies are scoped by host, not port. Concurrent loopback Repo Control
+    # instances must not overwrite one another's independently signed session
+    # and CSRF state.
+    app.config["SESSION_COOKIE_NAME"] = f"repo_control_session_{session_scope}"
     app.config["REPO_ROOT"] = initial_repository.path
     app.config["REPO_ID"] = initial_repository.repository_id
     app.config["REPOSITORY_REGISTRY_PATH"] = (
@@ -3198,6 +3207,14 @@ def create_web_app(
                     information_store_clients.runtime_binding()
                     if information_store_clients is not None else None
                 ),
+                "managed_write_coverage": (
+                    information_store_clients.backup_coverage_status()
+                    if information_store_clients is not None else {
+                        "required": False,
+                        "status": "not_required",
+                        "write_eligible": True,
+                    }
+                ),
                 "runtime_capabilities": {
                     "capability_schema_version": 1,
                     "instance_id": app.config["RUNTIME_INSTANCE_ID"],
@@ -3920,12 +3937,7 @@ def create_web_app(
         from ..workflow.information_store_fixture import FixtureIntegrationError
 
         assert information_store_clients is not None
-        if not information_store_clients.fixture_only and request.form.get("po_confirmation") != "confirmed":
-            raise WebUIError(
-                "po_confirmation_required",
-                "Explicit Product Owner confirmation is required for this workflow action.",
-                403,
-            )
+        action = request.form.get("event_type", "")
         intelligence_baseline = prepare_milestone_start_baseline()
         with repository_action_lock, state_artifact_lock(effective_state_root):
             require_current_repository_selection()
@@ -3947,7 +3959,6 @@ def create_web_app(
                     or request.form.get("expected_prompt_identity") != workflow["prompt_identity"]
                 ):
                     raise WebUIError("stale_workflow_request", "Workflow or prompt changed; refresh and retry.", 409)
-                action = request.form.get("event_type", "")
                 if action in {"approve_and_start", "implementation_started"}:
                     verify_milestone_start_baseline(repository, intelligence_baseline)
                 outstanding = workflow["outstanding_dispatches"]

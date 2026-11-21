@@ -103,11 +103,24 @@ def _parse_filename(name: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2), match.group(3)
 
 
-def _sort_key(candidate: dict[str, Any]) -> tuple[str, tuple[int, ...]]:
+def milestone_chronology_key(milestone_id: str) -> tuple[int, tuple[int, ...], str]:
+    """Order active-era M milestones newest-first, followed by legacy R milestones."""
+    if not isinstance(milestone_id, str) or not (milestone_id.startswith("M") or milestone_id.startswith("R")):
+        raise MilestoneArtifactError("Milestone chronology requires a canonical M or R milestone ID.")
+    try:
+        numeric_hierarchy = tuple(int(part) for part in milestone_id[1:].split("."))
+    except ValueError as exc:
+        raise MilestoneArtifactError("Milestone chronology requires a numeric milestone hierarchy.") from exc
+    return (
+        0 if milestone_id.startswith("M") else 1,
+        tuple(-number for number in numeric_hierarchy) + (0,),
+        milestone_id,
+    )
+
+
+def _sort_key(candidate: dict[str, Any]) -> tuple[int, tuple[int, ...], str, str]:
     milestone_id = candidate["milestone_id"]
-    process_code = milestone_id[0]
-    numeric_hierarchy = tuple(int(part) for part in milestone_id[1:].split("."))
-    return process_code, tuple(-number for number in numeric_hierarchy) + (0,)
+    return (*milestone_chronology_key(milestone_id), candidate["prompt_path"])
 
 
 def discover_milestones(

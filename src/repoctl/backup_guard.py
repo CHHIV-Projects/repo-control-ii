@@ -183,7 +183,46 @@ def read_recovery_point(
         or "\x00" in record["manifest_path"]
     ):
         raise BackupEvidenceError("The backup recovery-point manifest path is invalid.")
-    if record.get("authority_binding") != dict(expected_binding):
+    recorded_binding = record.get("authority_binding")
+    expected_binding = dict(expected_binding)
+    binding_keys = {"authority", "database_identity", "repository", "selection"}
+    authority_keys = {
+        "configuration_sha256",
+        "database_path",
+        "generation",
+        "registry_path",
+        "registry_sha256",
+        "state_root",
+    }
+    repository_keys = {"repository_id", "repository_key", "repository_root"}
+    selection_keys = {"milestone_id", "prompt_path", "selection_id", "selection_revision"}
+    if (
+        not isinstance(recorded_binding, dict)
+        or set(recorded_binding) != binding_keys
+        or set(expected_binding) != binding_keys
+        or not isinstance(recorded_binding.get("authority"), dict)
+        or not isinstance(expected_binding.get("authority"), dict)
+        or set(recorded_binding["authority"]) != authority_keys
+        or set(expected_binding["authority"]) != authority_keys
+        or not isinstance(recorded_binding.get("repository"), dict)
+        or not isinstance(expected_binding.get("repository"), dict)
+        or set(recorded_binding["repository"]) != repository_keys
+        or set(expected_binding["repository"]) != repository_keys
+        or not isinstance(recorded_binding.get("selection"), dict)
+        or not isinstance(expected_binding.get("selection"), dict)
+        or set(recorded_binding["selection"]) != selection_keys
+        or set(expected_binding["selection"]) != selection_keys
+    ):
+        raise BackupEvidenceError("The verified backup authority binding has an unsupported shape.")
+    # Repository and selection identify the request context observed when the
+    # whole-database backup was published. They remain strict, checksummed audit
+    # evidence, but they are not the recovery coverage identity: one managed
+    # SQLite authority contains every registered repository. Write eligibility
+    # is therefore bound only to the stable authority and database identity.
+    stable_keys = {"authority", "database_identity"}
+    stable_recorded = {key: recorded_binding[key] for key in stable_keys}
+    stable_expected = {key: expected_binding[key] for key in stable_keys}
+    if stable_recorded != stable_expected:
         raise BackupEvidenceError("The verified backup belongs to a different database or authority binding.")
     verified_at = _verified_timestamp(record.get("verified_at_utc"))
     try:

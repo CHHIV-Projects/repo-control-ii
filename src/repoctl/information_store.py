@@ -24,6 +24,7 @@ from .store_authority import (
 )
 from .sqlite_runtime import MINIMUM_SQLITE_VERSION, sqlite_runtime_status
 from .workflow import architect_dispatches, lifecycle
+from .workflow.milestones import milestone_chronology_key
 
 
 APPLICATION_ID = 0x52434953
@@ -2304,25 +2305,49 @@ class InformationStore:
             except StoreAuthorityError as exc:
                 raise StaleStateError(str(exc)) from exc
 
-    def _validate_backup_coverage(self) -> None:
+    def _read_backup_coverage(self) -> dict[str, Any] | None:
         configuration = self.authority_configuration
         if configuration is None:
-            return
+            return None
+        binding = backup_guard.authority_binding(
+            configuration,
+            self.database_identity(),
+            repository_id=self.identity.repository_id,
+            repository_key=self.identity.repository_key,
+            repository_root=self.identity.repository_root,
+            milestone_id=self.identity.milestone_id,
+            prompt_path=self.identity.prompt_path,
+            selection_id=self.identity.selection_id,
+            selection_revision=self.identity.selection_revision,
+        )
+        if self.backup_coverage_path is None:
+            raise backup_guard.BackupEvidenceError("The backup recovery-point path is not configured.")
+        return backup_guard.read_recovery_point(self.backup_coverage_path, binding)
+
+    def backup_coverage_status(self) -> dict[str, Any]:
+        if self.authority_configuration is None:
+            return {"required": False, "status": "not_required", "write_eligible": True}
         try:
-            binding = backup_guard.authority_binding(
-                configuration,
-                self.database_identity(),
-                repository_id=self.identity.repository_id,
-                repository_key=self.identity.repository_key,
-                repository_root=self.identity.repository_root,
-                milestone_id=self.identity.milestone_id,
-                prompt_path=self.identity.prompt_path,
-                selection_id=self.identity.selection_id,
-                selection_revision=self.identity.selection_revision,
-            )
-            if self.backup_coverage_path is None:
-                raise backup_guard.BackupEvidenceError("The backup recovery-point path is not configured.")
-            backup_guard.read_recovery_point(self.backup_coverage_path, binding)
+            record = self._read_backup_coverage()
+        except backup_guard.BackupEvidenceError as exc:
+            return {
+                "required": True,
+                "status": "blocked",
+                "write_eligible": False,
+                "reason": str(exc),
+            }
+        assert record is not None
+        return {
+            "required": True,
+            "status": "ready",
+            "write_eligible": True,
+            "verified_at_utc": record["verified_at_utc"],
+            "record_sha256": record["record_sha256"],
+        }
+
+    def _validate_backup_coverage(self) -> None:
+        try:
+            self._read_backup_coverage()
         except backup_guard.BackupEvidenceError as exc:
             raise BackupCoverageError(
                 f"Managed SQLite writes are paused until this authority has a fresh verified NAS backup: {exc}"
@@ -2390,6 +2415,9 @@ class InformationStore:
                     "closeout_path": closeout_path if closeout_count == 1 else None,
                 })
             connection.commit()
+            candidates.sort(
+                key=lambda candidate: (*milestone_chronology_key(candidate["milestone_id"]), candidate["prompt_path"])
+            )
             return {"candidates": candidates, "issues": issues}
         finally:
             connection.close()

@@ -37,7 +37,13 @@ from repoctl.migration_rehearsal import MigrationRehearsalError, verify_prepared
 from repoctl import information_store
 from repoctl import backup_guard
 from repoctl.mcp import architect_adapter
-from repoctl.backup import BackupError, create_verified_backup, restore_verified_backup
+from repoctl.backup import (
+    BackupConfig,
+    BackupError,
+    _verify_managed_coverage,
+    create_verified_backup,
+    restore_verified_backup,
+)
 from repoctl.scanner.util import make_repository_id
 from repoctl import store_authority
 from repoctl.store_authority import (
@@ -51,7 +57,10 @@ from repoctl.web.app import create_web_app
 from repoctl.web.architect_contract import ArchitectContractError
 from repoctl.web.repository_registry import RepositoryEntry, RepositoryRegistry
 from repoctl.workflow import lifecycle
-from repoctl.workflow.information_store_fixture import create_managed_information_store_clients
+from repoctl.workflow.information_store_fixture import (
+    FixtureIntegrationError,
+    create_managed_information_store_clients,
+)
 from tests.test_sqlite_workflow_poc import _closeout_history
 from tests.test_closeout_publication import FixtureGitObserver
 
@@ -667,8 +676,359 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
         self.assertEqual(clients.store.import_v1_fixture(self.bundle), self.import_receipt)
 
+    def test_managed_selection_then_workflow_write_uses_same_fresh_recovery_coverage(self) -> None:
+        prepared = InformationStore.open_managed_prepared(self.database_path, self.identity)
+        next_scope = replace(
+            self.identity,
+            milestone_id="M999.002",
+            prompt_path="docs/milestones/M999.002_second_prompt.md",
+            selection_id="second-import",
+            selection_revision=2,
+        )
+        second = prepared.register_import_scope(next_scope)
+        second_prompt = b"# Second prompt\n"
+        (self.repository_root / next_scope.prompt_path).write_bytes(second_prompt)
+        second.import_v1_fixture(V1FixtureBundle(
+            prompt_path=next_scope.prompt_path,
+            prompt_bytes=second_prompt,
+            workflow_path=None,
+            workflow_bytes=None,
+            closeout_path=None,
+            closeout_bytes=None,
+        ))
+        current_scope = replace(self.identity, selection_id="first-restored", selection_revision=3)
+        second.register_import_scope(current_scope)
+        pointer = json.loads(self.selection_path.read_text(encoding="utf-8"))
+        pointer.update(
+            selection_id=current_scope.selection_id,
+            selection_revision=current_scope.selection_revision,
+        )
+        self.selection_path.write_text(json.dumps(pointer), encoding="utf-8")
+        generation = "7" * 32
+        plan = preview_prepared_authority(
+            self.database_path, self.state_root, self.registry_path, generation
+        )
+        activate_prepared_authority(
+            self.database_path,
+            self.state_root,
+            self.registry_path,
+            generation,
+            expected_plan_sha256=plan["plan_sha256"],
+            po_confirmed=True,
+            writers_quiesced=True,
+            source_parity_confirmed=True,
+        )
+        self.create_fixture_recovery_point()
+        coverage_record = json.loads(self.coverage_path.read_text(encoding="utf-8"))
+        clients = self.managed_clients()
+        clients.switch_milestone(
+            next_scope.milestone_id,
+            expected_selection_id=clients.identity.selection_id,
+            expected_selection_revision=clients.identity.selection_revision,
+        )
+        with patch("repoctl.web.app.generate_milestone_status"):
+            app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        page = browser.get("/milestones")
+        page_text = page.get_data(as_text=True)
+        self.assertLess(page_text.index("Choose a milestone"), page_text.index("Latest workflow events"))
+        self.assertNotIn("I confirm this Product Owner workflow action", page_text)
+        with browser.session_transaction() as browser_session:
+            token = browser_session["csrf_token"]
+        bound_clients = app.extensions["repoctl_information_store_clients"]
+        snapshot = bound_clients.browser_snapshot()["workflow"]
+        form = {
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "repository_generation": "0",
+            "milestone_id": next_scope.milestone_id,
+            "prompt_path": next_scope.prompt_path,
+            "expected_phase": snapshot["phase"],
+            "expected_event_count": str(snapshot["event_count"]),
+            "expected_prompt_identity": snapshot["prompt_identity"],
+            "event_type": "approve_and_start",
+            "summary": "Approve and start the newly selected milestone",
+        }
+        with (
+            patch("repoctl.web.app.refresh_graph", return_value={"outcome": "NOT_AVAILABLE", "receipt": {}}),
+            patch("repoctl.web.app.source_snapshot", return_value={"files": []}),
+        ):
+            response = browser.post("/milestones/workflow/event", data=form)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(bound_clients.browser_snapshot()["workflow"]["phase"], "IN_PROGRESS")
+        self.assertEqual(
+            json.loads(self.coverage_path.read_text(encoding="utf-8"))["record_sha256"],
+            coverage_record["record_sha256"],
+        )
+
     @patch("repoctl.web.app.generate_milestone_status")
-    def test_managed_browser_requires_explicit_workflow_confirmation(self, _status) -> None:
+    def test_one_database_recovery_point_covers_three_authorized_repository_workflows(
+        self, _status,
+    ) -> None:
+        self.registry_patch.stop()
+        self.addCleanup(self.registry_patch.start)
+        offline = InformationStore.open_managed_prepared(self.database_path, self.identity)
+        entries = [self.repository]
+        targets: dict[str, str] = {}
+
+        def imported_workflow(identity: StoreIdentity) -> bytes:
+            events: list[dict] = []
+            events.append(lifecycle.build_next_event(
+                events,
+                event_type="prompt_approved",
+                summary=f"Approve {identity.milestone_id}",
+                actor_role="product_owner",
+                po_approved=True,
+            ))
+            events.append(lifecycle.build_next_event(
+                events,
+                event_type="implementation_started",
+                summary=f"Start {identity.milestone_id}",
+                actor_role="coder",
+            ))
+            ledger = lifecycle._empty_ledger(
+                identity.repository_id,
+                {"milestone_id": identity.milestone_id, "prompt_path": identity.prompt_path},
+            )
+            ledger["events"] = events
+            return lifecycle._render_sidecar(ledger).encode("utf-8")
+
+        def import_scope(identity: StoreIdentity) -> None:
+            nonlocal offline
+            prompt = f"# {identity.milestone_id} managed prompt\n".encode("utf-8")
+            workflow = imported_workflow(identity)
+            prompt_path = Path(identity.repository_root) / identity.prompt_path
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path.write_bytes(prompt)
+            workflow_path = identity.prompt_path.removesuffix("_prompt.md") + "_workflow.md"
+            (Path(identity.repository_root) / workflow_path).write_bytes(workflow)
+            offline = offline.register_import_scope(identity)
+            offline.import_v1_fixture(V1FixtureBundle(
+                prompt_path=identity.prompt_path,
+                workflow_path=workflow_path,
+                closeout_path=None,
+                prompt_bytes=prompt,
+                workflow_bytes=workflow,
+                closeout_bytes=None,
+            ))
+
+        target = replace(
+            self.identity,
+            milestone_id="M999.002",
+            prompt_path="docs/milestones/M999.002_second_prompt.md",
+            selection_id="repository-one-target",
+            selection_revision=2,
+        )
+        import_scope(target)
+        restored = replace(
+            self.identity, selection_id="repository-one-restored", selection_revision=3,
+        )
+        offline = offline.register_import_scope(restored)
+        pointer = json.loads(self.selection_path.read_text(encoding="utf-8"))
+        pointer.update(
+            selection_id=restored.selection_id,
+            selection_revision=restored.selection_revision,
+        )
+        information_store._write_fixture_selection(
+            self.state_root, restored.repository_id, pointer,
+        )
+        targets[self.repository.key] = target.milestone_id
+
+        for number, key, arc in ((2, "managed-two", 998), (3, "managed-three", 997)):
+            repository_root = self.root / f"repository-{number}"
+            (repository_root / "docs/milestones").mkdir(parents=True)
+            (repository_root / "docs/context").mkdir(parents=True)
+            (repository_root / "docs/context/project_context.md").write_text(
+                "# Context\n", encoding="utf-8",
+            )
+            repository_id = make_repository_id(repository_root)
+            entry = RepositoryEntry(
+                key=key,
+                name=f"Managed {number}",
+                path=repository_root,
+                repository_id=repository_id,
+                milestone_root="docs/milestones",
+                documents={"context": "docs/context/project_context.md"},
+            )
+            entries.append(entry)
+            initial = StoreIdentity(
+                repository_id=repository_id,
+                repository_key=key,
+                repository_root=str(repository_root),
+                milestone_id=f"M{arc}.001",
+                prompt_path=f"docs/milestones/M{arc}.001_initial_prompt.md",
+                selection_id=f"{key}-initial",
+                selection_revision=1,
+            )
+            import_scope(initial)
+            target = replace(
+                initial,
+                milestone_id=f"M{arc}.002",
+                prompt_path=f"docs/milestones/M{arc}.002_second_prompt.md",
+                selection_id=f"{key}-target",
+                selection_revision=2,
+            )
+            import_scope(target)
+            current = replace(
+                initial, selection_id=f"{key}-restored", selection_revision=3,
+            )
+            offline = offline.register_import_scope(current)
+            v1_selection = json.dumps({
+                "schema_version": 1,
+                "repository_id": repository_id,
+                "milestone_id": current.milestone_id,
+                "prompt_path": current.prompt_path,
+            }).encode("utf-8")
+            selection_path = (
+                self.state_root / repository_id / "milestones" / "selection.json"
+            )
+            selection_path.parent.mkdir(parents=True)
+            selection_path.write_bytes(v1_selection)
+            InformationStore.bind_prepared_v1_selection(
+                self.database_path,
+                current,
+                selection_state_root=self.state_root,
+                expected_v1_sha256=hashlib.sha256(v1_selection).hexdigest(),
+                cutover_confirmed=True,
+            )
+            targets[key] = target.milestone_id
+
+        registry = RepositoryRegistry(tuple(entries), self.repository.key)
+        self.registry_path.write_text(
+            "\n".join([
+                f'default = "{self.repository.key}"',
+                *[
+                    f'\n[repositories.{entry.key}]\nname = "{entry.name}"\n'
+                    f'path = "{entry.path}"\nmilestone_root = "{entry.milestone_root}"'
+                    for entry in entries
+                ],
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        registry_patcher = patch(
+            "repoctl.web.repository_registry.RepositoryRegistry.from_toml",
+            return_value=registry,
+        )
+        registry_patcher.start()
+        self.addCleanup(registry_patcher.stop)
+
+        generation = "7" * 32
+        plan = preview_prepared_authority(
+            self.database_path, self.state_root, self.registry_path, generation,
+        )
+        configuration = activate_prepared_authority(
+            self.database_path,
+            self.state_root,
+            self.registry_path,
+            generation,
+            expected_plan_sha256=plan["plan_sha256"],
+            po_confirmed=True,
+            writers_quiesced=True,
+            source_parity_confirmed=True,
+        )
+        self.create_fixture_recovery_point()
+        coverage_before = self.coverage_path.read_bytes()
+        coverage_record = json.loads(coverage_before)
+        clients = create_managed_information_store_clients(configuration, entries[0])
+
+        for entry in entries:
+            clients.switch_repository(entry)
+            self.assertEqual(clients.backup_coverage_status()["status"], "ready")
+            clients.switch_milestone(
+                targets[entry.key],
+                expected_selection_id=clients.identity.selection_id,
+                expected_selection_revision=clients.identity.selection_revision,
+            )
+            snapshot = clients.browser_snapshot()
+            prompt = snapshot["workflow"]["unverified_prompt"]
+            self.assertIsNotNone(prompt)
+            clients.confirm_imported_prompt(
+                request_id=prompt["request_id"],
+                expected_store_revision=snapshot["snapshot"]["store_revision"],
+                document_id=prompt["document_id"],
+                revision_id=prompt["revision_id"],
+                content_sha256=prompt["content_sha256"],
+                managed_po_confirmation=True,
+            )
+            clients.append_coder_event(
+                event_type="test_result_recorded",
+                summary=f"Cross-repository proof for {entry.key}",
+                event_fields={"evidence_source": "real-guard", "result": "PASS"},
+            )
+        self.assertEqual(self.coverage_path.read_bytes(), coverage_before)
+
+        unauthorized_root = self.root / "unauthorized"
+        unauthorized_root.mkdir()
+        unauthorized = RepositoryEntry(
+            key="unauthorized",
+            name="Unauthorized",
+            path=unauthorized_root,
+            repository_id=make_repository_id(unauthorized_root),
+            milestone_root="docs/milestones",
+            documents={},
+        )
+        with self.assertRaisesRegex(FixtureIntegrationError, "guarded registry"):
+            clients.switch_repository(unauthorized)
+
+        monitor_configuration = BackupConfig(
+            source=self.database_path,
+            staging=self.backup_staging,
+            destination=self.backup_destination,
+            restore_root=self.restore_root,
+            mountpoint=self.backup_destination,
+            mount_source="disposable",
+            repository_id=self.repository.repository_id,
+            repository_key=self.repository.key,
+            repository_root=str(self.repository_root),
+            authority_state_root=self.state_root,
+            coverage_path=self.coverage_path,
+        )
+        monitored = _verify_managed_coverage(monitor_configuration, configuration)
+        self.assertEqual(monitored["record_sha256"], coverage_record["record_sha256"])
+
+        app = create_web_app(
+            repository_registry_path=self.registry_path,
+            state_root=self.state_root,
+        )
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        with browser.session_transaction() as browser_session:
+            csrf_token = browser_session.setdefault("csrf_token", "coverage-health-token")
+        for entry in entries:
+            health = browser.get("/healthz")
+            self.assertEqual(health.status_code, 200, health.json)
+            generation = health.json["active_repository_generation"]
+            if health.json["active_repository"] != entry.key:
+                switched = browser.post("/repositories/select", data={
+                    "csrf_token": csrf_token,
+                    "repository_key": entry.key,
+                    "repository_generation": str(generation),
+                })
+                self.assertEqual(switched.status_code, 302)
+                health = browser.get("/healthz")
+            self.assertEqual(health.json["managed_write_coverage"]["status"], "ready")
+            self.assertTrue(health.json["managed_write_coverage"]["write_eligible"])
+
+        verified_at = datetime.fromisoformat(coverage_record["verified_at_utc"])
+        with patch(
+            "repoctl.backup_guard.utc_now",
+            return_value=verified_at + timedelta(seconds=backup_guard.WRITE_GUARD_MAX_AGE_SECONDS),
+        ):
+            blocked = browser.get("/healthz").json["managed_write_coverage"]
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertFalse(blocked["write_eligible"])
+            with self.assertRaisesRegex(BackupError, "managed writes pause"):
+                _verify_managed_coverage(monitor_configuration, configuration)
+            with self.assertRaisesRegex(BackupCoverageError, "managed writes pause"):
+                app.extensions["repoctl_information_store_clients"].append_coder_event(
+                    event_type="test_result_recorded",
+                    summary="Stale coverage must block this event",
+                    event_fields={"evidence_source": "stale-guard", "result": "FAIL"},
+                )
+
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_managed_browser_uses_deliberate_workflow_submission_as_confirmation(self, _status) -> None:
         self.activate_fixture_configuration()
         app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
         app.config["TESTING"] = True
@@ -685,7 +1045,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         )
         browser = app.test_client()
         page = browser.get("/milestones")
-        self.assertIn(b'name="po_confirmation"', page.data)
+        self.assertNotIn(b"I confirm this Product Owner workflow action", page.data)
         with browser.session_transaction() as browser_session:
             token = browser_session["csrf_token"]
         workflow = clients.browser_snapshot()["workflow"]
@@ -703,9 +1063,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             "evidence_source": "isolated fixture",
             "result": "PASS",
         }
-        self.assertEqual(browser.post("/milestones/workflow/event", data=form).status_code, 403)
-        self.assertEqual(clients.workflow_snapshot()["event_count"], len(self.events))
-        accepted = browser.post("/milestones/workflow/event", data={**form, "po_confirmation": "confirmed"})
+        accepted = browser.post("/milestones/workflow/event", data=form)
         self.assertEqual(accepted.status_code, 302)
         self.assertEqual(clients.workflow_snapshot()["events"][-1]["event_type"], "test_result_recorded")
         self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
@@ -1629,6 +1987,9 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         }).status_code, 302)
         before_backup = clients.workflow_snapshot()
         self.assertEqual(before_backup["projection"]["phase"], "CLOSED")
+        closed_page = browser.get("/milestones").get_data(as_text=True)
+        self.assertIn("Export accepted closeout to Git", closed_page)
+        self.assertNotIn(">Publish Closeout<", closed_page)
         self.assertEqual(self.prompt_path.read_bytes(), self.prompt_bytes)
         self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
         self.assertEqual(dispatch_path.read_bytes(), dispatch_bytes)

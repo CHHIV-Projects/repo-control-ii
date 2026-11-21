@@ -82,6 +82,7 @@ class MilestoneDiscoveryTests(unittest.TestCase):
             _artifact(repo, "milestones/arc_003/2026/M003.010.001_sub_prompt.md")
             _artifact(repo, "milestones/arc_003/2026/M003.010.001.002_deep_prompt.md")
             _artifact(repo, "milestones/M004.001_next_prompt.md")
+            _artifact(repo, "milestones/archive/R999.99_legacy_prompt.md")
             _artifact(repo, "milestones/archive/M003.010_name_closeout.md")
 
             result = discover_milestones(repo, "milestones")
@@ -94,6 +95,7 @@ class MilestoneDiscoveryTests(unittest.TestCase):
                     "M003.010.001",
                     "M003.010",
                     "M003.001",
+                    "R999.99",
                 ],
             )
             paired = next(item for item in result["candidates"] if item["milestone_id"] == "M003.010")

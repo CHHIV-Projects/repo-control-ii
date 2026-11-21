@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Accepted closeout publication{% if fixture_only %} (fixture){% endif %}</title>
+  <title>Accepted closeout export{% if fixture_only %} (fixture){% endif %}</title>
 </head>
 <body>
   <main>
-    <h1>Accepted closeout publication{% if fixture_only %} (fixture only){% endif %}</h1>
+    <h1>Accepted closeout export{% if fixture_only %} (fixture only){% endif %}</h1>
     <p>Git Review integration: <strong>{{ integration_status }}</strong></p>
     {% if error %}<p role="alert">{{ error }}</p>{% endif %}
     {% if result %}
@@ -46,7 +46,7 @@
             <input type="checkbox" name="confirm_publish" value="yes" required>
             Confirm this exact {% if fixture_only %}fixture {% endif %}preview as the Product Owner
           </label>
-          <button type="submit">Publish accepted closeout to Git</button>
+          <button type="submit">Export accepted closeout to Git</button>
         </form>
       {% endif %}
       {% if result.status == "materialized_unstaged" %}
@@ -78,7 +78,7 @@
         <label>Document ID <input name="document_id" required></label>
         <label>Revision ID <input name="revision_id" required></label>
         <label>Accepted content SHA-256 <input name="content_sha256" required></label>
-        <button type="submit">Preview accepted closeout publication</button>
+        <button type="submit">Preview accepted closeout export</button>
       </form>
     {% endif %}
   </main>

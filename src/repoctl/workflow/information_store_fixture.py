@@ -23,6 +23,7 @@ from ..information_store import (
     MAX_DISPATCH_COUNT,
     DocumentRevisionInput,
     InformationStore,
+    RevisionConflictError,
     StoreIdentity,
     WorkflowDocumentLink,
 )
@@ -159,6 +160,16 @@ class InformationStoreApplicationClients:
         configuration = self.store.authority_configuration
         if configuration is None:
             raise FixtureIntegrationError("The managed authority configuration is unavailable.")
+        verify_store_registry(configuration)
+        registry = RepositoryRegistry.from_toml(configuration.registry_path)
+        matches = [
+            entry for entry in registry.entries
+            if entry.repository_id == repository_id
+            and entry.key == repository_key
+            and str(entry.path) == repository_root
+        ]
+        if len(matches) != 1:
+            raise FixtureIntegrationError("Selected repository does not match the guarded registry.")
         return InformationStore.open_managed_from_external_selection(
             configuration, repository_id=repository_id, repository_key=repository_key,
             repository_root=repository_root,
@@ -751,6 +762,9 @@ class InformationStoreApplicationClients:
             "prompt_sha256": prompt["content_sha256"] if prompt else None,
         }
 
+    def backup_coverage_status(self) -> dict[str, Any]:
+        return self.store.backup_coverage_status()
+
     def browser_snapshot(self) -> dict[str, Any]:
         snapshot = self.workflow_snapshot()
         documents: list[dict[str, Any]] = []
@@ -832,6 +846,35 @@ class InformationStoreApplicationClients:
             )
         else:
             workflow["closeout_identity"] = None
+        workflow["accepted_closeout"] = None
+        acceptance_event = next(
+            (
+                event for event in reversed(events)
+                if event["event_type"] == "acceptance_recorded" and event["po_approved"]
+            ),
+            None,
+        )
+        accepted_link = None
+        if workflow["phase"] == "CLOSED" and acceptance_event is not None:
+            try:
+                accepted_link = self.store.get_event_document_link(
+                    acceptance_event["event_id"], "closeout"
+                )
+            except RevisionConflictError:
+                # Imported historical acceptance can establish lifecycle
+                # closure without an exact revision link. That history is not
+                # eligible for export, but it remains readable.
+                pass
+        if accepted_link is not None:
+            accepted_closeout = self.store.get_revision(
+                accepted_link["document_id"], accepted_link["revision_id"]
+            )
+            workflow["accepted_closeout"] = {
+                "request_id": f"export-{accepted_closeout['revision_id']}",
+                "document_id": accepted_closeout["document_id"],
+                "revision_id": accepted_closeout["revision_id"],
+                "content_sha256": accepted_closeout["content_sha256"],
+            }
         workflow["next_action"] = _next_action(workflow, candidate, workflow["open_questions"])
         workflow["unverified_prompt"] = (
             {

@@ -129,10 +129,6 @@
             <input type="checkbox" name="closure_guard_confirmed" value="yes" required>
             I reviewed the listed dispatches and explicitly choose to close without an amended closeout.
           </label>
-          {% if information_store_mode and not information_store_fixture %}
-            <label><input type="checkbox" name="po_confirmation" value="confirmed" required>
-              I confirm this Product Owner workflow action.</label>
-          {% endif %}
           <input type="hidden" name="summary" value="{{ workflow.closure_confirmation.summary }}">
           <button type="submit">Confirm override and close</button>
           <a class="button secondary" href="{{ url_for('milestone_page') }}">Cancel and review milestone</a>
@@ -231,16 +227,28 @@
           <label for="lock-in-summary">Optional binding lock-in (leave blank for none)</label>
           <textarea id="lock-in-summary" name="lock_in_summary" maxlength="2000">{{ request.form.get("lock_in_summary", "") }}</textarea>
         </div>
-        {% if information_store_mode and not information_store_fixture %}
-          <label><input type="checkbox" name="po_confirmation" value="confirmed" required>
-            I confirm this Product Owner workflow action.</label>
-        {% endif %}
         <button type="submit" id="workflow-submit">{% if submitted_event %}{% for event_type, event_label in workflow.ui_events %}{% if event_type == submitted_event %}{{ event_label }}{% endif %}{% endfor %}{% else %}Record workflow event{% endif %}</button>
       </form>
     </article>
   {% endif %}
 
   {% if workflow.phase == "CLOSED" and not workflow.unverified_prompt %}
+    {% if information_store_mode and not information_store_fixture and workflow.accepted_closeout %}
+      <article class="card spaced-top">
+        <h3>Accepted closeout</h3>
+        <p>Export is a separate explicit action. It does not stage, commit, or push.</p>
+        <form method="post" action="{{ url_for('managed_closeout_publication.preview') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+          <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+          <input type="hidden" name="request_id" value="{{ workflow.accepted_closeout.request_id }}">
+          <input type="hidden" name="document_id" value="{{ workflow.accepted_closeout.document_id }}">
+          <input type="hidden" name="revision_id" value="{{ workflow.accepted_closeout.revision_id }}">
+          <input type="hidden" name="content_sha256" value="{{ workflow.accepted_closeout.content_sha256 }}">
+          <button type="submit">Export accepted closeout to Git</button>
+        </form>
+      </article>
+    {% endif %}
     <article class="card spaced-top">
       <h3>Reopen milestone</h3>
       <p><strong>Repository:</strong> {{ repository_name }}</p>

@@ -8,6 +8,44 @@
   <p><strong>Configured milestone root:</strong> <code>{{ milestone_root }}/</code></p>
   <p class="muted">Selection identifies a prompt. Approve &amp; Start, Resolve &amp; Resume, and Accept &amp; Close combine deliberate Product Owner actions while preserving distinct workflow events.</p>
 
+  <article class="card spaced-top">
+    <h3>Choose a milestone</h3>
+    {% if candidates %}
+      <form method="post" action="{{ url_for('select_milestone') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
+        <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
+        {% if information_store_mode %}
+          <input type="hidden" name="expected_selection_id" value="{{ information_store_selection.selection_id }}">
+          <input type="hidden" name="expected_selection_revision" value="{{ information_store_selection.selection_revision }}">
+        {% endif %}
+        <label for="milestone-candidate">Select or reselect a milestone prompt</label>
+        <select id="milestone-candidate" name="milestone_id" required>
+          <option value="" disabled{% if selection.status != "selected" %} selected{% endif %}>Choose a milestone</option>
+          {% for candidate in candidates %}
+            <option value="{{ candidate.milestone_id }}"{% if selection.status == "selected" and selection.selection.prompt_path == candidate.prompt_path %} selected{% endif %}>
+              {{ candidate.milestone_id }} — {{ candidate.title_slug }}
+            </option>
+          {% endfor %}
+        </select>
+        <button type="submit">Select milestone</button>
+      </form>
+      <details class="spaced-top">
+        <summary>Show prompt inventory</summary>
+        <ul>
+          {% for candidate in candidates %}
+            <li>
+              <strong>{{ candidate.milestone_id }}</strong> — <code>{{ candidate.prompt_path }}</code>
+              <span> · Closeout {{ "present" if candidate.closeout_exists else "not present" }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% else %}
+      <p>No valid milestone prompt candidates were found beneath the configured milestone root.</p>
+    {% endif %}
+  </article>
+
   {% if selection.status == "selected" %}
     <article class="card spaced-top">
       <h3>Selected milestone: {{ selection.selection.milestone_id }}</h3>
@@ -96,44 +134,5 @@
     </article>
   {% endif %}
 
-  <article class="card spaced-top">
-    <h3>Discovered prompt candidates</h3>
-    {% if candidates %}
-      <ul>
-        {% for candidate in candidates %}
-          <li>
-            <strong>{{ candidate.milestone_id }}</strong> —
-            <code>{{ candidate.prompt_path }}</code>
-            {% if candidate.closeout_exists %}
-              <span> · Closeout present</span>
-            {% else %}
-              <span> · Closeout not present</span>
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-      <form method="post" action="{{ url_for('select_milestone') }}" class="spaced-top">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
-        <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
-        {% if information_store_mode %}
-          <input type="hidden" name="expected_selection_id" value="{{ information_store_selection.selection_id }}">
-          <input type="hidden" name="expected_selection_revision" value="{{ information_store_selection.selection_revision }}">
-        {% endif %}
-        <label for="milestone-candidate">Select or reselect a milestone prompt</label>
-        <select id="milestone-candidate" name="milestone_id" required>
-          <option value="" disabled{% if selection.status != "selected" %} selected{% endif %}>Choose a milestone</option>
-          {% for candidate in candidates %}
-            <option value="{{ candidate.milestone_id }}"{% if selection.status == "selected" and selection.selection.prompt_path == candidate.prompt_path %} selected{% endif %}>
-              {{ candidate.milestone_id }} — {{ candidate.title_slug }}
-            </option>
-          {% endfor %}
-        </select>
-        <button type="submit">Select milestone</button>
-      </form>
-    {% else %}
-      <p>No valid milestone prompt candidates were found beneath the configured milestone root.</p>
-    {% endif %}
-  </article>
 </section>
 {% endblock %}
