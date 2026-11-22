@@ -21,6 +21,16 @@
     <div>Run the authorized CLI release preview and publish flow; this page never publishes the candidate.</div>
     {% endif %}
   </div>
+  {% elif release_preparation.status == "UNVERIFIED_IMPORTED_HISTORY" %}
+  <div class="card">
+    <strong>UNVERIFIED_IMPORTED_HISTORY — historical milestone authority remains restricted.</strong>
+    {{ release_preparation.reason }}
+  </div>
+  {% elif release_preparation.status in ["RELEASE_INTEGRITY_UNAVAILABLE", "RELEASE_AUTHORITY_UNAVAILABLE", "INTEGRITY_UNAVAILABLE"] %}
+  <div class="card error">
+    <strong>{{ release_preparation.status }} — published procedure installation is blocked.</strong>
+    {{ release_preparation.reason }}
+  </div>
   {% endif %}
   {% if bundle_error %}
   <div class="card error"><strong>Canonical bundle integrity unavailable.</strong> {{ bundle_error }}</div>

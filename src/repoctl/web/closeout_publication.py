@@ -112,7 +112,7 @@ def _create_closeout_publication_blueprint(
         record = service.store.get_document_publication(publication_id=publication_id)
         if record is None:
             return jsonify({"error": {"code": "not_found", "message": "Publication preview was not found."}}), 404
-        if request.form.get("confirm_publish") != "yes" or not confirmation(record):
+        if not confirmation(record):
             return jsonify({"error": {"code": "po_confirmation_required", "message": "PO confirmation is required."}}), 403
         result = service.materialize(
             publication_id,

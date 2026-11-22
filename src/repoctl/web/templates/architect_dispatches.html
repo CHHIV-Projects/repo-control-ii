@@ -57,10 +57,6 @@
           <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
           {% if information_store_mode %}
             <input type="hidden" name="decision_fingerprint" value="{{ dispatch['decision_fingerprint'] }}">
-            <label>
-              <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
-              {% if information_store_fixture %}Confirm this fixture-only decision as Product Owner; it grants no production authorization.{% else %}Confirm this decision as Product Owner.{% endif %}
-            </label>
           {% endif %}
           <button type="submit">
             {% if information_store_mode and information_store_fixture %}
@@ -78,12 +74,8 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="repository_key" value="{{ active_repository_key }}">
           <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
-          {% if information_store_fixture %}
+          {% if information_store_mode %}
             <input type="hidden" name="decision_fingerprint" value="{{ dispatch['decision_fingerprint'] }}">
-            <label>
-              <input type="checkbox" name="{{ 'fixture_po_confirmation' if information_store_fixture else 'po_confirmation' }}" value="confirmed" required>
-              {% if information_store_fixture %}Confirm this fixture-only decision as Product Owner; it grants no production authorization.{% else %}Confirm this decision as Product Owner.{% endif %}
-            </label>
           {% endif %}
           <button type="submit">Reject</button>
         </form>

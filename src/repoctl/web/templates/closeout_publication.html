@@ -42,10 +42,6 @@
             <input type="hidden" name="repository_generation" value="{{ repository_registry_generation }}">
           {% endif %}
           <input type="hidden" name="preview_fingerprint" value="{{ result.preview_fingerprint }}">
-          <label>
-            <input type="checkbox" name="confirm_publish" value="yes" required>
-            Confirm this exact {% if fixture_only %}fixture {% endif %}preview as the Product Owner
-          </label>
           <button type="submit">Export accepted closeout to Git</button>
         </form>
       {% endif %}

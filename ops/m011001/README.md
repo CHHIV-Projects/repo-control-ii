@@ -110,3 +110,46 @@ undone, `undo` restores the captured files, moves newly introduced files into
 the private backup rather than deleting them, reloads systemd, performs one
 restart, and rechecks the unchanged managed R8 service. It does not restore a
 legacy authority, edit SQLite, or alter the private journal history.
+
+## Reopened-milestone authority correction
+
+The bounded correction separates two previously coupled facts:
+
+- `UNVERIFIED_IMPORTED_HISTORY` continues to deny milestone implementation and
+  new procedure-release preparation, but does not invalidate an independently
+  hash-verified published procedure release.
+- `RELEASE_INTEGRITY_UNAVAILABLE`, `RELEASE_AUTHORITY_UNAVAILABLE`, canonical
+  bundle corruption, or an actively authorized release preparation still block
+  Review Apply.
+
+The existing repository/selection generation, exact plan digest, overlay,
+short-lived confirmation token, sealed request, one-shot executor, and recovery
+checks are unchanged. No historical prompt or guidance is approved by this
+correction.
+
+The UI audit removed only duplicate identity/self-attestation fields. The
+deliberate named action remains the Product Owner-reported decision; Repo
+Control still does not authenticate identity.
+
+| Surface | Before | After | Deliberately retained |
+|---|---|---|---|
+| Closed milestone reopen | Named Reopen action plus generic “I am the Product Owner” checkbox | Named Reopen action | exact repository/milestone/phase/event-count binding and required reason/target phase |
+| Pending Architect dispatch approve/reject | Named action plus generic Product Owner checkbox | Named action | exact dispatch fingerprint, repository generation, and route action |
+| Accepted closeout export | reviewed preview plus generic Product Owner checkbox plus named Export action | reviewed preview plus named Export action | preview fingerprint, accepted revision/hash, Git drift checks, and server-side managed/fixture boundary |
+| Imported prompt/guidance reconciliation | content-specific new-decision checkbox | unchanged | exact imported bytes/fingerprint acknowledgement; historical approval remains unknown |
+| Close despite newer guidance | content-specific override checkbox | unchanged | listed dispatch IDs and required override reason |
+
+The correction rollout changes no configuration or data. It verifies the exact
+six runtime source hashes, captures the prior committed bytes, performs exactly
+one service restart, and rechecks the managed R8 identity and recovery timers:
+
+```bash
+sudo /home/chuck/projects/repo-control-ii/ops/m011001/rollout-authority-correction.sh preflight
+sudo /home/chuck/projects/repo-control-ii/ops/m011001/rollout-authority-correction.sh rollout
+```
+
+`preflight` is read-only. Do not run `rollout` without separate explicit
+Product Owner authorization. If and only if rollback is later directed, `undo`
+restores the six captured pre-correction source files and performs one restart;
+it does not edit SQLite, the recovery record, registry, selection, ACLs,
+systemd configuration, procedure bundle, or Git metadata.

@@ -695,7 +695,6 @@ class CloseoutPublicationTests(unittest.TestCase):
         denied = client.post(
             f"/fixture/{publication['publication_id']}/publish",
             data={
-                "confirm_publish": "yes",
                 "preview_fingerprint": publication["preview_fingerprint"],
             },
         )

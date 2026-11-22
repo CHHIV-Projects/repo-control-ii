@@ -1325,7 +1325,7 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(client.post("/milestones/workflow/event", data=close_form).status_code, 409)
 
         reopen = action_form("milestone_reopened", "Reopen fixture")
-        reopen.update(confirm_reopen="yes", target_phase="IN_PROGRESS", reason="Reopen fixture")
+        reopen.update(target_phase="IN_PROGRESS", reason="Reopen fixture")
         self.assertEqual(client.post("/milestones/reopen", data=reopen).status_code, 302)
         self.assertEqual(store.snapshot()["projection"]["phase"], "IN_PROGRESS")
         self.assertEqual(store.snapshot()["events"][:-1], closed["events"])
@@ -1580,27 +1580,16 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
 
         review_page = web_client.get("/architect-dispatches")
         self.assertEqual(review_page.status_code, 200)
-        self.assertIn(b"fixture_po_confirmation", review_page.data)
+        self.assertNotIn(b"fixture_po_confirmation", review_page.data)
         with web_client.session_transaction() as browser_session:
             csrf_token = browser_session["csrf_token"]
         decision_url = f"/architect-dispatches/{proposed_dispatch['dispatch_id']}/approve"
-        unconfirmed = web_client.post(
-            decision_url,
-            data={
-                "csrf_token": csrf_token,
-                "repository_key": identity.repository_key,
-                "repository_generation": str(generation),
-            },
-        )
-        self.assertEqual(unconfirmed.status_code, 403)
-        self.assertEqual(store.get_dispatch(proposed_dispatch["dispatch_id"])["status"], "PENDING")
         confirmed = web_client.post(
             decision_url,
             data={
                 "csrf_token": csrf_token,
                 "repository_key": identity.repository_key,
                 "repository_generation": str(generation),
-                "fixture_po_confirmation": "confirmed",
                 "decision_fingerprint": dispatch_reconciliation_fingerprint(
                     store.get_dispatch(proposed_dispatch["dispatch_id"])
                 ),

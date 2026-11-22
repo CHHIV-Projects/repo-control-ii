@@ -655,10 +655,9 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             "repository_generation": "0",
             "decision_fingerprint": dispatch_reconciliation_fingerprint(clients.store.get_dispatch(dispatch["dispatch_id"])),
         }
-        self.assertEqual(browser.post(decision_url, data=review).status_code, 403)
-        self.assertEqual(
-            browser.post(decision_url, data={**review, "po_confirmation": "confirmed"}).status_code, 302,
-        )
+        dispatch_page = browser.get("/architect-dispatches")
+        self.assertNotIn(b"Confirm this decision as Product Owner", dispatch_page.data)
+        self.assertEqual(browser.post(decision_url, data=review).status_code, 302)
         self.assertEqual(clients.store.list_dispatch_history(dispatch["dispatch_id"])[-1]["source_kind"], "po_browser")
 
         output = StringIO()
@@ -1078,11 +1077,29 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertIn(b"Git-owned dashboard", dashboard.data)
 
     @patch("repoctl.web.app.generate_milestone_status")
-    def test_procedure_preview_reads_confirmed_store_prompt_and_blocks_unknown_authority(self, _status) -> None:
+    def test_photo_organizer_analogue_allows_published_apply_with_unverified_imported_history(self, _status) -> None:
         self.activate_fixture_configuration()
         app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
         app.config["TESTING"] = True
         clients = app.extensions["repoctl_information_store_clients"]
+        timestamp = "2026-01-01T00:00:00+00:00"
+        imported_guidance = {
+            "dispatch_id": "a" * 32,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "type": "INSTRUCTION",
+            "status": "APPROVED",
+            "body": "Imported Photo Organizer onboarding guidance analogue.",
+            "approved_milestone_id": self.identity.milestone_id,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        connection = sqlite3.connect(self.database_path)
+        try:
+            clients.store._insert_legacy_dispatch(connection, imported_guidance, "b" * 64)
+            connection.commit()
+        finally:
+            connection.close()
         browser = app.test_client()
         self.assertEqual(browser.get("/milestones").status_code, 200)
         captured = {}
@@ -1093,19 +1110,37 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
 
         with patch("repoctl.web.app.render_template", side_effect=render):
             self.assertEqual(browser.get("/procedure-updates").status_code, 200)
-        self.assertEqual(captured["release_preparation"]["status"], "UNAVAILABLE")
+        self.assertEqual(captured["release_preparation"]["status"], "UNVERIFIED_IMPORTED_HISTORY")
+        self.assertFalse(captured["release_preparation"]["authorized"])
+        self.assertEqual(captured["release_preparation"]["integrity_status"], "CURRENT")
+        self.assertEqual(len(clients.browser_snapshot()["workflow"]["unverified_guidance"]), 1)
+        status_page = browser.get("/procedure-updates")
+        self.assertIn(b"UNVERIFIED_IMPORTED_HISTORY", status_page.data)
+        self.assertIn(b"published procedure remains available for installation", status_page.data)
         with browser.session_transaction() as browser_session:
             token = browser_session["csrf_token"]
-        with patch("repoctl.procedure_transactions.review_apply") as review:
-            rejected = browser.post("/procedure-updates/apply-review", data={
+        reviewed_plan = {"target_release": "1.5.0", "changes": []}
+        with (
+            patch("repoctl.procedure_governance.preview_reconciliation", return_value=reviewed_plan),
+            patch("repoctl.procedure_transactions.procedure_plan_digest", return_value="0" * 64),
+            patch(
+                "repoctl.procedure_transactions.review_apply",
+                return_value={
+                    "confirmation": {"token": "bounded-review-token", "expires_at": "2030-01-01T00:00:00+00:00"},
+                    "plan": reviewed_plan,
+                },
+            ) as review,
+        ):
+            accepted = browser.post("/procedure-updates/apply-review", data={
                 "csrf_token": token,
                 "repository_key": self.repository.key,
                 "active_repository_key": self.repository.key,
                 "repository_generation": "0",
                 "plan_sha256": "0" * 64,
             })
-        self.assertEqual(rejected.status_code, 409)
-        review.assert_not_called()
+        self.assertEqual(accepted.status_code, 302)
+        review.assert_called_once()
+        self.assertIsNotNone(clients.browser_snapshot()["workflow"]["unverified_prompt"])
         initial = clients.browser_snapshot()
         prompt = initial["workflow"]["unverified_prompt"]
         clients.confirm_imported_prompt(
@@ -1125,9 +1160,97 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             patch("repoctl.workflow.coder_interface.resolve_coder_release_preparation_context") as legacy,
         ):
             self.assertEqual(browser.get("/procedure-updates").status_code, 200)
-        self.assertEqual(inspect.call_args.kwargs["prompt_content"], self.prompt_bytes)
+        self.assertEqual(captured["release_preparation"]["status"], "UNVERIFIED_IMPORTED_HISTORY")
+        inspect.assert_not_called()
         legacy.assert_not_called()
         self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
+
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_published_procedure_apply_keeps_integrity_selection_plan_overlay_and_confirmation_guards(self, _status) -> None:
+        from repoctl.procedure_governance import ProcedureGovernanceError
+
+        self.activate_fixture_configuration()
+        app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        app.config["TESTING"] = True
+        clients = app.extensions["repoctl_information_store_clients"]
+        browser = app.test_client()
+        browser.get("/procedure-updates")
+        with browser.session_transaction() as browser_session:
+            token = browser_session["csrf_token"]
+        common = {
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "active_repository_key": self.repository.key,
+            "repository_generation": "0",
+            "plan_sha256": "0" * 64,
+        }
+
+        with patch(
+            "repoctl.procedure_governance.load_bundle",
+            side_effect=ProcedureGovernanceError("Canonical source hash mismatch"),
+        ):
+            corrupted = browser.post("/procedure-updates/apply-review", data=common)
+        self.assertEqual(corrupted.status_code, 409)
+
+        reconciled_snapshot = clients.browser_snapshot()
+        reconciled_snapshot["workflow"] = {
+            **reconciled_snapshot["workflow"],
+            "unverified_prompt": None,
+            "unverified_guidance": [],
+        }
+        with (
+            patch.object(clients, "browser_snapshot", return_value=reconciled_snapshot),
+            patch(
+                "repoctl.procedure_release.inspect_procedure_release_preparation",
+                return_value={
+                    "status": "RELEASE_IN_PREPARATION",
+                    "authorized": True,
+                    "candidate_release": "1.6.0",
+                },
+            ),
+            patch("repoctl.procedure_transactions.review_apply") as review,
+        ):
+            active_release = browser.post("/procedure-updates/apply-review", data=common)
+        self.assertEqual(active_release.status_code, 409)
+        review.assert_not_called()
+
+        self.assertEqual(
+            browser.post(
+                "/procedure-updates/apply-review",
+                data={**common, "repository_generation": "1"},
+            ).status_code,
+            409,
+        )
+        self.assertEqual(
+            browser.post(
+                "/procedure-updates/apply-review",
+                data={**common, "repository_key": "not-registered"},
+            ).status_code,
+            400,
+        )
+
+        reviewed_plan = {"target_release": "1.5.0", "changes": []}
+        with (
+            patch("repoctl.procedure_governance.preview_reconciliation", return_value=reviewed_plan),
+            patch("repoctl.procedure_transactions.procedure_plan_digest", return_value="1" * 64),
+            patch("repoctl.procedure_transactions.review_apply") as review,
+        ):
+            stale_plan = browser.post("/procedure-updates/apply-review", data=common)
+        self.assertEqual(stale_plan.status_code, 302)
+        review.assert_not_called()
+
+        with patch(
+            "repoctl.procedure_governance.preview_reconciliation",
+            side_effect=ProcedureGovernanceError("Project overlay is invalid"),
+        ):
+            invalid_overlay = browser.post("/procedure-updates/apply-review", data=common)
+        self.assertEqual(invalid_overlay.status_code, 302)
+
+        missing_confirmation = browser.post(
+            "/procedure-updates/apply",
+            data={key: value for key, value in common.items() if key != "plan_sha256"},
+        )
+        self.assertEqual(missing_confirmation.status_code, 400)
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_incomplete_or_changed_configuration_fails_closed(self, _status) -> None:
@@ -2022,7 +2145,7 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         self.assertEqual(self.workflow_path.read_bytes(), source_workflow_before)
 
     @patch("repoctl.web.app.generate_milestone_status")
-    def test_registered_publication_handoff_uses_explicit_po_confirmation(self, _status) -> None:
+    def test_registered_publication_handoff_uses_named_export_action_without_identity_checkbox(self, _status) -> None:
         self.activate_fixture_configuration()
         clients = self.managed_clients()
         initial = clients.browser_snapshot()
@@ -2088,11 +2211,12 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             }).status_code, 400)
             response = browser.post("/closeout-publication/preview", data=preview)
             self.assertEqual(response.status_code, 200, response.data)
+            self.assertNotIn(b'confirm_publish', response.data)
+            self.assertNotIn(b"as the Product Owner", response.data)
             record = clients.store.get_document_publication(request_id="managed-preview")
             publish_url = f"/closeout-publication/{record['publication_id']}/publish"
             publish = {**common, "preview_fingerprint": record["preview_fingerprint"]}
-            self.assertEqual(browser.post(publish_url, data=publish).status_code, 403)
-            self.assertEqual(browser.post(publish_url, data={**publish, "confirm_publish": "yes"}).status_code, 200)
+            self.assertEqual(browser.post(publish_url, data=publish).status_code, 200)
             self.assertEqual((self.repository_root / closeout_path).read_text(encoding="utf-8"), "# Accepted closeout\n")
             handoff = browser.get(f"/closeout-publication/{record['publication_id']}/handoff")
             self.assertEqual(handoff.status_code, 200)

@@ -1472,6 +1472,7 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertIn("Reopen milestone", page)
             self.assertIn("Prior acceptance and closure remain in the workflow history", page)
             self.assertIn("Reopening does not modify Git", page)
+            self.assertNotIn("I am the Product Owner", page)
 
             reopen = {
                 "csrf_token": csrf,
@@ -1483,7 +1484,6 @@ class MilestoneWebTests(unittest.TestCase):
                 "expected_event_count": str(closed["event_count"]),
                 "target_phase": "REVIEW",
                 "reason": "Accidental premature closure; return to review.",
-                "confirm_reopen": "yes",
             }
             self.assertEqual(
                 client.post("/milestones/reopen", data={**reopen, "csrf_token": ""}).status_code,
@@ -1492,10 +1492,6 @@ class MilestoneWebTests(unittest.TestCase):
             self.assertEqual(
                 client.post("/milestones/reopen", data={**reopen, "repository_generation": "1"}).status_code,
                 409,
-            )
-            self.assertEqual(
-                client.post("/milestones/reopen", data={**reopen, "confirm_reopen": ""}).status_code,
-                400,
             )
             self.assertEqual(client.post("/milestones/reopen", data=reopen).status_code, 302)
             _, reopened = current()

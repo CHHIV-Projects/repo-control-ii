@@ -848,6 +848,7 @@ def create_web_app(
         return g.active_repository
 
     def active_release_preparation() -> dict[str, Any]:
+        from ..procedure_governance import ProcedureGovernanceError, load_bundle
         from ..procedure_release import inspect_procedure_release_preparation
         from ..workflow.coder_interface import (
             CoderInterfaceError,
@@ -863,10 +864,26 @@ def create_web_app(
                 data = information_store_clients.browser_snapshot()
                 workflow = data["workflow"]
                 if workflow["unverified_prompt"] is not None or workflow["unverified_guidance"]:
-                    raise FixtureIntegrationError(
-                        "Imported prompt or guidance requires explicit Product Owner reconciliation."
-                    )
-                return inspect_procedure_release_preparation(
+                    try:
+                        bundle = load_bundle()
+                    except (OSError, ProcedureGovernanceError, UnicodeError) as exc:
+                        return {
+                            "status": "RELEASE_INTEGRITY_UNAVAILABLE",
+                            "authorized": False,
+                            "reason": f"Canonical published procedure integrity is unavailable: {exc}",
+                        }
+                    return {
+                        "status": "UNVERIFIED_IMPORTED_HISTORY",
+                        "authorized": False,
+                        "integrity_status": "CURRENT",
+                        "published_release": bundle.release,
+                        "reason": (
+                            "The selected milestone contains imported prompt or guidance that has not been "
+                            "reconciled. That history cannot authorize milestone or release-preparation work; "
+                            "the independently verified published procedure remains available for installation."
+                        ),
+                    }
+                result = inspect_procedure_release_preparation(
                     active.path,
                     data["candidate"],
                     workflow,
@@ -874,8 +891,11 @@ def create_web_app(
                     repository_id=active.repository_id,
                     prompt_content=data["prompt"]["content"].encode("utf-8"),
                 )
+                if result.get("status") == "INTEGRITY_UNAVAILABLE":
+                    result = {**result, "status": "RELEASE_INTEGRITY_UNAVAILABLE"}
+                return result
             except (InformationStoreError, FixtureIntegrationError, ValueError) as exc:
-                return {"status": "UNAVAILABLE", "authorized": False, "reason": str(exc)}
+                return {"status": "RELEASE_AUTHORITY_UNAVAILABLE", "authorized": False, "reason": str(exc)}
         try:
             entry, candidate, workflow = resolve_coder_release_preparation_context(
                 repository_path=active.path,
@@ -2337,21 +2357,6 @@ def create_web_app(
         if selected is None:
             raise WebUIError("invalid_procedure_repository", "Select a repository from the configured list.")
         if require_bundle_integrity:
-            release_preparation = active_release_preparation()
-            if information_store_clients is not None and release_preparation.get("status") in {
-                "UNAVAILABLE", "INTEGRITY_UNAVAILABLE",
-            }:
-                raise WebUIError(
-                    "procedure_authority_unavailable",
-                    "Procedure Apply requires a verified current InformationStore release context.",
-                    status_code=409,
-                )
-            if release_preparation.get("authorized"):
-                raise WebUIError(
-                    "procedure_release_preparation_active",
-                    "Apply is blocked while an explicitly authorized shared-procedure release is being prepared.",
-                    status_code=409,
-                )
             from ..procedure_governance import ProcedureGovernanceError, load_bundle
 
             try:
@@ -2362,6 +2367,22 @@ def create_web_app(
                     f"Apply is blocked because canonical bundle integrity is unavailable: {str(exc)[:1200]}",
                     status_code=409,
                 ) from exc
+            release_preparation = active_release_preparation()
+            if information_store_clients is not None and release_preparation.get("status") in {
+                "UNAVAILABLE", "INTEGRITY_UNAVAILABLE", "RELEASE_AUTHORITY_UNAVAILABLE",
+                "RELEASE_INTEGRITY_UNAVAILABLE",
+            }:
+                raise WebUIError(
+                    "procedure_authority_unavailable",
+                    "Procedure Apply is blocked because current release integrity or authority cannot be verified.",
+                    status_code=409,
+                )
+            if release_preparation.get("authorized"):
+                raise WebUIError(
+                    "procedure_release_preparation_active",
+                    "Apply is blocked while an explicitly authorized shared-procedure release is being prepared.",
+                    status_code=409,
+                )
         return selected
 
     @app.post("/procedure-updates/overlay-review")
@@ -3097,16 +3118,17 @@ def create_web_app(
                 )
             dispatch_status = "APPROVED" if action in {"approve", "reconcile-approve"} else "REJECTED"
             if information_store_clients is not None:
-                confirmation_field = (
-                    "fixture_po_confirmation" if information_store_clients.fixture_only else "po_confirmation"
-                )
-                if request.form.get(confirmation_field) != "confirmed":
-                    raise WebUIError(
-                        "fixture_po_confirmation_required" if information_store_clients.fixture_only
-                        else "po_confirmation_required",
-                        "Explicit Product Owner confirmation is required for dispatch decisions.",
-                        status_code=403,
+                if action.startswith("reconcile-"):
+                    confirmation_field = (
+                        "fixture_po_confirmation" if information_store_clients.fixture_only else "po_confirmation"
                     )
+                    if request.form.get(confirmation_field) != "confirmed":
+                        raise WebUIError(
+                            "fixture_po_confirmation_required" if information_store_clients.fixture_only
+                            else "po_confirmation_required",
+                            "Confirm the new decision about these exact imported guidance bytes.",
+                            status_code=403,
+                        )
                 try:
                     if action.startswith("reconcile-"):
                         information_store_clients.reconcile_imported_guidance(
@@ -4295,12 +4317,6 @@ def create_web_app(
                         or request.form.get("expected_prompt_identity") != workflow["prompt_identity"]
                     ):
                         raise WebUIError("stale_milestone_reopen", "Milestone changed; refresh and retry.", 409)
-                    if request.form.get("confirm_reopen") != "yes":
-                        raise WebUIError(
-                            "reopen_confirmation_required",
-                            "Explicit Product Owner confirmation is required to reopen a milestone.",
-                            400,
-                        )
                     information_store_clients.record_browser_action(
                         action="milestone_reopened",
                         summary=request.form.get("reason", ""),
@@ -4357,12 +4373,6 @@ def create_web_app(
                     "stale_milestone_reopen",
                     "The milestone is no longer CLOSED or its history changed. Refresh and retry.",
                     status_code=409,
-                )
-            if request.form.get("confirm_reopen") != "yes":
-                raise WebUIError(
-                    "reopen_confirmation_required",
-                    "Explicit Product Owner confirmation is required to reopen a milestone.",
-                    status_code=400,
                 )
             try:
                 record_milestone_reopen(
