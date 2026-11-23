@@ -19,6 +19,7 @@ from repoctl.analysis.provider import ModelIdentity
 from repoctl.compare.manager import compare_snapshots
 from repoctl.procedure_governance import (
     BUNDLE_ROOT,
+    inspect_procedure,
     load_bundle,
     materialize_preview,
     preview_reconciliation,
@@ -44,8 +45,8 @@ from repoctl.workflow.diff import GitReviewError
 from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
 from repoctl.workflow.lifecycle import load_milestone_workflow, record_milestone_event
-from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
-from tests.procedure_fixtures import copy_five_artifact_v130_bundle
+from repoctl.workflow.milestones import discover_milestones, prompt_identity, save_milestone_selection
+from tests.procedure_fixtures import create_six_artifact_v140_bundle, materialize_test_bundle
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -416,7 +417,7 @@ class WebTests(unittest.TestCase):
                 self.assertIn("UPDATE", html)
                 self.assertIn(bundle.manifest_sha256, html)
                 self.assertIn("1.0.2", html)
-                self.assertIn("1.4.0", html)
+                self.assertIn("1.5.0", html)
                 self.assertIn("coding_agent_rules.md", html)
                 self.assertIn("Review Apply", html)
                 self.assertNotIn("Confirm Apply", html)
@@ -657,10 +658,10 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(replay.status_code, 400)
                 self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
 
-    def test_future_six_artifact_uses_the_po_confirmed_web_apply_path(self) -> None:
+    def test_v140_fixture_uses_the_po_confirmed_web_apply_path_to_v150(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            repo = _init_repo(root, "future-six-repo")
+            repo = _init_repo(root, "v140-repo")
             state_root = root / "state"
             (repo / "docs/milestones").mkdir(parents=True)
             overlay = repo / "docs/context/coding_agent_rules.md"
@@ -673,21 +674,15 @@ class WebTests(unittest.TestCase):
             )
             _git(repo, "add", "docs/context/coding_agent_rules.md")
             _git(repo, "commit", "-m", "add project overlay")
-
-            bundle_root = root / "future-procedure"
-            copy_five_artifact_v130_bundle(BUNDLE_ROOT, bundle_root)
-            manifest_path = bundle_root / "manifest.toml"
-            manifest = manifest_path.read_text(encoding="utf-8").replace(
-                'release = "1.3.0"',
-                'release = "1.4.0"',
-                1,
+            prior_bundle = create_six_artifact_v140_bundle(root / "prior-procedure")
+            entry = RepositoryEntry(
+                key="fixture",
+                name="Fixture Repository",
+                path=repo,
+                repository_id=make_repository_id(repo),
+                milestone_root="docs/milestones",
+                documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
             )
-            manifest += (
-                '\n[[artifacts]]\nsource = "bootstrap.md"\n'
-                'target = "AGENTS.md"\nrenderer = "bootstrap"\n'
-            )
-            manifest_path.write_text(manifest, encoding="utf-8")
-            future_bundle = load_bundle(bundle_root)
 
             registry_path = root / "repositories.toml"
             registry_path.write_text(
@@ -707,14 +702,12 @@ class WebTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with (
-                mock.patch(
-                    "repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH",
-                    registry_path,
-                ),
-                mock.patch("repoctl.procedure_governance.load_bundle", return_value=future_bundle),
-                mock.patch("repoctl.procedure_transactions.load_bundle", return_value=future_bundle),
-            ):
+            with mock.patch("repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH", registry_path):
+                materialize_test_bundle(prior_bundle, entry)
+            overlay_before = overlay.read_bytes()
+            head_before = _git_text(repo, "rev-parse", "HEAD")
+            index_before = (repo / ".git/index").read_bytes()
+            with mock.patch("repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH", registry_path):
                 app = create_web_app(repository_registry_path=registry_path, state_root=state_root)
                 app.testing = True
                 client = app.test_client()
@@ -722,7 +715,8 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(initial.status_code, 200)
                 self.assertIn(b"AGENTS.md", initial.data)
                 self.assertIn(b"Review Apply", initial.data)
-                self.assertFalse((repo / "AGENTS.md").exists())
+                self.assertIn(b"1.4.0 / 1.5.0", initial.data)
+                self.assertEqual(inspect_procedure(entry, prior_bundle)["status"], "CURRENT")
 
                 csrf = _extract_csrf_token(client)
                 plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', initial.data)
@@ -741,7 +735,6 @@ class WebTests(unittest.TestCase):
                 confirmation = client.get("/procedure-updates?repository=fixture")
                 self.assertIn(b"Confirm Apply", confirmation.data)
                 self.assertIn(b"AGENTS.md", confirmation.data)
-                self.assertFalse((repo / "AGENTS.md").exists())
                 token = re.search(rb'name="confirmation_token" value="([^"]+)"', confirmation.data)
                 self.assertIsNotNone(token)
 
@@ -757,21 +750,23 @@ class WebTests(unittest.TestCase):
                 )
 
                 self.assertEqual(applied.status_code, 302)
+                self.assertEqual(inspect_transaction(entry, state_root)["state"], "EXECUTION_PENDING")
+                result = execute_sealed_request(
+                    entry,
+                    state_root,
+                    active_key=entry.key,
+                    registry_generation=0,
+                )
+                self.assertEqual(result["state"], "VERIFIED")
                 self.assertEqual(
                     (repo / "AGENTS.md").read_bytes(),
                     (repo / ".github/copilot-instructions.md").read_bytes(),
                 )
-                self.assertEqual(inspect_transaction(
-                    RepositoryEntry(
-                        key="fixture",
-                        name="Fixture Repository",
-                        path=repo,
-                        repository_id=make_repository_id(repo),
-                        milestone_root="docs/milestones",
-                        documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
-                    ),
-                    state_root,
-                )["state"], "VERIFIED")
+                self.assertEqual(overlay.read_bytes(), overlay_before)
+                self.assertEqual(_git_text(repo, "rev-parse", "HEAD"), head_before)
+                self.assertEqual((repo / ".git/index").read_bytes(), index_before)
+                self.assertEqual(_git(repo, "diff", "--cached", "--name-only"), b"")
+                self.assertEqual(inspect_procedure(entry, load_bundle())["status"], "CURRENT")
                 final = client.get("/procedure-updates?repository=fixture")
                 self.assertIn(b"CURRENT", final.data)
                 self.assertIn(b"VERIFIED", final.data)
@@ -815,6 +810,7 @@ class WebTests(unittest.TestCase):
 
             candidate = discover_milestones(repo)["candidates"][0]
             save_milestone_selection(repo, state_root, candidate["milestone_id"])
+            reviewed_prompt_sha256 = prompt_identity(repo, "docs/milestones", candidate)
             record_milestone_event(
                 repo,
                 state_root,
@@ -824,6 +820,8 @@ class WebTests(unittest.TestCase):
                 summary="Fixture onboarding approved",
                 actor_role="product_owner",
                 po_approved=True,
+                approval_repository_key="fixture",
+                expected_prompt_sha256=reviewed_prompt_sha256,
             )
             record_milestone_event(
                 repo,
@@ -861,6 +859,7 @@ class WebTests(unittest.TestCase):
                 self.assertIn(b"Preserves original bytes", initial.data)
                 self.assertIn(b"Resulting overlay contract", initial.data)
                 self.assertIn(b"valid", initial.data)
+                self.assertIn(b"does not make Coder verification VERIFIED", initial.data)
                 self.assertIn(b"Review Overlay Initialization", initial.data)
                 self.assertNotIn(b"Confirm Overlay Initialization", initial.data)
                 self.assertEqual(overlay.read_bytes(), original)
@@ -932,12 +931,24 @@ class WebTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(initialized.status_code, 302)
+                self.assertEqual(overlay.read_bytes(), original)
+                self.assertFalse((repo / ".github/copilot-instructions.md").exists())
+                entry = RepositoryRegistry.from_toml(registry_path).entries[0]
+                pending = inspect_transaction(entry, state_root)
+                self.assertEqual(pending["state"], "EXECUTION_PENDING")
+                self.assertEqual(pending["request_action"], "overlay_initialize")
+                executed = execute_sealed_request(
+                    entry,
+                    state_root,
+                    active_key="fixture",
+                    registry_generation=0,
+                )
+                self.assertEqual(executed["state"], "VERIFIED")
                 candidate_overlay = overlay.read_bytes()
                 self.assertTrue(candidate_overlay.endswith(original))
                 self.assertFalse((repo / ".github/copilot-instructions.md").exists())
                 current_page = client.get("/procedure-updates?repository=fixture")
                 self.assertIn(b"Review Apply", current_page.data)
-                self.assertIn(b"Coder verification remains non-VERIFIED", current_page.data)
                 self.assertEqual(load_milestone_workflow(repo, state_root, "docs/milestones", candidate)["phase"], "WAITING")
 
                 apply_digest = re.search(
@@ -974,6 +985,16 @@ class WebTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(applied.status_code, 302)
+                pending = inspect_transaction(entry, state_root)
+                self.assertEqual(pending["state"], "EXECUTION_PENDING")
+                self.assertEqual(pending["request_action"], "apply")
+                executed = execute_sealed_request(
+                    entry,
+                    state_root,
+                    active_key="fixture",
+                    registry_generation=0,
+                )
+                self.assertEqual(executed["state"], "VERIFIED")
                 self.assertTrue((repo / ".github/copilot-instructions.md").is_file())
                 self.assertEqual(overlay.read_bytes(), candidate_overlay)
                 final_page = client.get("/procedure-updates?repository=fixture")

@@ -464,12 +464,9 @@ class ProcedureRemapTests(unittest.TestCase):
         self.assertTrue(confirmed.confirm)
 
         legacy = load_bundle()
-        from tests.procedure_fixtures import copy_five_artifact_v130_bundle
+        from tests.procedure_fixtures import create_five_artifact_v130_bundle
 
-        legacy = copy_five_artifact_v130_bundle(
-            self.bundle.root,
-            self.root / "legacy-procedure",
-        )
+        legacy = create_five_artifact_v130_bundle(self.root / "legacy-procedure")
         with self.assertRaisesRegex(ProcedureRemapError, "six-artifact"):
             preview_role_remap(
                 self.entry,

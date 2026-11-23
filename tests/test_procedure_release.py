@@ -20,7 +20,7 @@ from repoctl.procedure_release import (
 )
 from repoctl.scanner.util import make_repository_id
 from repoctl.web.repository_registry import RepositoryEntry
-from tests.procedure_fixtures import copy_five_artifact_v130_bundle
+from tests.procedure_fixtures import create_five_artifact_v130_bundle
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -69,7 +69,8 @@ class ProcedureReleaseTests(unittest.TestCase):
         _git(self.repo, "add", "tracked.txt")
         _git(self.repo, "commit", "-qm", "initial")
         self.bundle_root = self.repo / "shared" / "procedure"
-        copy_five_artifact_v130_bundle(BUNDLE_ROOT, self.bundle_root)
+        create_five_artifact_v130_bundle(self.bundle_root)
+        self.base_workflow_core = (self.bundle_root / "workflow_core.md").read_bytes()
         self.authorized_sources = sorted(load_bundle(self.bundle_root).source_hashes)
         overlay_path = self.repo / "docs" / "context" / "coding_agent_rules.md"
         overlay_path.parent.mkdir(parents=True)
@@ -135,7 +136,7 @@ class ProcedureReleaseTests(unittest.TestCase):
 
     def _codex_artifact_marker(self) -> str:
         candidate_source = self.workflow_core.read_bytes()
-        self.workflow_core.write_bytes((BUNDLE_ROOT / "workflow_core.md").read_bytes())
+        self.workflow_core.write_bytes(self.base_workflow_core)
         try:
             marker = render_release_preparation_marker(
                 "1.4.0",
@@ -154,7 +155,7 @@ class ProcedureReleaseTests(unittest.TestCase):
 
     def test_marker_generation_binds_valid_base_without_manual_hash_entry(self) -> None:
         marker = render_release_preparation_marker(
-            "1.5.0",
+            "1.6.0",
             ["workflow_core.md"],
             BUNDLE_ROOT,
         )
@@ -163,9 +164,9 @@ class ProcedureReleaseTests(unittest.TestCase):
         self.assertIn("repoctl-procedure-release-preparation:v1", marker)
         self.assertNotIn("authorized_artifact_additions", marker)
         with self.assertRaisesRegex(ProcedureReleaseError, "higher numeric"):
-            render_release_preparation_marker("1.4.0", ["workflow_core.md"], BUNDLE_ROOT)
+            render_release_preparation_marker("1.5.0", ["workflow_core.md"], BUNDLE_ROOT)
         with self.assertRaisesRegex(ProcedureReleaseError, "listed in the current canonical bundle"):
-            render_release_preparation_marker("1.5.0", ["unknown.md"], BUNDLE_ROOT)
+            render_release_preparation_marker("1.6.0", ["unknown.md"], BUNDLE_ROOT)
 
     def test_codex_marker_binds_exact_artifact_addition_and_active_identity(self) -> None:
         marker = self._codex_artifact_marker()

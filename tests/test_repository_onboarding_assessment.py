@@ -345,7 +345,7 @@ class RepositoryOnboardingAssessmentTests(unittest.TestCase):
             ["M001.001"],
         )
         self.assertEqual(report["procedure_status"]["status"], "CURRENT")
-        self.assertEqual(report["procedure_status"]["current_release"], "1.4.0")
+        self.assertEqual(report["procedure_status"]["current_release"], "1.5.0")
         self.assertTrue(report["procedure_status"]["lock_sha256"])
         self.assertTrue(report["procedure_status"]["overlay"]["valid"])
         self.assertEqual(
@@ -437,12 +437,16 @@ class RepositoryOnboardingAssessmentTests(unittest.TestCase):
             report["legacy_outside_history"],
         )
         self.assertTrue(all("12.6" in path for path in history_paths))
-        self.assertTrue(
-            all(
-                item["milestone_id"] is None
+        self.assertEqual(
+            {
+                item["path"]: item["milestone_id"]
                 for item in report["historical_candidates"]
                 if "12.6" in item["path"]
-            )
+            },
+            {
+                "docs/history/milestones/12.64_deployment_prompt.md": "12.64",
+                "docs/history/milestones/12.65_housekeeping_closeout.md": "12.65",
+            },
         )
         self.assertEqual(
             report["archive_plan"],

@@ -45,8 +45,12 @@ from repoctl.workflow.architect_dispatches import get_dispatch, submit_dispatch
 from repoctl.scanner.core import run_scan
 from repoctl.workflow.coder_interface import submit_coder_context_verification
 from repoctl.workflow.lifecycle import record_milestone_event
-from repoctl.workflow.milestones import discover_milestones, save_milestone_selection
-from tests.procedure_fixtures import copy_five_artifact_v130_bundle
+from repoctl.workflow.milestones import discover_milestones, prompt_identity, save_milestone_selection
+from tests.procedure_fixtures import (
+    create_five_artifact_v130_bundle,
+    create_six_artifact_v140_bundle,
+    materialize_test_bundle,
+)
 
 
 def _git_repo(path: Path) -> Path:
@@ -283,10 +287,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
             documents={"coding_agent_rules": "docs/context/coding_agent_rules.md"},
         )
         self.bundle = load_bundle()
-        self.legacy_bundle = copy_five_artifact_v130_bundle(
-            BUNDLE_ROOT,
-            self.root / "procedure-1.3.0",
-        )
+        self.legacy_bundle = create_five_artifact_v130_bundle(self.root / "procedure-1.3.0")
         self._future_bundle_count = 0
         self.registry_path = self.root / "repositories.toml"
         self._write_registry([self.entry])
@@ -373,6 +374,32 @@ class ProcedureGovernanceTests(unittest.TestCase):
             reviewed_plan_sha256=overlay_initialization_plan_digest(self.entry, self.bundle, plan),
             bundle=self.bundle,
         )
+
+    def test_exact_v140_fixture_reconciles_to_canonical_v150(self) -> None:
+        prior = create_six_artifact_v140_bundle(self.root / "procedure-1.4.0")
+        materialize_test_bundle(prior, self.entry)
+        self.assertEqual(inspect_procedure(self.entry, prior)["status"], "CURRENT")
+
+        protected_before = (self.repo / "docs/context/coding_agent_rules.md").read_bytes()
+        git_index = self.repo / ".git/index"
+        git_index_before = git_index.read_bytes() if git_index.exists() else None
+        state_root = self.root / "state"
+        confirmation = self._apply_confirmation(state_root, self.bundle)
+        result = apply_confirmed(
+            self.entry,
+            confirmation["confirmation"]["token"],
+            state_root,
+            active_key=self.entry.key,
+            registry_generation=0,
+            bundle=self.bundle,
+        )
+
+        self.assertEqual(result["state"], "VERIFIED")
+        self.assertEqual(inspect_procedure(self.entry, self.bundle)["status"], "CURRENT")
+        self.assertEqual(inspect_procedure(self.entry, prior)["status"], "STALE_VERSION")
+        self.assertEqual((self.repo / "docs/context/coding_agent_rules.md").read_bytes(), protected_before)
+        git_index_after = git_index.read_bytes() if git_index.exists() else None
+        self.assertEqual(git_index_after, git_index_before)
 
     def _install_large_nonconforming_v8_overlay(self) -> bytes:
         documents = {
@@ -641,6 +668,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
         prompt.write_text("# Fixture milestone\n", encoding="utf-8")
         candidate = discover_milestones(self.repo)["candidates"][0]
         save_milestone_selection(self.repo, state_root, candidate["milestone_id"])
+        reviewed_prompt_sha256 = prompt_identity(self.repo, "docs/milestones", candidate)
         record_milestone_event(
             self.repo,
             state_root,
@@ -650,6 +678,8 @@ class ProcedureGovernanceTests(unittest.TestCase):
             summary="Fixture milestone approved",
             actor_role="product_owner",
             po_approved=True,
+            approval_repository_key=self.entry.key,
+            expected_prompt_sha256=reviewed_prompt_sha256,
         )
         record_milestone_event(
             self.repo,
@@ -1848,7 +1878,7 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
     def test_manifest_sources_are_hashed_and_installed_skills_match_their_lock(self) -> None:
         self.assertEqual(self.bundle.schema_version, 1)
-        self.assertEqual(self.bundle.release, "1.4.0")
+        self.assertEqual(self.bundle.release, "1.5.0")
         for source, expected in self.bundle.source_hashes.items():
             data = (self.bundle.root / source).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected)
@@ -2071,7 +2101,11 @@ class ProcedureGovernanceTests(unittest.TestCase):
         self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
 
         unmanaged = _git_repo(self.root / "unmanaged")
-        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+        with (
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.scanner.core.DEFAULT_STATE_ROOT", self.root / "cli-state"),
+        ):
             result = main(["coder-procedure-status", "--repository", str(unmanaged)])
         self.assertEqual(result, 2)
         self.assertIn("not managed", stderr.getvalue())
@@ -2103,7 +2137,11 @@ class ProcedureGovernanceTests(unittest.TestCase):
             text=True,
         ).stdout
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with (
+            contextlib.redirect_stdout(out),
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.scanner.core.DEFAULT_STATE_ROOT", self.root / "cli-state"),
+        ):
             result = main(["coder-procedure-preview", "--repository", str(self.repo), "--format", "json"])
         self.assertEqual(result, 0)
         preview = json.loads(out.getvalue())
@@ -2123,7 +2161,11 @@ class ProcedureGovernanceTests(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with (
+            contextlib.redirect_stdout(out),
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.scanner.core.DEFAULT_STATE_ROOT", self.root / "cli-state"),
+        ):
             result = main(["coder-procedure-status", "--repository", str(self.repo), "--format", "json"])
         self.assertEqual(result, 0)
         status = json.loads(out.getvalue())
@@ -2131,7 +2173,11 @@ class ProcedureGovernanceTests(unittest.TestCase):
 
         vocab_before = sorted(path.relative_to(vocab).as_posix() for path in vocab.rglob("*"))
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with (
+            contextlib.redirect_stdout(out),
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.scanner.core.DEFAULT_STATE_ROOT", self.root / "cli-state"),
+        ):
             result = main(["coder-procedure-preview", "--repository", str(vocab), "--format", "json"])
         self.assertEqual(result, 0)
         vocab_preview = json.loads(out.getvalue())

@@ -3,11 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -36,6 +40,8 @@ from repoctl.information_store import (
 from repoctl.migration_rehearsal import MigrationRehearsalError, verify_prepared_source_parity
 from repoctl import information_store
 from repoctl import backup_guard
+from repoctl.procedure_governance import inspect_procedure, load_bundle
+from repoctl.procedure_transactions import TRANSACTION_ROOT_ENV, inspect_transaction
 from repoctl.mcp import architect_adapter
 from repoctl.backup import (
     BackupConfig,
@@ -63,8 +69,10 @@ from repoctl.workflow.information_store_fixture import (
 )
 from tests.test_sqlite_workflow_poc import _closeout_history
 from tests.test_closeout_publication import FixtureGitObserver
+from tests.procedure_fixtures import create_six_artifact_v140_bundle, materialize_test_bundle
 
 
+_REPOSITORY_ROOT = Path(__file__).parents[1]
 _ELIGIBLE_RUNTIME = {
     "sqlite_version_info": (3, 51, 3),
     "sqlite_version": "3.51.3",
@@ -223,6 +231,278 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
         configuration = load_store_authority(state_root or self.state_root)
         self.assertIsNotNone(configuration)
         return create_managed_information_store_clients(configuration, self.repository)
+
+    def _prepare_photo_organizer_acceptance_fixture(self) -> None:
+        entries = []
+        for key, name, directory in (
+            ("photo-organizer", "Photo Organizer analogue", "photo-organizer"),
+            ("repo-control-ii", "Repo Control analogue", "repo-control-ii"),
+            ("vocab-app", "Vocab App analogue", "vocab-app"),
+        ):
+            repository_root = self.root / directory
+            (repository_root / "docs/context").mkdir(parents=True)
+            (repository_root / "docs/milestones").mkdir()
+            (repository_root / "docs/context/project_context.md").write_text(
+                f"# {name}\n",
+                encoding="utf-8",
+            )
+            (repository_root / "docs/context/coding_agent_rules.md").write_text(
+                "# Fixture overlay\n\n<!-- repo-control-project-overlay:v1 -->\n\n"
+                "## Repository-specific rules\n\n- Keep test data isolated.\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", str(repository_root)], check=True)
+            subprocess.run(["git", "-C", str(repository_root), "config", "user.email", "fixture@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repository_root), "config", "user.name", "Fixture"], check=True)
+            entry = RepositoryEntry(
+                key=key,
+                name=name,
+                path=repository_root,
+                repository_id=make_repository_id(repository_root),
+                milestone_root="docs/milestones",
+                documents={
+                    "context": "docs/context/project_context.md",
+                    "coding_agent_rules": "docs/context/coding_agent_rules.md",
+                },
+            )
+            entries.append(entry)
+
+        self.registry = RepositoryRegistry(tuple(entries), "photo-organizer")
+        self.repository = entries[0]
+        self.repository_root = self.repository.path
+        self.identity = StoreIdentity(
+            repository_id=self.repository.repository_id,
+            repository_key=self.repository.key,
+            repository_root=str(self.repository_root),
+            milestone_id="M001.004",
+            prompt_path="docs/milestones/M001.004_photo_organizer_prompt.md",
+            selection_id="photo-organizer-import-selection",
+            selection_revision=1,
+        )
+        self.prompt_bytes = b"# Imported Photo Organizer M001.004 prompt\n"
+        self.prompt_path = self.repository_root / self.identity.prompt_path
+        self.prompt_path.write_bytes(self.prompt_bytes)
+        events = _closeout_history()
+        self.events = events
+        ledger = lifecycle._empty_ledger(
+            self.identity.repository_id,
+            {
+                "milestone_id": self.identity.milestone_id,
+                "prompt_path": self.identity.prompt_path,
+            },
+        )
+        ledger["events"] = events
+        self.workflow_bytes = lifecycle._render_sidecar(ledger).encode("utf-8")
+        self.workflow_path = self.prompt_path.with_name(
+            self.prompt_path.name.removesuffix("_prompt.md") + "_workflow.md"
+        )
+        self.workflow_path.write_bytes(self.workflow_bytes)
+        self.closeout_path = "fixtures/closeout.md"
+        self.closeout_bytes = b"# Imported historical closeout\n"
+        closeout = self.repository_root / self.closeout_path
+        closeout.parent.mkdir(parents=True)
+        closeout.write_bytes(self.closeout_bytes)
+        self.selection_path = self.state_root / self.identity.repository_id / "milestones/selection.json"
+        self.selection_path.parent.mkdir(parents=True)
+        self.v1_selection = json.dumps({
+            "schema_version": 1,
+            "repository_id": self.identity.repository_id,
+            "milestone_id": self.identity.milestone_id,
+            "prompt_path": self.identity.prompt_path,
+        }).encode("utf-8")
+        self.selection_path.write_bytes(self.v1_selection)
+
+        self.registry_path.write_text(
+            "\n".join(
+                [
+                    'default = "photo-organizer"',
+                    *[
+                        line
+                        for entry in entries
+                        for line in (
+                            "",
+                            f"[repositories.{entry.key}]",
+                            f"name = {json.dumps(entry.name)}",
+                            f"path = {json.dumps(str(entry.path))}",
+                            'milestone_root = "docs/milestones"',
+                            "",
+                            f"[repositories.{entry.key}.documents]",
+                            'context = "docs/context/project_context.md"',
+                            'coding_agent_rules = "docs/context/coding_agent_rules.md"',
+                        )
+                    ],
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self.registry_patch.stop()
+        self.registry_patch = patch(
+            "repoctl.web.repository_registry.RepositoryRegistry.from_toml",
+            return_value=self.registry,
+        )
+        self.registry_patch.start()
+        self.addCleanup(self.registry_patch.stop)
+
+        self.database_path = self.root / "photo-organizer.sqlite3"
+        prepared = InformationStore.initialize_managed_prepared(self.database_path, self.identity)
+        self.bundle = V1FixtureBundle(
+            prompt_path=self.identity.prompt_path,
+            closeout_path=self.closeout_path,
+            workflow_path=self.workflow_path.relative_to(self.repository_root).as_posix(),
+            prompt_bytes=self.prompt_bytes,
+            closeout_bytes=self.closeout_bytes,
+            workflow_bytes=self.workflow_bytes,
+        )
+        self.import_receipt = prepared.import_v1_fixture(self.bundle)
+        InformationStore.bind_prepared_v1_selection(
+            self.database_path,
+            self.identity,
+            selection_state_root=self.state_root,
+            expected_v1_sha256=hashlib.sha256(self.v1_selection).hexdigest(),
+            cutover_confirmed=True,
+        )
+        self.secondary_selection_paths = {}
+        prepared_store = InformationStore.open_managed_prepared(self.database_path, self.identity)
+        for entry, milestone_id in zip(
+            self.registry.entries[1:],
+            ("M002.001", "M003.001"),
+            strict=True,
+        ):
+            identity = StoreIdentity(
+                repository_id=entry.repository_id,
+                repository_key=entry.key,
+                repository_root=str(entry.path),
+                milestone_id=milestone_id,
+                prompt_path=f"docs/milestones/{milestone_id}_{entry.key}_prompt.md",
+                selection_id=f"{entry.key}-fixture-selection",
+                selection_revision=1,
+            )
+            prompt_bytes = f"# {entry.name} imported fixture prompt\n".encode("utf-8")
+            workflow_path = identity.prompt_path.removesuffix("_prompt.md") + "_workflow.md"
+            secondary_ledger = lifecycle._empty_ledger(
+                identity.repository_id,
+                {
+                    "milestone_id": identity.milestone_id,
+                    "prompt_path": identity.prompt_path,
+                },
+            )
+            workflow_bytes = lifecycle._render_sidecar(secondary_ledger).encode("utf-8")
+            (entry.path / identity.prompt_path).write_bytes(prompt_bytes)
+            (entry.path / workflow_path).write_bytes(workflow_bytes)
+            prepared_store = prepared_store.register_import_scope(identity)
+            prepared_store.import_v1_fixture(V1FixtureBundle(
+                prompt_path=identity.prompt_path,
+                closeout_path=None,
+                workflow_path=workflow_path,
+                prompt_bytes=prompt_bytes,
+                closeout_bytes=None,
+                workflow_bytes=workflow_bytes,
+            ))
+            selection_path = self.state_root / entry.repository_id / "milestones/selection.json"
+            selection_path.parent.mkdir(parents=True)
+            selection = json.dumps({
+                "schema_version": 1,
+                "repository_id": entry.repository_id,
+                "milestone_id": identity.milestone_id,
+                "prompt_path": identity.prompt_path,
+            }).encode("utf-8")
+            selection_path.write_bytes(selection)
+            self.secondary_selection_paths[entry.key] = selection_path
+            InformationStore.bind_prepared_v1_selection(
+                self.database_path,
+                identity,
+                selection_state_root=self.state_root,
+                expected_v1_sha256=hashlib.sha256(selection).hexdigest(),
+                cutover_confirmed=True,
+            )
+
+    def _run_fixture_procedure_executor(
+        self,
+        runtime_port: int,
+        transaction_root: Path,
+        *,
+        crash_point: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if crash_point not in {None, "prepared", "first_target"}:
+            raise ValueError(f"Unknown fixture crash point: {crash_point}")
+        fixture_cli = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "from unittest.mock import patch\n"
+            "state_root = Path(sys.argv[1])\n"
+            "arguments = sys.argv[2:]\n"
+            "registry_path = Path(arguments[arguments.index('--repository-registry') + 1])\n"
+            "crash_point = os.environ.get('REPOCTL_FIXTURE_CRASH_POINT')\n"
+            "with (\n"
+            "    patch('repoctl.scanner.core.DEFAULT_STATE_ROOT', state_root),\n"
+            "    patch('repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH', registry_path),\n"
+            "):\n"
+            "    if crash_point:\n"
+            "        from repoctl import procedure_transactions as transactions\n"
+            "        if crash_point == 'prepared':\n"
+            "            original_write_journal = transactions._write_journal\n"
+            "            def crash_after_prepared(directory, journal):\n"
+            "                original_write_journal(directory, journal)\n"
+            "                if journal.get('state') == 'PREPARED':\n"
+            "                    print('FIXTURE_CRASH_AFTER_PREPARED', flush=True)\n"
+            "                    os._exit(79)\n"
+            "            transactions._write_journal = crash_after_prepared\n"
+            "        elif crash_point == 'first_target':\n"
+            "            original_write_target = transactions._write_target\n"
+            "            first_target_written = [False]\n"
+            "            def crash_after_first_target(*args, **kwargs):\n"
+            "                original_write_target(*args, **kwargs)\n"
+            "                if not first_target_written[0]:\n"
+            "                    first_target_written[0] = True\n"
+            "                    print('FIXTURE_CRASH_AFTER_FIRST_TARGET', flush=True)\n"
+            "                    os._exit(80)\n"
+            "            transactions._write_target = crash_after_first_target\n"
+            "        else:\n"
+            "            raise SystemExit(f'Unknown fixture crash point: {crash_point}')\n"
+            "    from repoctl.cli import main\n"
+            "    raise SystemExit(main(arguments))\n"
+        )
+        command = [
+            "systemd-run",
+            "--user",
+            "--wait",
+            "--collect",
+            "--pipe",
+            f"--unit=repoctl-m011003-procedure-{uuid.uuid4().hex}",
+            f"--working-directory={_REPOSITORY_ROOT}",
+            "--setenv=PYTHONPATH=/home/chuck/projects/repo-control-ii/src",
+            f"--setenv=REPOCTL_FIXTURE_CRASH_POINT={crash_point or ''}",
+            "--property=ProtectSystem=strict",
+            "--property=ProtectHome=read-only",
+            "--property=NoNewPrivileges=yes",
+            f"--property=ReadWritePaths={self.repository_root} {self.state_root / '.locks'} {transaction_root}",
+            f"--property=ReadOnlyPaths={self.repository_root / '.git'} "
+            f"{self.repository_root / 'docs/context'} {self.repository_root / 'docs/milestones'}",
+            "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python",
+            "-c",
+            fixture_cli,
+            str(self.state_root),
+            "procedure-execute-request",
+            "--repository-key",
+            self.repository.key,
+            "--repository-registry",
+            str(self.registry_path),
+            "--state-root",
+            str(self.state_root),
+            "--transaction-root",
+            str(transaction_root),
+            "--runtime-health-url",
+            f"http://127.0.0.1:{runtime_port}/healthz",
+        ]
+        return subprocess.run(
+            command,
+            cwd=_REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
 
     def invoke_managed_cli(self, arguments: list[str]) -> tuple[int, str, str]:
         output, errors = StringIO(), StringIO()
@@ -1078,10 +1358,36 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_photo_organizer_analogue_allows_published_apply_with_unverified_imported_history(self, _status) -> None:
+        self._prepare_photo_organizer_acceptance_fixture()
+        prior_bundle = create_six_artifact_v140_bundle(self.root / "prior-procedure")
+        materialize_test_bundle(prior_bundle, self.repository)
+        for entry in self.registry.entries:
+            subprocess.run(["git", "-C", str(entry.path), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(entry.path), "commit", "-qm", "fixture baseline"], check=True)
+
         self.activate_fixture_configuration()
-        app = create_web_app(repository_registry_path=self.registry_path, state_root=self.state_root)
+        transaction_root = self.root / "procedure-transactions"
+        transaction_root.mkdir(mode=0o700)
+        transaction_environment = patch.dict(os.environ, {TRANSACTION_ROOT_ENV: str(transaction_root)})
+        transaction_environment.start()
+        self.addCleanup(transaction_environment.stop)
+        app = create_web_app(
+            repository_registry_path=self.registry_path,
+            state_root=self.state_root,
+            port=8765,
+        )
         app.config["TESTING"] = True
         clients = app.extensions["repoctl_information_store_clients"]
+        initial_snapshot = clients.browser_snapshot()
+        self.assertEqual(clients.workflow_snapshot()["projection"]["phase"], "CLOSED")
+        self.assertIsNotNone(initial_snapshot["workflow"]["unverified_prompt"])
+        code, _, error = self.invoke_managed_cli([
+            "coder-context",
+            "--repository",
+            str(self.repository_root),
+        ])
+        self.assertNotEqual(code, 0)
+        self.assertIn("InformationStore has no approved selected prompt revision", error)
         timestamp = "2026-01-01T00:00:00+00:00"
         imported_guidance = {
             "dispatch_id": "a" * 32,
@@ -1100,70 +1406,504 @@ class ManagedStoreAuthorityTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
-        browser = app.test_client()
-        self.assertEqual(browser.get("/milestones").status_code, 200)
-        captured = {}
 
-        def render(_template, **context):
-            captured.update(context)
-            return "procedure fixture"
-
-        with patch("repoctl.web.app.render_template", side_effect=render):
-            self.assertEqual(browser.get("/procedure-updates").status_code, 200)
-        self.assertEqual(captured["release_preparation"]["status"], "UNVERIFIED_IMPORTED_HISTORY")
-        self.assertFalse(captured["release_preparation"]["authorized"])
-        self.assertEqual(captured["release_preparation"]["integrity_status"], "CURRENT")
+        clients = app.extensions["repoctl_information_store_clients"]
         self.assertEqual(len(clients.browser_snapshot()["workflow"]["unverified_guidance"]), 1)
-        status_page = browser.get("/procedure-updates")
+        browser = app.test_client()
+        milestone_page = browser.get("/milestones")
+        self.assertEqual(milestone_page.status_code, 200)
+        initial_health = browser.get("/healthz").get_json()
+        self.assertEqual(initial_health["active_repository"], "photo-organizer")
+        self.assertEqual(initial_health["active_repository_generation"], 0)
+        self.assertEqual(
+            {entry.key for entry in self.registry.entries},
+            {"photo-organizer", "repo-control-ii", "vocab-app"},
+        )
+        for entry in self.registry.entries:
+            self.assertEqual(entry.repository_id, make_repository_id(entry.path))
+
+        initial_tree = {
+            entry.key: {
+                path.relative_to(entry.path).as_posix(): path.read_bytes()
+                for path in entry.path.rglob("*")
+                if path.is_file() and ".git" not in path.relative_to(entry.path).parts
+            }
+            for entry in self.registry.entries
+        }
+        protected_paths = (
+            self.identity.prompt_path,
+            self.workflow_path.relative_to(self.repository_root).as_posix(),
+            self.closeout_path,
+            "docs/context/project_context.md",
+            "docs/context/coding_agent_rules.md",
+        )
+        protected_before = {
+            relative: (self.repository_root / relative).read_bytes()
+            for relative in protected_paths
+        }
+        git_before = {
+            entry.key: (
+                subprocess.check_output(["git", "-C", str(entry.path), "rev-parse", "HEAD"], text=True).strip(),
+                (entry.path / ".git/index").read_bytes(),
+            )
+            for entry in self.registry.entries
+        }
+        prior_status = inspect_procedure(self.repository, prior_bundle)
+        self.assertEqual(prior_status["status"], "CURRENT")
+        current_bundle = load_bundle()
+        self.assertEqual(current_bundle.release, "1.5.0")
+        status_page = browser.get("/procedure-updates?repository=photo-organizer")
+        self.assertEqual(status_page.status_code, 200)
         self.assertIn(b"UNVERIFIED_IMPORTED_HISTORY", status_page.data)
         self.assertIn(b"published procedure remains available for installation", status_page.data)
+        self.assertIn(b"1.4.0 / 1.5.0", status_page.data)
+        self.assertEqual(inspect_procedure(self.repository, prior_bundle)["status"], "CURRENT")
+
         with browser.session_transaction() as browser_session:
             token = browser_session["csrf_token"]
-        reviewed_plan = {"target_release": "1.5.0", "changes": []}
-        with (
-            patch("repoctl.procedure_governance.preview_reconciliation", return_value=reviewed_plan),
-            patch("repoctl.procedure_transactions.procedure_plan_digest", return_value="0" * 64),
-            patch(
-                "repoctl.procedure_transactions.review_apply",
-                return_value={
-                    "confirmation": {"token": "bounded-review-token", "expires_at": "2030-01-01T00:00:00+00:00"},
-                    "plan": reviewed_plan,
-                },
-            ) as review,
-        ):
-            accepted = browser.post("/procedure-updates/apply-review", data={
-                "csrf_token": token,
-                "repository_key": self.repository.key,
-                "active_repository_key": self.repository.key,
-                "repository_generation": "0",
-                "plan_sha256": "0" * 64,
-            })
+        plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', status_page.data)
+        self.assertIsNotNone(plan_digest)
+        secondary_selection_before = {
+            key: path.read_bytes() for key, path in self.secondary_selection_paths.items()
+        }
+        switched = browser.post("/repositories/select", data={
+            "csrf_token": token,
+            "repository_key": "repo-control-ii",
+            "repository_generation": "0",
+        })
+        self.assertEqual(switched.status_code, 302)
+        switched_health = browser.get("/healthz").get_json()
+        self.assertEqual(switched_health["active_repository"], "repo-control-ii")
+        self.assertEqual(switched_health["active_repository_generation"], 1)
+        stale_apply = browser.post("/procedure-updates/apply-review", data={
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "active_repository_key": self.repository.key,
+            "repository_generation": "0",
+            "plan_sha256": plan_digest.group(1).decode(),
+        })
+        self.assertEqual(stale_apply.status_code, 409)
+        self.assertIsNone(inspect_transaction(self.repository, self.state_root))
+        switched_back = browser.post("/repositories/select", data={
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "repository_generation": "1",
+        })
+        self.assertEqual(switched_back.status_code, 302)
+        active_health = browser.get("/healthz").get_json()
+        self.assertEqual(active_health["active_repository"], "photo-organizer")
+        self.assertEqual(active_health["active_repository_generation"], 2)
+        status_page = browser.get("/procedure-updates?repository=photo-organizer")
+        self.assertEqual(status_page.status_code, 200)
+        plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', status_page.data)
+        self.assertIsNotNone(plan_digest)
+        accepted = browser.post("/procedure-updates/apply-review", data={
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "active_repository_key": self.repository.key,
+            "repository_generation": str(active_health["active_repository_generation"]),
+            "plan_sha256": plan_digest.group(1).decode(),
+        })
         self.assertEqual(accepted.status_code, 302)
-        review.assert_called_once()
+        confirmation = browser.get("/procedure-updates?repository=photo-organizer")
+        self.assertIn(b"Confirm Apply", confirmation.data)
+        self.assertEqual(
+            {relative: (self.repository_root / relative).read_bytes() for relative in protected_paths},
+            protected_before,
+        )
+        confirmation_token = re.search(rb'name="confirmation_token" value="([^"]+)"', confirmation.data)
+        self.assertIsNotNone(confirmation_token)
+        confirmed = browser.post("/procedure-updates/apply", data={
+            "csrf_token": token,
+            "repository_key": self.repository.key,
+            "active_repository_key": self.repository.key,
+            "repository_generation": str(active_health["active_repository_generation"]),
+            "confirmation_token": confirmation_token.group(1).decode(),
+        })
+        self.assertEqual(confirmed.status_code, 302)
+        self.assertEqual(inspect_transaction(self.repository, self.state_root)["state"], "EXECUTION_PENDING")
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            runtime_port = sock.getsockname()[1]
+        runtime = make_server("127.0.0.1", runtime_port, app)
+        runtime_thread = Thread(target=runtime.serve_forever, daemon=True)
+        runtime_thread.start()
+        self.addCleanup(runtime.server_close)
+        self.addCleanup(runtime_thread.join, 5)
+        self.addCleanup(runtime.shutdown)
+        fixture_cli = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from unittest.mock import patch\n"
+            "state_root = Path(sys.argv[1])\n"
+            "arguments = sys.argv[2:]\n"
+            "registry_path = Path(arguments[arguments.index('--repository-registry') + 1])\n"
+            "with (\n"
+            "    patch('repoctl.scanner.core.DEFAULT_STATE_ROOT', state_root),\n"
+            "    patch('repoctl.workflow.coder_interface.CENTRAL_REPOSITORY_REGISTRY_PATH', registry_path),\n"
+            "):\n"
+            "    from repoctl.cli import main\n"
+            "    raise SystemExit(main(arguments))\n"
+        )
+        self.assertTrue((self.state_root / ".locks").is_dir())
+        properties = (
+            f"{self.repository_root} {self.state_root / '.locks'} {transaction_root}"
+        )
+        unit = f"repoctl-m011003-procedure-{uuid.uuid4().hex}"
+        command = [
+            "systemd-run",
+            "--user",
+            "--wait",
+            "--collect",
+            "--pipe",
+            f"--unit={unit}",
+            f"--working-directory={_REPOSITORY_ROOT}",
+            "--setenv=PYTHONPATH=/home/chuck/projects/repo-control-ii/src",
+            "--property=ProtectSystem=strict",
+            "--property=ProtectHome=read-only",
+            "--property=NoNewPrivileges=yes",
+            f"--property=ReadWritePaths={properties}",
+            "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python",
+            "-c",
+            fixture_cli,
+            str(self.state_root),
+            "procedure-execute-request",
+            "--repository-key",
+            self.repository.key,
+            "--repository-registry",
+            str(self.registry_path),
+            "--state-root",
+            str(self.state_root),
+            "--transaction-root",
+            str(transaction_root),
+            "--runtime-health-url",
+            f"http://127.0.0.1:{runtime_port}/healthz",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=_REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn('"state": "VERIFIED"', result.stdout)
+
+        transaction = inspect_transaction(self.repository, self.state_root)
+        self.assertEqual(transaction["state"], "VERIFIED")
+        self.assertFalse(transaction["blocked"])
+        self.assertEqual(inspect_procedure(self.repository, current_bundle)["status"], "CURRENT")
+        self.assertEqual(
+            tomllib.loads((self.repository_root / current_bundle.lock_path).read_text())["release"],
+            "1.5.0",
+        )
+        self.assertEqual(
+            {relative: (self.repository_root / relative).read_bytes() for relative in protected_paths},
+            protected_before,
+        )
+        self.assertEqual(
+            {key: path.read_bytes() for key, path in self.secondary_selection_paths.items()},
+            secondary_selection_before,
+        )
+        self.assertEqual(
+            {
+                entry.key: {
+                    path.relative_to(entry.path).as_posix(): path.read_bytes()
+                    for path in entry.path.rglob("*")
+                    if path.is_file() and ".git" not in path.relative_to(entry.path).parts
+                }
+                for entry in self.registry.entries[1:]
+            },
+            {key: initial_tree[key] for key in ("repo-control-ii", "vocab-app")},
+        )
+        for entry in self.registry.entries:
+            head = subprocess.check_output(["git", "-C", str(entry.path), "rev-parse", "HEAD"], text=True).strip()
+            self.assertEqual((head, (entry.path / ".git/index").read_bytes()), git_before[entry.key])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.repository_root), "diff", "--cached", "--name-only"],
+                check=True,
+                capture_output=True,
+            ).stdout,
+            b"",
+        )
+        final_health = browser.get("/healthz").get_json()
+        self.assertEqual(final_health["active_repository"], "photo-organizer")
+        self.assertEqual(final_health["active_repository_generation"], 2)
         self.assertIsNotNone(clients.browser_snapshot()["workflow"]["unverified_prompt"])
-        initial = clients.browser_snapshot()
-        prompt = initial["workflow"]["unverified_prompt"]
+
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_backup_selection_and_recovery_boundaries_survive_interrupted_apply(self, _status) -> None:
+        self._prepare_photo_organizer_acceptance_fixture()
+        prior_bundle = create_six_artifact_v140_bundle(self.root / "prior-procedure")
+        materialize_test_bundle(prior_bundle, self.repository)
+        for entry in self.registry.entries:
+            subprocess.run(["git", "-C", str(entry.path), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(entry.path), "commit", "-qm", "fixture baseline"], check=True)
+        self.activate_fixture_configuration()
+
+        transaction_root = self.root / "procedure-transactions"
+        transaction_root.mkdir(mode=0o700)
+        transaction_environment = patch.dict(os.environ, {TRANSACTION_ROOT_ENV: str(transaction_root)})
+        transaction_environment.start()
+        self.addCleanup(transaction_environment.stop)
+        clients = self.managed_clients()
+        imported = clients.browser_snapshot()
+        prompt = imported["workflow"]["unverified_prompt"]
         clients.confirm_imported_prompt(
             request_id=prompt["request_id"],
-            expected_store_revision=initial["snapshot"]["store_revision"],
+            expected_store_revision=imported["snapshot"]["store_revision"],
             document_id=prompt["document_id"],
             revision_id=prompt["revision_id"],
             content_sha256=prompt["content_sha256"],
             managed_po_confirmation=True,
         )
-        with (
-            patch("repoctl.web.app.render_template", side_effect=render),
-            patch(
-                "repoctl.procedure_release.inspect_procedure_release_preparation",
-                return_value={"status": "NOT_REQUESTED", "authorized": False},
-            ) as inspect,
-            patch("repoctl.workflow.coder_interface.resolve_coder_release_preparation_context") as legacy,
+
+        coverage = self.create_fixture_recovery_point()
+        self.assertEqual(clients.backup_coverage_status()["status"], "ready")
+        manifest_path = Path(coverage["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertTrue(manifest["verified"])
+        self.assertEqual(manifest["integrity_check"], "ok")
+        self.assertNotIn("transaction_root", manifest)
+        self.assertFalse(any("procedure_transaction" in key for key in manifest))
+        live_database_identity = self.database_path.stat().st_ino
+        restored_database = restore_verified_backup(
+            manifest_path,
+            self.restore_root / "managed-recovery.sqlite3",
+            self.restore_root,
+            expected_repository_id=self.identity.repository_id,
+            expected_repository_key=self.identity.repository_key,
+            expected_repository_root=self.identity.repository_root,
+            authority_configuration=load_store_authority(self.state_root),
+        )
+        self.assertNotEqual(restored_database.resolve(), self.database_path.resolve())
+        self.assertEqual(restored_database.stat().st_mode & 0o777, 0o600)
+        with sqlite3.connect(f"file:{restored_database}?mode=ro", uri=True) as connection:
+            restored_generation = connection.execute(
+                "SELECT value FROM store_metadata WHERE key = 'authority_generation'"
+            ).fetchone()
+        self.assertEqual(restored_generation, ("a" * 32,))
+        self.assertEqual(self.database_path.stat().st_ino, live_database_identity)
+        self.assertEqual(
+            load_store_authority(self.state_root).database_path.resolve(),
+            self.database_path.resolve(),
+        )
+        self.assertTrue(transaction_root.is_dir())
+        self.assertFalse((self.restore_root / self.identity.repository_id / "transactions").exists())
+
+        workflow_before_blocked_write = clients.workflow_snapshot()
+        self.coverage_path.unlink()
+        self.assertEqual(clients.backup_coverage_status()["status"], "blocked")
+        store_snapshot_before_blocked_write = clients.store.snapshot()
+        with self.assertRaises(BackupCoverageError):
+            clients.store.create_immutable_revision(DocumentRevisionInput(
+                document_id="backup-coverage-probe",
+                revision_id="backup-coverage-probe-revision",
+                logical_key="fixtures/backup-coverage-probe.md",
+                logical_type="CLOSEOUT",
+                source_path="fixtures/backup-coverage-probe.md",
+                content="# Must not be written without coverage\n",
+                source_kind="coder_draft",
+            ))
+        self.assertEqual(clients.workflow_snapshot(), workflow_before_blocked_write)
+        self.assertEqual(clients.store.snapshot(), store_snapshot_before_blocked_write)
+        self.create_fixture_recovery_point()
+        self.assertEqual(clients.backup_coverage_status()["status"], "ready")
+
+        app = create_web_app(
+            repository_registry_path=self.registry_path,
+            state_root=self.state_root,
+            port=8765,
+        )
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        self.assertEqual(browser.get("/milestones").status_code, 200)
+        health = browser.get("/healthz").get_json()
+        self.assertEqual(health["active_repository"], "photo-organizer")
+        self.assertEqual(health["active_repository_generation"], 0)
+        with browser.session_transaction() as browser_session:
+            csrf_token = browser_session["csrf_token"]
+        page = browser.get("/procedure-updates?repository=photo-organizer")
+        plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', page.data)
+        self.assertIsNotNone(plan_digest)
+        switched = browser.post("/repositories/select", data={
+            "csrf_token": csrf_token,
+            "repository_key": "repo-control-ii",
+            "repository_generation": "0",
+        })
+        self.assertEqual(switched.status_code, 302)
+        stale = browser.post("/procedure-updates/apply-review", data={
+            "csrf_token": csrf_token,
+            "repository_key": self.repository.key,
+            "active_repository_key": self.repository.key,
+            "repository_generation": "0",
+            "plan_sha256": plan_digest.group(1).decode(),
+        })
+        self.assertEqual(stale.status_code, 409)
+        self.assertIsNone(inspect_transaction(self.repository, self.state_root))
+        self.assertEqual(clients.workflow_snapshot(), workflow_before_blocked_write)
+        self.assertEqual((self.repository_root / self.identity.prompt_path).read_bytes(), self.prompt_bytes)
+        switched_back = browser.post("/repositories/select", data={
+            "csrf_token": csrf_token,
+            "repository_key": self.repository.key,
+            "repository_generation": "1",
+        })
+        self.assertEqual(switched_back.status_code, 302)
+        health = browser.get("/healthz").get_json()
+        self.assertEqual(health["active_repository"], "photo-organizer")
+        self.assertEqual(health["active_repository_generation"], 2)
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            runtime_port = sock.getsockname()[1]
+        runtime = make_server("127.0.0.1", runtime_port, app)
+        runtime_thread = Thread(target=runtime.serve_forever, daemon=True)
+        runtime_thread.start()
+        self.addCleanup(runtime.server_close)
+        self.addCleanup(runtime_thread.join, 5)
+        self.addCleanup(runtime.shutdown)
+
+        def repository_snapshot() -> dict[str, bytes]:
+            return {
+                path.relative_to(self.repository_root).as_posix(): path.read_bytes()
+                for path in self.repository_root.rglob("*")
+                if path.is_file() and ".git" not in path.relative_to(self.repository_root).parts
+            }
+
+        def selection_generation() -> int:
+            current_health = browser.get("/healthz").get_json()
+            self.assertEqual(current_health["active_repository"], "photo-organizer")
+            return current_health["active_repository_generation"]
+
+        original_tree = repository_snapshot()
+        original_head = subprocess.check_output(
+            ["git", "-C", str(self.repository_root), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+        original_index = (self.repository_root / ".git/index").read_bytes()
+        self.assertEqual(inspect_procedure(self.repository, prior_bundle)["status"], "CURRENT")
+
+        for crash_point, expected_state, marker in (
+            ("prepared", "PREPARED", "FIXTURE_CRASH_AFTER_PREPARED"),
+            ("first_target", "APPLYING", "FIXTURE_CRASH_AFTER_FIRST_TARGET"),
         ):
-            self.assertEqual(browser.get("/procedure-updates").status_code, 200)
-        self.assertEqual(captured["release_preparation"]["status"], "UNVERIFIED_IMPORTED_HISTORY")
-        inspect.assert_not_called()
-        legacy.assert_not_called()
-        self.assertEqual(self.workflow_path.read_bytes(), self.workflow_bytes)
+            generation = selection_generation()
+            page = browser.get("/procedure-updates?repository=photo-organizer")
+            plan_digest = re.search(rb'name="plan_sha256" value="([0-9a-f]{64})"', page.data)
+            self.assertIsNotNone(plan_digest)
+            reviewed = browser.post("/procedure-updates/apply-review", data={
+                "csrf_token": csrf_token,
+                "repository_key": self.repository.key,
+                "active_repository_key": self.repository.key,
+                "repository_generation": str(generation),
+                "plan_sha256": plan_digest.group(1).decode(),
+            })
+            self.assertEqual(reviewed.status_code, 302)
+            confirmation_page = browser.get("/procedure-updates?repository=photo-organizer")
+            confirmation = re.search(
+                rb'name="confirmation_token" value="([^"]+)"',
+                confirmation_page.data,
+            )
+            self.assertIsNotNone(confirmation)
+            confirmed = browser.post("/procedure-updates/apply", data={
+                "csrf_token": csrf_token,
+                "repository_key": self.repository.key,
+                "active_repository_key": self.repository.key,
+                "repository_generation": str(generation),
+                "confirmation_token": confirmation.group(1).decode(),
+            })
+            self.assertEqual(confirmed.status_code, 302)
+            self.assertEqual(inspect_transaction(self.repository, self.state_root)["state"], "EXECUTION_PENDING")
+
+            interrupted = self._run_fixture_procedure_executor(
+                runtime_port,
+                transaction_root,
+                crash_point=crash_point,
+            )
+            self.assertNotEqual(interrupted.returncode, 0)
+            self.assertIn(marker, interrupted.stdout)
+            transaction = inspect_transaction(self.repository, self.state_root)
+            self.assertEqual(transaction["state"], expected_state)
+            self.assertFalse(transaction["blocked"])
+            self.assertTrue(transaction["recoverable"])
+            operation_id = transaction["operation_id"]
+            journal_path = (
+                transaction_root
+                / self.repository.repository_id
+                / "transactions"
+                / operation_id
+                / "journal.json"
+            )
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+            self.assertEqual(journal["state"], expected_state)
+            self.assertTrue(journal["targets"])
+            if crash_point == "prepared":
+                self.assertEqual(repository_snapshot(), original_tree)
+            else:
+                partial_tree = repository_snapshot()
+                changed = {
+                    path
+                    for path in original_tree.keys() | partial_tree.keys()
+                    if original_tree.get(path) != partial_tree.get(path)
+                }
+                self.assertEqual(len(changed), 1)
+                changed_target = next(iter(changed))
+                target_record = next(item for item in journal["targets"] if item["path"] == changed_target)
+                self.assertEqual(
+                    hashlib.sha256((self.repository_root / changed_target).read_bytes()).hexdigest(),
+                    target_record["after_sha256"],
+                )
+
+            recovery_page = browser.get("/procedure-updates?repository=photo-organizer")
+            self.assertIn(b"Review Recovery", recovery_page.data)
+            reviewed_recovery = browser.post("/procedure-updates/recovery-review", data={
+                "csrf_token": csrf_token,
+                "repository_key": self.repository.key,
+                "active_repository_key": self.repository.key,
+                "repository_generation": str(generation),
+                "operation_id": operation_id,
+            })
+            self.assertEqual(reviewed_recovery.status_code, 302)
+            confirmation_page = browser.get("/procedure-updates?repository=photo-organizer")
+            self.assertIn(b"Confirm Recover", confirmation_page.data)
+            recovery_token = re.search(
+                rb'name="confirmation_token" value="([^"]+)"',
+                confirmation_page.data,
+            )
+            self.assertIsNotNone(recovery_token)
+            confirmed_recovery = browser.post("/procedure-updates/recover", data={
+                "csrf_token": csrf_token,
+                "repository_key": self.repository.key,
+                "active_repository_key": self.repository.key,
+                "repository_generation": str(generation),
+                "operation_id": operation_id,
+                "confirmation_token": recovery_token.group(1).decode(),
+            })
+            self.assertEqual(confirmed_recovery.status_code, 302)
+            pending_recovery = inspect_transaction(self.repository, self.state_root)
+            self.assertEqual(pending_recovery["state"], "EXECUTION_PENDING")
+            self.assertEqual(pending_recovery["request_action"], "recover")
+            recovered = self._run_fixture_procedure_executor(runtime_port, transaction_root)
+            self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+            recovered_transaction = inspect_transaction(self.repository, self.state_root)
+            self.assertEqual(recovered_transaction["state"], "RECOVERED")
+            self.assertEqual(recovered_transaction["operation_id"], operation_id)
+            self.assertEqual(repository_snapshot(), original_tree)
+            self.assertEqual(
+                subprocess.check_output(
+                    ["git", "-C", str(self.repository_root), "rev-parse", "HEAD"],
+                    text=True,
+                ).strip(),
+                original_head,
+            )
+            self.assertEqual((self.repository_root / ".git/index").read_bytes(), original_index)
+            self.assertEqual(inspect_procedure(self.repository, prior_bundle)["status"], "CURRENT")
+
+        self.assertEqual(clients.backup_coverage_status()["status"], "ready")
+        self.assertEqual((self.repository_root / self.identity.prompt_path).read_bytes(), self.prompt_bytes)
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_published_procedure_apply_keeps_integrity_selection_plan_overlay_and_confirmation_guards(self, _status) -> None:
