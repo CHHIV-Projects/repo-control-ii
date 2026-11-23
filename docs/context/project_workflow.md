@@ -17,7 +17,7 @@ workflow core, and accepted Skills in
 [`shared/procedure`](../../shared/procedure/). Each managed repository has
 physical/generated copies of the host entrypoint, workflow core, and Skills,
 plus `.repo-control/shared-procedure.lock.toml` recording the release and
-hashes materialized there. Canonical release `1.4.0` adds root `AGENTS.md`
+hashes materialized there. Canonical release `1.4.0` added root `AGENTS.md`
 from the same bootstrap source as `.github/copilot-instructions.md`, for six
 generated artifacts plus the release lock. The published `1.3.0` manifest
 and its five-artifact installations remain unchanged; each older installation
@@ -149,9 +149,10 @@ publication remain required. Publication does not Apply the release to managed
 repositories. See the [runtime compatibility and procedure release
 guide](../guides/runtime-compatibility-and-procedure-release.md) for the
 operator sequence. M009.014 subsequently published canonical release 1.4.0;
-the Product Owner applied it to Repo Control II. This does not update other
-managed repositories, and their installation status must still be inspected
-and reconciled separately under Product Owner authority.
+the Product Owner applied it to Repo Control II. The current canonical release
+is 1.5.0; this does not update other managed repositories, and their
+installation status must still be inspected and reconciled separately under
+Product Owner authority.
 
 ### Product Owner-controlled governing-role remap
 
