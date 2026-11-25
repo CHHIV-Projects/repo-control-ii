@@ -13,6 +13,7 @@ from repoctl.scanner.util import make_repository_id
 from repoctl.workflow.errors import WorkflowReasonError
 from repoctl.workflow.stage_execution import execute_prepared_stage
 from repoctl.workflow.stage_plan import prepare_stage
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -320,7 +321,7 @@ class WorkflowStageTests(unittest.TestCase):
             state = root / "state"
             _make_visible_changes(repo)
 
-            with mock.patch("repoctl.workflow.stage_plan.DEFAULT_STATE_ROOT", state), mock.patch(
+            with isolated_legacy_cli(state), mock.patch("repoctl.workflow.stage_plan.DEFAULT_STATE_ROOT", state), mock.patch(
                 "repoctl.workflow.stage_execution.DEFAULT_STATE_ROOT", state
             ):
                 code = main(["milestone", "prepare-stage", "--repository", str(repo), "--all"])

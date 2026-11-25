@@ -5,6 +5,7 @@ import io
 import json
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -102,6 +103,30 @@ def _context(root: Path):
     }
 
 
+def _managed_context(root: Path):
+    context = _context(root)
+    prompt = context["prompt"]
+    content = prompt["content"] + "Café.\n"
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    dispatch_id = "0123456789abcdef0123456789abcdef"
+    context["information_store_authority"] = "sqlite_managed"
+    context["selection"].update({
+        "selection_id": "selection-id-123",
+        "selection_revision": 7,
+    })
+    prompt.update({
+        "content": content,
+        "size_bytes": len(content.encode("utf-8")),
+        "identity": (
+            f"dispatch-prompt:{dispatch_id}:"
+            f"dispatch-prompt-revision:{dispatch_id}:{digest}"
+        ),
+        "authority_verified": True,
+    })
+    (root / prompt["path"]).unlink()
+    return context, digest
+
+
 def _runner_for(context, *, returncode=0, stdout=None, stderr=""):
     def run(command, **kwargs):
         run.last_command = command
@@ -197,6 +222,67 @@ class TestCodexBootstrap(unittest.TestCase):
             with self.subTest(source=source):
                 output, _ = self._run(event=_event(self.root, source=source))
                 self.assertEqual(self._context_from_output(output)["observation"]["source"], source)
+
+    def test_sqlite_managed_prompt_uses_verified_content_without_materialized_file(self):
+        context, digest = _managed_context(self.root)
+        output, _diagnostic = self._run(runner=_runner_for(context))
+        payload = self._context_from_output(output)
+
+        self.assertEqual(payload["status"], "AUTHORIZED")
+        self.assertEqual(payload["prompt"]["sha256"], digest)
+        self.assertFalse((self.root / context["prompt"]["path"]).exists())
+        self.assertNotIn(context["prompt"]["content"], json.dumps(output))
+
+    def test_sqlite_managed_prompt_identity_prefix_is_opaque(self):
+        context, digest = _managed_context(self.root)
+        context["prompt"]["identity"] = f"opaque:document:revision:with:colons:{digest}"
+        output, _diagnostic = self._run(runner=_runner_for(context))
+        payload = self._context_from_output(output)
+
+        self.assertEqual(payload["status"], "AUTHORIZED")
+        self.assertEqual(payload["prompt"]["sha256"], digest)
+
+    def test_sqlite_managed_prompt_rejects_tampering_and_unverified_bindings(self):
+        def mutate_content(context):
+            context["prompt"]["content"] = context["prompt"]["content"].replace("Test prompt", "Test promPt")
+
+        def mutate_digest(context):
+            prefix, _separator, _digest = context["prompt"]["identity"].rpartition(":")
+            context["prompt"]["identity"] = f"{prefix}:{'0' * 64}"
+
+        mutations = (
+            ("tampered content", mutate_content),
+            ("wrong digest", mutate_digest),
+            ("missing content", lambda context: context["prompt"].pop("content")),
+            ("malformed identity", lambda context: context["prompt"].update({"identity": "opaque-without-digest"})),
+            ("wrong byte size", lambda context: context["prompt"].update({"size_bytes": 1})),
+            ("false authority", lambda context: context["prompt"].update({"authority_verified": False})),
+            ("missing authority", lambda context: context["prompt"].pop("authority_verified")),
+            ("missing selection ID", lambda context: context["selection"].pop("selection_id")),
+            ("invalid selection revision", lambda context: context["selection"].update({"selection_revision": True})),
+            ("wrong repository", lambda context: context["repository"].update({"key": "other"})),
+            ("wrong selection", lambda context: context["selection"].update({"milestone_id": "M010.001"})),
+            ("unauthorized lifecycle", lambda context: (
+                context["milestone"].update({"phase": "WAITING"}),
+                context["workflow"].update({"phase": "WAITING"}),
+            )),
+            ("unsupported authority", lambda context: context.update({"information_store_authority": "file"})),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                context, _digest = _managed_context(self.root)
+                mutate(context)
+                output, _diagnostic = self._run(runner=_runner_for(context))
+                payload = self._context_from_output(output)
+                self.assertEqual(payload["status"], "INVALID_NO_AUTHORITY")
+                self.assertFalse(payload["authorization"]["authorized"])
+
+    def test_file_backed_prompt_still_requires_materialized_prompt(self):
+        (self.root / self.context["prompt"]["path"]).unlink()
+        output, _diagnostic = self._run()
+        payload = self._context_from_output(output)
+        self.assertEqual(payload["status"], "INVALID_NO_AUTHORITY")
+        self.assertFalse(payload["authorization"]["authorized"])
 
     def test_two_fixture_repository_identities_use_codex_envelope_and_fresh_prompt_hashes(self):
         fixtures = (
@@ -356,6 +442,27 @@ class TestCodexBootstrap(unittest.TestCase):
         self.assertEqual(timeout_context["status"], "INVALID_NO_AUTHORITY")
         self.assertFalse(timeout_context["authorization"]["authorized"])
 
+    def test_main_uses_launch_interpreter_for_canonical_context(self):
+        runner = _runner_for(self.context)
+        stdout = io.StringIO()
+        with mock.patch("repoctl.copilot_bootstrap.subprocess.run", side_effect=runner):
+            result = main(
+                stdin=io.StringIO(json.dumps(_event(self.root))),
+                stdout=stdout,
+                stderr=io.StringIO(),
+                argv=[
+                    "--repository-root", str(self.root),
+                    "--repository-id", self.context["repository"]["repository_id"],
+                ],
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(runner.last_command[0], sys.executable)
+        context = self._context_from_output(json.loads(stdout.getvalue()))
+        self.assertEqual(context["status"], "AUTHORIZED")
+        self.assertEqual(
+            context["full_context_command"], f"{sys.executable} -m repoctl.cli coder-context",
+        )
+
     def test_acceptance_marker_is_opt_in_and_host_output_is_one_json_line(self):
         output, _ = self._run()
         self.assertNotIn("delivery_probe", self._context_from_output(output))
@@ -479,7 +586,7 @@ class TestCodexBootstrap(unittest.TestCase):
                                 {
                                     "type": "command",
                                     "command": (
-                                        "/home/chuck/projects/repo-control-ii/.venv/bin/python "
+                                        "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python "
                                         "-m repoctl.codex_bootstrap"
                                     ),
                                     "timeout": 20,

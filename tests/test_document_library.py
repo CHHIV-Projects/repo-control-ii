@@ -262,6 +262,128 @@ class DocumentLibraryTests(unittest.TestCase):
         self.assertEqual(wrong_repository["total_count"], 0)
         self.assertTrue(wrong_repository["total_count_complete"])
 
+    def test_repository_scoped_history_contains_only_its_results_warnings_and_scan_metrics(self) -> None:
+        first = self.library.providers[0].sources[0].repository
+        other_root = self.root / "second-repository"
+        (other_root / "docs/context").mkdir(parents=True)
+        (other_root / "docs/milestones").mkdir(parents=True)
+        (other_root / "docs/context/project_context.md").write_text(
+            "# Second repository\n",
+            encoding="utf-8",
+        )
+        other_closeout = "docs/milestones/M020.001_other_closeout.md"
+        (other_root / other_closeout).write_text("# Orphan closeout\n", encoding="utf-8")
+        second = RepositoryEntry(
+            key="second",
+            name="Second repository",
+            path=other_root,
+            repository_id="second-repository-id",
+            milestone_root="docs/milestones",
+            documents={"context": "docs/context/project_context.md"},
+        )
+        library = DocumentLibrary(
+            [
+                GitFileProvider(
+                    [
+                        GitRepositoryContext(first, current_milestone_id="M010.006"),
+                        GitRepositoryContext(second),
+                    ]
+                )
+            ]
+        )
+
+        first_history = library.search_historical(
+            first,
+            "M010.006",
+            query=None,
+            milestone_id="M009.001",
+            artifact_type=None,
+            category=None,
+            limit=20,
+            cursor=None,
+        )
+        self.assertTrue(first_history["warnings"])
+        self.assertTrue(all(item["repository_id"] == first.repository_id for item in first_history["results"]))
+        self.assertFalse(any(other_closeout in warning for warning in first_history["warnings"]))
+        first_search = library.search(filters={"repository_id": first.repository_id})
+        self.assertTrue(all(item["repository_id"] == first.repository_id for item in first_search["documents"]))
+        self.assertFalse(any(other_closeout in warning for warning in first_search["warnings"]))
+        first_only = DocumentLibrary(
+            [GitFileProvider([GitRepositoryContext(first, current_milestone_id="M010.006")])]
+        ).search_historical(
+            first,
+            "M010.006",
+            query=None,
+            milestone_id="M009.001",
+            artifact_type=None,
+            category=None,
+            limit=20,
+            cursor=None,
+        )
+        self.assertEqual(first_history["bytes_scanned"], first_only["bytes_scanned"])
+        self.assertEqual(first_history["candidates_considered"], first_only["candidates_considered"])
+
+        second_history = library.search_historical(
+            second,
+            "M020.001",
+            query=None,
+            milestone_id="M020.001",
+            artifact_type=None,
+            category=None,
+            limit=20,
+            cursor=None,
+        )
+        self.assertTrue(any(other_closeout in warning for warning in second_history["warnings"]))
+        self.assertTrue(all(item["repository_id"] == second.repository_id for item in second_history["results"]))
+
+    def test_selected_closed_milestone_requires_explicit_exact_archival_selection(self) -> None:
+        repository = self.library.providers[0].sources[0].repository
+        path = "docs/milestones/M010.006_fixture_closeout.md"
+        default = self.library.search_historical(
+            repository,
+            "M010.006",
+            query=None,
+            milestone_id="M010.006",
+            artifact_type="milestone_closeout",
+            category="milestone",
+            limit=20,
+            cursor=None,
+        )
+        self.assertEqual(default["total_count"], 0)
+
+        included = self.library.search_historical(
+            repository,
+            "M010.006",
+            query=None,
+            milestone_id="M010.006",
+            artifact_type="milestone_closeout",
+            category="milestone",
+            limit=20,
+            cursor=None,
+            include_selected_milestone=True,
+        )
+        closeouts = [item for item in included["results"] if item["path"] == path]
+        self.assertTrue(closeouts)
+        self.assertTrue(all(item["is_selected_milestone"] for item in closeouts))
+        self.assertTrue(all(item["is_current_authority"] is False for item in closeouts))
+        if len(closeouts) > 1:
+            with self.assertRaises(DuplicateSourceIdentityError):
+                self.library.read_historical(repository, "M010.006", path)
+        exact = closeouts[0]
+        document = self.library.read_historical(
+            repository,
+            "M010.006",
+            path,
+            document_id=exact["document_id"],
+            revision_id=exact["revision_id"],
+            include_selected_milestone=True,
+        )
+        self.assertEqual(document["document_id"], exact["document_id"])
+        self.assertEqual(document["revision_id"], exact["revision_id"])
+        self.assertTrue(document["is_selected_milestone"])
+        self.assertFalse(document["is_current_authority"])
+        self.assertEqual(document["authority_classification"], "historical_evidence")
+
     def test_sqlite_approval_state_is_fixture_labeled_not_managed_authority(self) -> None:
         with tempfile.TemporaryDirectory(prefix="repoctl_approved_revision_", dir="/tmp") as directory:
             root = Path(directory)

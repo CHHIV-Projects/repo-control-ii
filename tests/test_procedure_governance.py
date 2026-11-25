@@ -2197,6 +2197,31 @@ class ProcedureGovernanceTests(unittest.TestCase):
             sorted(path.relative_to(vocab).as_posix() for path in vocab.rglob("*")),
         )
 
+    def test_managed_cli_allows_read_only_procedure_status(self) -> None:
+        configuration = mock.Mock(registry_path=self.registry_path.resolve())
+        clients = mock.Mock()
+        clients.selection_scope.return_value = contextlib.nullcontext()
+        out = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.store_authority.load_store_authority", return_value=configuration),
+            mock.patch(
+                "repoctl.workflow.information_store_fixture.create_managed_information_store_clients",
+                return_value=clients,
+            ),
+        ):
+            result = main([
+                "coder-procedure-status",
+                "--repository",
+                str(self.repo),
+                "--format",
+                "json",
+            ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(out.getvalue())["status"], "MISSING")
+
 
 if __name__ == "__main__":
     unittest.main()

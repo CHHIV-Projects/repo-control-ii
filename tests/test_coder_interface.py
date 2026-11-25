@@ -74,6 +74,12 @@ def _init_test_repo(root: Path, name: str = "repo") -> Path:
 
 
 def _record(repo: Path, state_root: Path, candidate: dict, event_type: str, summary: str, **kwargs):
+    if event_type == "prompt_approved":
+        kwargs.setdefault("approval_repository_key", resolve_repository_entry(repo).key)
+        kwargs.setdefault(
+            "expected_prompt_sha256",
+            hashlib.sha256((repo / candidate["prompt_path"]).read_bytes()).hexdigest(),
+        )
     return record_milestone_event(
         repo,
         state_root,
@@ -1272,6 +1278,8 @@ class TestCoderInterface(unittest.TestCase):
         }
         stdout = io.StringIO()
         with (
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.store_authority.load_store_authority", return_value=None),
             mock.patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=entry),
             mock.patch("repoctl.workflow.coder_interface.get_coder_status", return_value=status),
             mock.patch(
@@ -1299,6 +1307,8 @@ class TestCoderInterface(unittest.TestCase):
         }
         stderr = io.StringIO()
         with (
+            mock.patch("repoctl.managed_cli_binding.load_managed_cli_binding", return_value=None),
+            mock.patch("repoctl.store_authority.load_store_authority", return_value=None),
             mock.patch("repoctl.workflow.coder_interface.resolve_repository_entry", return_value=entry),
             mock.patch("repoctl.workflow.coder_interface.get_coder_status", return_value=unauthorized),
             mock.patch("repoctl.intelligence.client.refresh") as refresh,

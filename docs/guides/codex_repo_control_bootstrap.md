@@ -4,7 +4,9 @@
 
 **Contract:** `repo-control.continuity.v1`
 
-**Status:** LIVE PASS for the specifically tested VS Code Codex Remote SSH host
+**Status:** Historical LIVE PASS for the specifically tested VS Code Codex
+Remote SSH host. The M011.004 runtime-binding update below requires fresh
+host trust review and cold-session acceptance; it does not inherit that PASS.
 
 ## Verified host and result
 
@@ -51,7 +53,7 @@ The shipped production definition is `.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.codex_bootstrap",
+            "command": "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.codex_bootstrap",
             "timeout": 20,
             "async": false
           }
@@ -67,10 +69,37 @@ documented Codex `SessionStart` sources: `startup`, `resume`, `clear`,
 `compact`, and `fork`. Only real `startup` delivery was required and verified
 by M009.004. Fixture coverage of other sources is not live host acceptance.
 
-The command uses the repository's fixed absolute venv interpreter and queries
-fresh canonical Repo Control state on every invocation. No milestone, prompt,
-authorization, marker, receipt path, or current decision is embedded in the
-production hook.
+The command uses the qualified Coder environment's fixed absolute interpreter
+and queries fresh canonical Repo Control state on every invocation. Both
+adapters use their launching interpreter for the inner canonical CLI and
+returned follow-up commands, preserving the virtualenv path rather than
+selecting the checkout's `.venv` or resolving to the base Python executable.
+The repository root still comes from the central adapter source and expected
+identity arguments; choosing an interpreter does not change repository
+authority. No milestone, prompt, authorization, marker, receipt path, or
+current decision is embedded in the production hook.
+
+M011.004 B3 corrects the former mismatch: the checkout's `.venv` links SQLite
+3.45.1, below the 3.51.3 production floor, while the qualified environment
+links SQLite 3.51.3. Launching an adapter with an unsupported interpreter must
+still return invalid/no-authority context; no minimum-version check is
+disabled. These registrations are repository-owned project definitions, not
+artifacts of the shared-procedure release. This update does not alter system
+Python, service units, databases, host trust stores, or published procedures.
+
+M011.004 B4 updates the shared adapter for SQLite-managed authority. It requires
+`information_store_authority: "sqlite_managed"`, an explicit
+`prompt.authority_verified: true`, a well-formed current selection, UTF-8
+content whose byte count matches `prompt.size_bytes`, and a trailing SHA-256
+that matches the content. The document/revision portion of `prompt.identity`
+is opaque; the adapter does not split or reinterpret IDs that may contain
+colons. Approval and provenance remain the canonical producer's
+responsibility. The current context projection does not expose
+`authority_generation`, so the adapter does not invent or infer that value.
+SQLite-managed authority may omit a materialized prompt file only after these
+checks; file/ledger authority continues to require the existing bare hash and
+on-disk verification. Neither adapter has a passing managed-authority native
+cold-session acceptance result; provider delivery remains unverified.
 
 ## Adapter contract and authority boundary
 

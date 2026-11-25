@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.codex_bootstrap",
+            "command": "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.codex_bootstrap",
             "timeout": 20,
             "async": false
           }

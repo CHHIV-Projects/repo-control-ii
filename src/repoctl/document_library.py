@@ -193,12 +193,21 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True)
+class ProviderRepositorySnapshot:
+    repository_id: str
+    fingerprint: str
+    bytes_scanned: int
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ProviderSnapshot:
     provider_id: str
     records: tuple[DocumentRecord, ...]
     fingerprint: str
     bytes_scanned: int
     warnings: tuple[str, ...] = ()
+    repositories: tuple[ProviderRepositorySnapshot, ...] = ()
 
 
 class DocumentProvider(Protocol):
@@ -310,20 +319,28 @@ class GitFileProvider:
 
     def enumerate_records(self) -> ProviderSnapshot:
         records: list[DocumentRecord] = []
-        warnings: list[str] = []
-        bytes_scanned = 0
+        repositories: list[ProviderRepositorySnapshot] = []
         for source in self.sources:
             source_records, source_bytes, source_warnings = self._enumerate_repository(source)
             records.extend(source_records)
-            bytes_scanned += source_bytes
-            warnings.extend(source_warnings)
+            repositories.append(
+                ProviderRepositorySnapshot(
+                    repository_id=source.repository.repository_id,
+                    fingerprint=_sha256(_canonical_json({
+                        "records": _records_fingerprint(source_records),
+                        "warnings": source_warnings,
+                    })),
+                    bytes_scanned=source_bytes,
+                    warnings=tuple(source_warnings),
+                )
+            )
         records.sort(key=_record_sort_key)
         return ProviderSnapshot(
             provider_id=self.provider_id,
             records=tuple(records),
             fingerprint=_records_fingerprint(records),
-            bytes_scanned=bytes_scanned,
-            warnings=tuple(warnings),
+            bytes_scanned=sum(item.bytes_scanned for item in repositories),
+            repositories=tuple(repositories),
         )
 
     def _enumerate_repository(
@@ -741,6 +758,13 @@ class SQLiteRevisionProvider:
             records=tuple(records),
             fingerprint=_records_fingerprint(records),
             bytes_scanned=bytes_scanned,
+            repositories=(
+                ProviderRepositorySnapshot(
+                    repository_id=self.store.identity.repository_id,
+                    fingerprint=_records_fingerprint(records),
+                    bytes_scanned=bytes_scanned,
+                ),
+            ),
         )
 
 
@@ -794,7 +818,11 @@ class DocumentLibrary:
         self.providers = tuple(providers)
         self._cursor_secret = cursor_secret or os.urandom(32)
 
-    def _catalog(self) -> tuple[list[DocumentRecord], str, int, int, list[str]]:
+    def _catalog(
+        self,
+        *,
+        repository_id: str | None = None,
+    ) -> tuple[list[DocumentRecord], str, int, int, list[str]]:
         records: list[DocumentRecord] = []
         provider_fingerprints: list[tuple[str, str]] = []
         source_identities: set[str] = set()
@@ -806,10 +834,47 @@ class DocumentLibrary:
             snapshot = provider.enumerate_records()
             if snapshot.provider_id != provider.provider_id:
                 raise SourceEnumerationError("A document provider returned a mismatched provider identity.")
-            provider_fingerprints.append((snapshot.provider_id, snapshot.fingerprint))
-            bytes_scanned += snapshot.bytes_scanned
-            warnings.extend(snapshot.warnings)
-            for record in snapshot.records:
+            if repository_id is None:
+                provider_records = snapshot.records
+                provider_fingerprint = snapshot.fingerprint
+                provider_bytes = snapshot.bytes_scanned
+                warnings.extend(snapshot.warnings)
+                for scoped_snapshot in snapshot.repositories:
+                    warnings.extend(scoped_snapshot.warnings)
+            else:
+                provider_records = tuple(
+                    record for record in snapshot.records if record.repository_id == repository_id
+                )
+                scoped_snapshot = next(
+                    (
+                        item for item in snapshot.repositories
+                        if item.repository_id == repository_id
+                    ),
+                    None,
+                )
+                if scoped_snapshot is None:
+                    provider_fingerprint = _sha256(_canonical_json({
+                        "records": _records_fingerprint(provider_records),
+                        "unscoped_warning_count": len(snapshot.warnings),
+                    }))
+                    provider_bytes = sum(
+                        len(record.content.encode("utf-8")) for record in provider_records
+                    )
+                    if snapshot.warnings:
+                        warnings.append(
+                            "A provider reported unscoped diagnostics; details were omitted for repository isolation."
+                        )
+                else:
+                    provider_fingerprint = scoped_snapshot.fingerprint
+                    provider_bytes = scoped_snapshot.bytes_scanned
+                    warnings.extend(scoped_snapshot.warnings)
+                    if snapshot.warnings:
+                        warnings.append(
+                            "A provider reported unscoped diagnostics; details were omitted for repository isolation."
+                        )
+            provider_fingerprints.append((snapshot.provider_id, provider_fingerprint))
+            bytes_scanned += provider_bytes
+            for record in provider_records:
                 if record.provider_id != snapshot.provider_id:
                     raise SourceEnumerationError("A document record does not match its provider identity.")
                 if _sha256(record.content.encode("utf-8")) != record.content_sha256:
@@ -863,6 +928,8 @@ class DocumentLibrary:
         self,
         repository: RepositoryEntry,
         selected_milestone_id: str,
+        *,
+        include_selected_milestone: bool = False,
     ) -> tuple[list[tuple[DocumentRecord, dict[str, Any]]], str, int, list[str]]:
         has_git_history = any(
             isinstance(provider, GitFileProvider)
@@ -877,7 +944,9 @@ class DocumentLibrary:
             raise SourceEnumerationError(
                 "Historical search requires an explicitly configured Git historical-evidence provider."
             )
-        records, fingerprint, bytes_scanned, _candidate_count, warnings = self._catalog()
+        records, fingerprint, bytes_scanned, _candidate_count, warnings = self._catalog(
+            repository_id=repository.repository_id
+        )
         historical: list[tuple[DocumentRecord, dict[str, Any]]] = []
         for record in records:
             if record.repository_id != repository.repository_id:
@@ -888,7 +957,7 @@ class DocumentLibrary:
                 if exc.code in {"historical_path_not_allowed", "unsupported_historical_document_type"}:
                     continue
                 raise
-            if info["is_current"]:
+            if info["is_current"] and not include_selected_milestone:
                 continue
             raw = record.content.encode("utf-8")
             if len(raw) > architect_contract.MAX_REPOSITORY_DOCUMENT_FILE_BYTES:
@@ -910,12 +979,20 @@ class DocumentLibrary:
         category: str | None,
         limit: int | None,
         cursor: str | None,
+        include_selected_milestone: bool = False,
     ) -> dict[str, Any]:
+        if type(include_selected_milestone) is not bool:
+            raise ValueError("Selected-milestone history inclusion must be a boolean.")
         page_size = architect_contract._history_filters(query, milestone_id, artifact_type, category, limit)
-        records, fingerprint, bytes_scanned, warnings = self._historical_catalog(repository, selected_milestone_id)
+        records, fingerprint, bytes_scanned, warnings = self._historical_catalog(
+            repository,
+            selected_milestone_id,
+            include_selected_milestone=include_selected_milestone,
+        )
         request = {
             "repository_id": repository.repository_id,
             "selected_milestone_id": selected_milestone_id,
+            "include_selected_milestone": include_selected_milestone,
             "query": query,
             "milestone_id": milestone_id,
             "artifact_type": artifact_type,
@@ -955,13 +1032,31 @@ class DocumentLibrary:
         results = [
             {
                 **{key: value for key, value in info.items() if key != "is_current"},
+                "repository_key": record.repository_key,
+                "repository_id": record.repository_id,
                 "file_size_bytes": len(record.content.encode("utf-8")),
+                "revision_status": (
+                    "unverified_imported"
+                    if (
+                        include_selected_milestone
+                        and info["is_current"]
+                        and record.revision_status == "draft"
+                    )
+                    else record.revision_status
+                ),
                 "source_type": "historical_evidence",
                 "authority_classification": "historical_evidence",
+                "authority_note": (
+                    "Selected milestone revision explicitly requested as archival evidence; it does not establish "
+                    "current authority or event-time submission."
+                    if info["is_current"]
+                    else "Historical evidence only; not current governing or lifecycle authority."
+                ),
                 "is_current_authority": False,
                 "document_id": record.document_id,
                 "revision_id": record.revision_id,
                 "content_sha256": record.content_sha256,
+                "is_selected_milestone": info["is_current"],
                 "source_kind": record.source_kind,
                 "version_kind": record.version_kind,
                 "version_provenance": record.version_provenance,
@@ -998,16 +1093,21 @@ class DocumentLibrary:
         document_id: str | None = None,
         revision_id: str | None = None,
         cursor: str | None = None,
+        include_selected_milestone: bool = False,
     ) -> dict[str, Any]:
+        if type(include_selected_milestone) is not bool:
+            raise ValueError("Selected-milestone history inclusion must be a boolean.")
         if (document_id is None) != (revision_id is None):
             raise ValueError("Historical reads require both document ID and revision ID, or neither.")
         info = architect_contract._historical_path_info(repository, path, selected_milestone_id)
-        if info["is_current"]:
+        if info["is_current"] and not include_selected_milestone:
             raise architect_contract.ArchitectContractError(
                 "current_artifact_not_historical", "Read the selected milestone through its current tools.", 409
             )
         records, _fingerprint, _bytes_scanned, _warnings = self._historical_catalog(
-            repository, selected_milestone_id
+            repository,
+            selected_milestone_id,
+            include_selected_milestone=include_selected_milestone,
         )
         matches = [
             record for record, _info in records
@@ -1032,6 +1132,7 @@ class DocumentLibrary:
             "document_id": record.document_id,
             "revision_id": record.revision_id,
             "content_sha256": record.content_sha256,
+            "is_selected_milestone": info["is_current"],
             "file_size_bytes": byte_count,
             "bytes_returned": len(page["content"].encode("utf-8")),
             "character_count": len(page["content"]),
@@ -1041,10 +1142,20 @@ class DocumentLibrary:
             "next_cursor": page["next_cursor"],
             "working_tree_source": record.source_kind,
             "authority_classification": "historical_evidence",
-            "authority_note": "Historical evidence only; not current governing or lifecycle authority.",
+            "authority_note": (
+                "Selected milestone revision explicitly requested as archival evidence; it does not establish "
+                "current authority or event-time submission."
+                if info["is_current"]
+                else "Historical evidence only; not current governing or lifecycle authority."
+            ),
             "is_current_authority": False,
             "observed_at": datetime.now(UTC).isoformat(),
             "version_provenance": record.version_provenance,
+            "revision_status": (
+                "unverified_imported"
+                if include_selected_milestone and info["is_current"] and record.revision_status == "draft"
+                else record.revision_status
+            ),
             "content": page["content"],
         }
 
@@ -1060,7 +1171,9 @@ class DocumentLibrary:
         parsed_filters = DocumentFilters.parse(filters)
         if type(page_size) is not int or not 1 <= page_size <= MAX_LIBRARY_PAGE_SIZE:
             raise ValueError(f"Page size must be between 1 and {MAX_LIBRARY_PAGE_SIZE}.")
-        records, catalog_fingerprint, bytes_scanned, candidate_count, warnings = self._catalog()
+        records, catalog_fingerprint, bytes_scanned, candidate_count, warnings = self._catalog(
+            repository_id=parsed_filters.repository_id
+        )
         request = {
             "query": tokens,
             "filters": parsed_filters.as_dict(),

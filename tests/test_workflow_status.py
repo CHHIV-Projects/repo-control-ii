@@ -12,6 +12,7 @@ from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.scanner.git_ops import ScanError
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.workflow.status import WorkflowError, _publish_status_pair, generate_milestone_status
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -498,7 +499,7 @@ class WorkflowStatusTests(unittest.TestCase):
             repo = _init_repo(root)
             state = root / "state"
 
-            with mock.patch("repoctl.workflow.status.DEFAULT_STATE_ROOT", state):
+            with isolated_legacy_cli(state), mock.patch("repoctl.workflow.status.DEFAULT_STATE_ROOT", state):
                 code = main(["milestone", "status", "--repository", str(repo)])
             self.assertEqual(code, 0)
 

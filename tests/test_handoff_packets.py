@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -66,6 +67,12 @@ def _candidate(repo: Path, milestone_id: str = "M003.001") -> dict:
 
 
 def _record(repo: Path, state_root: Path, candidate: dict, event_type: str, summary: str, **kwargs):
+    if event_type == "prompt_approved":
+        kwargs.setdefault("approval_repository_key", repo.name)
+        kwargs.setdefault(
+            "expected_prompt_sha256",
+            hashlib.sha256((repo / candidate["prompt_path"]).read_bytes()).hexdigest(),
+        )
     return record_milestone_event(
         repo,
         state_root,

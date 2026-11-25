@@ -11,6 +11,7 @@ from repoctl.compare.manager import compare_snapshots
 from repoctl.compare.manager import derive_comparison_id
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.snapshot.manager import SCAN_ARTIFACTS, derive_snapshot_id, create_snapshot
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -58,7 +59,8 @@ class SnapshotCompareTests(unittest.TestCase):
                 import os
 
                 os.chdir(repo)
-                code = main(["snapshot"])
+                with isolated_legacy_cli(root / "state"):
+                    code = main(["snapshot"])
                 self.assertEqual(code, 0)
             finally:
                 os.chdir(old)
@@ -67,7 +69,8 @@ class SnapshotCompareTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             repo = _init_repo(root)
-            code = main(["snapshot", "--repository", str(repo)])
+            with isolated_legacy_cli(root / "state"):
+                code = main(["snapshot", "--repository", str(repo)])
             self.assertEqual(code, 0)
 
     def test_snapshot_invalid_repository_fails(self) -> None:
@@ -139,7 +142,8 @@ class SnapshotCompareTests(unittest.TestCase):
             root = Path(td)
             repo = _init_repo(root)
             before = _git(repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
-            code = main(["snapshot", "--repository", str(repo)])
+            with isolated_legacy_cli(root / "state"):
+                code = main(["snapshot", "--repository", str(repo)])
             self.assertEqual(code, 0)
             after = _git(repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
             self.assertEqual(before, after)

@@ -5,6 +5,7 @@ import io
 import json
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +104,30 @@ def _context(root: Path):
             "identity": hashlib.sha256(prompt_bytes).hexdigest(),
         },
     }
+
+
+def _managed_context(root: Path):
+    context = _context(root)
+    prompt = context["prompt"]
+    content = prompt["content"] + "Café.\n"
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    dispatch_id = "0123456789abcdef0123456789abcdef"
+    context["information_store_authority"] = "sqlite_managed"
+    context["selection"].update({
+        "selection_id": "selection-id-123",
+        "selection_revision": 7,
+    })
+    prompt.update({
+        "content": content,
+        "size_bytes": len(content.encode("utf-8")),
+        "identity": (
+            f"dispatch-prompt:{dispatch_id}:"
+            f"dispatch-prompt-revision:{dispatch_id}:{digest}"
+        ),
+        "authority_verified": True,
+    })
+    (root / prompt["path"]).unlink()
+    return context, digest
 
 
 def _runner_for(context, *, returncode=0, stdout=None, stderr=""):
@@ -390,6 +415,32 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertFalse(diagnostic["cli_invocation_attempted"])
         self.assertIsNone(runner.last_command)
 
+    def test_main_uses_launch_interpreter_for_canonical_context(self):
+        runner = _runner_for(self.context)
+        stdout = io.StringIO()
+        with mock.patch("repoctl.copilot_bootstrap.subprocess.run", side_effect=runner):
+            result = main(
+                stdin=io.StringIO(json.dumps(_event(self.root))),
+                stdout=stdout,
+                stderr=io.StringIO(),
+                argv=[
+                    "--repository-root", str(self.root),
+                    "--repository-id", self.context["repository"]["repository_id"],
+                ],
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(runner.last_command[0], sys.executable)
+        context = json.loads(json.loads(stdout.getvalue())["additionalContext"])
+        self.assertEqual(context["status"], "CURRENT_CONTEXT")
+        self.assertEqual(
+            context["fullContextCommand"], f"{sys.executable} -m repoctl.cli coder-context",
+        )
+        self.assertTrue(
+            context["approvedArchitectDispatches"]["items"][0]["body_command"].startswith(
+                f"{sys.executable} -m repoctl.cli coder-read-dispatch "
+            )
+        )
+
     def test_main_accepts_preview_binding_arguments(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -489,6 +540,70 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.context["prompt"]["identity"] = "0" * 64
         bad_hash = self._run()
         self.assertEqual(json.loads(bad_hash[0]["additionalContext"])["reason"], "prompt_identity_mismatch")
+
+    def test_sqlite_managed_prompt_uses_verified_content_without_materialized_file(self):
+        context, digest = _managed_context(self.root)
+        hook_output, diagnostic = self._run(runner=_runner_for(context))
+        context_text = hook_output["additionalContext"]
+        payload = json.loads(context_text)
+
+        self.assertEqual(payload["status"], "CURRENT_CONTEXT")
+        self.assertEqual(payload["selection"]["promptSha256"], digest)
+        self.assertEqual(payload["selection"]["promptSizeBytes"], len(context["prompt"]["content"].encode("utf-8")))
+        self.assertFalse((self.root / context["prompt"]["path"]).exists())
+        self.assertNotIn(context["prompt"]["content"], context_text)
+        self.assertEqual(diagnostic["outcome"], "current_context")
+
+    def test_sqlite_managed_prompt_identity_prefix_is_opaque(self):
+        context, digest = _managed_context(self.root)
+        context["prompt"]["identity"] = f"opaque:document:revision:with:colons:{digest}"
+        hook_output, _diagnostic = self._run(runner=_runner_for(context))
+        payload = json.loads(hook_output["additionalContext"])
+
+        self.assertEqual(payload["status"], "CURRENT_CONTEXT")
+        self.assertEqual(payload["selection"]["promptSha256"], digest)
+
+    def test_sqlite_managed_prompt_rejects_tampering_and_unverified_bindings(self):
+        def mutate_content(context):
+            context["prompt"]["content"] = context["prompt"]["content"].replace("Test prompt", "Test promPt")
+
+        def mutate_digest(context):
+            prefix, _separator, _digest = context["prompt"]["identity"].rpartition(":")
+            context["prompt"]["identity"] = f"{prefix}:{'0' * 64}"
+
+        mutations = (
+            ("tampered content", mutate_content),
+            ("wrong digest", mutate_digest),
+            ("missing content", lambda context: context["prompt"].pop("content")),
+            ("malformed identity", lambda context: context["prompt"].update({"identity": "opaque-without-digest"})),
+            ("wrong byte size", lambda context: context["prompt"].update({"size_bytes": 1})),
+            ("false authority", lambda context: context["prompt"].update({"authority_verified": False})),
+            ("missing authority", lambda context: context["prompt"].pop("authority_verified")),
+            ("missing selection ID", lambda context: context["selection"].pop("selection_id")),
+            ("invalid selection revision", lambda context: context["selection"].update({"selection_revision": True})),
+            ("wrong repository", lambda context: context["repository"].update({"key": "other"})),
+            ("wrong selection", lambda context: context["selection"].update({"milestone_id": "M010.001"})),
+            ("unauthorized lifecycle", lambda context: (
+                context["milestone"].update({"phase": "WAITING"}),
+                context["workflow"].update({"phase": "WAITING"}),
+            )),
+            ("unsupported authority", lambda context: context.update({"information_store_authority": "file"})),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                context, _digest = _managed_context(self.root)
+                mutate(context)
+                hook_output, _diagnostic = self._run(runner=_runner_for(context))
+                payload = json.loads(hook_output["additionalContext"])
+                self.assertEqual(payload["status"], "INVALID_NO_AUTHORITY")
+                self.assertFalse(payload["authorization"]["authorized"])
+
+    def test_file_backed_prompt_still_requires_materialized_prompt(self):
+        (self.root / self.context["prompt"]["path"]).unlink()
+        hook_output, _diagnostic = self._run()
+        payload = json.loads(hook_output["additionalContext"])
+        self.assertEqual(payload["status"], "INVALID_NO_AUTHORITY")
+        self.assertEqual(payload["reason"], "prompt_identity_mismatch")
 
     def test_bounded_reference_lists_preserve_counts_and_report_omissions(self):
         self.context["workflow"]["open_questions"] = [
@@ -633,7 +748,7 @@ class TestCopilotBootstrap(unittest.TestCase):
         self.assertEqual(hook["type"], "command")
         self.assertEqual(
             hook["command"],
-            "/home/chuck/projects/repo-control-ii/.venv/bin/python -m repoctl.copilot_bootstrap",
+            "/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python -m repoctl.copilot_bootstrap",
         )
         self.assertEqual(hook["cwd"], ".")
         self.assertLessEqual(hook["timeoutSec"], 15)

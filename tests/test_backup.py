@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import fcntl
 import hashlib
@@ -8,12 +10,17 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
+from threading import Event
+import time
 import unittest
 from unittest.mock import patch
 
-from repoctl import backup as backup_module
+from repoctl import backup as backup_module, backup_guard
 from repoctl.backup import (
     BackupConfig,
     BackupError,
@@ -30,6 +37,8 @@ from repoctl.information_store import (
     StoreIdentity,
 )
 from tests.test_sqlite_workflow_poc import _closeout_history
+from tests.backup_monitor_fixture import fixture_binding, full_scrub, probe_latest
+from tests import backup_sandbox_fixture
 
 
 class BackupTests(unittest.TestCase):
@@ -100,6 +109,14 @@ class BackupTests(unittest.TestCase):
             expected_repository_root=self.identity.repository_root,
             now=now,
         )
+
+    def _record_fixture(self, created: dict) -> tuple[Path, dict]:
+        path = self.root / "fixture-recovery.json"
+        binding = fixture_binding(self.root, self.identity)
+        backup_guard.write_recovery_point(
+            path, manifest_path=Path(created["manifest_path"]), manifest=created, binding=binding,
+        )
+        return path, binding
 
     @staticmethod
     def _sidecars(directory: Path) -> set[Path]:
@@ -259,6 +276,179 @@ class BackupTests(unittest.TestCase):
         )
         self.assertFalse(invalid.healthy)
         self.assertEqual(invalid.invalid_manifests, 1)
+
+    def test_prototype_exact_point_bounds_reads_and_exposes_historical_detection_gap(self) -> None:
+        now = datetime(2026, 11, 24, 12, tzinfo=UTC)
+        older = self._backup(now=now - timedelta(minutes=15))
+        newest = self._backup(now=now)
+        record, binding = self._record_fixture(newest)
+        history = full_scrub(self.destination, self.identity, now=now)
+        older_path = self.destination / older["database_file"]
+        contents = older_path.read_bytes()
+        older_path.write_bytes(bytes([contents[0] ^ 1]) + contents[1:])
+        arguments = (self.destination, record, self.staging / ".repoctl-backup.lock", self.identity, binding)
+        options = dict(now=now, history=history, last_job_state="success", publication_complete=True)
+        descriptors = len(list(Path("/proc/self/fd").iterdir()))
+
+        with patch.object(backup_module, "_sha256_file", wraps=backup_module._sha256_file) as hashing:
+            for _ in range(12):
+                result = probe_latest(*arguments, **options)
+                self.assertTrue(result["ready"], result)
+                self.assertEqual(result["history_code"], "VERIFIED_AS_OF")
+                self.assertIn("only as of receipt", result["message"])
+            self.assertEqual(hashing.call_count, 12)
+            self.assertEqual(
+                {call.args[0] for call in hashing.call_args_list},
+                {self.destination / newest["database_file"]},
+            )
+        self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), descriptors)
+
+        detected = full_scrub(self.destination, self.identity, now=now)
+        self.assertEqual(detected.invalid_manifests, (Path(older["manifest_path"]).name,))
+        result = probe_latest(*arguments, **{**options, "history": detected})
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["freshness_code"], "VERIFIED")
+        self.assertEqual(result["code"], "HISTORY_FAILED")
+        for receipt in (None, replace(history, checked_at=now - timedelta(minutes=70))):
+            result = probe_latest(*arguments, **{**options, "history": receipt})
+            self.assertFalse(result["ready"])
+            self.assertEqual(result["code"], "HISTORY_DUE")
+
+    def test_prototype_never_falls_back_from_failed_exact_recovery_evidence(self) -> None:
+        now = datetime(2026, 11, 24, 12, tzinfo=UTC)
+        self._backup(now=now - timedelta(minutes=15))
+        newest = self._backup(now=now)
+        record, binding = self._record_fixture(newest)
+        history = full_scrub(self.destination, self.identity, now=now)
+        manifest = Path(newest["manifest_path"])
+        payload = self.destination / newest["database_file"]
+        original = {path: path.read_bytes() for path in (record, manifest, payload)}
+        descriptors = len(list(Path("/proc/self/fd").iterdir()))
+        cases = {
+            "missing_record": "RECOVERY_UNVERIFIED",
+            "expired": "RECOVERY_UNVERIFIED",
+            "wrong_database": "RECOVERY_UNVERIFIED",
+            "wrong_repository": "PAYLOAD_UNVERIFIED",
+            "same_size_corruption": "PAYLOAD_UNVERIFIED",
+            "missing_payload": "PAYLOAD_UNVERIFIED",
+            "tampered_manifest": "PAYLOAD_UNVERIFIED",
+            "partial_manifest": "NOT_PUBLISHED",
+            "mismatched_record": "RECORD_MISMATCH",
+        }
+        for case, expected in cases.items():
+            with self.subTest(case=case):
+                expected_binding = json.loads(json.dumps(binding))
+                identity, instant = self.identity, now
+                try:
+                    if case == "missing_record":
+                        record.unlink()
+                    elif case == "expired":
+                        instant += timedelta(seconds=1200)
+                    elif case == "wrong_database":
+                        expected_binding["database_identity"] = "0" * 64
+                    elif case == "wrong_repository":
+                        identity = replace(self.identity, repository_id="wrong-fixture-repository")
+                    elif case == "same_size_corruption":
+                        contents = original[payload]
+                        payload.write_bytes(bytes([contents[0] ^ 1]) + contents[1:])
+                    elif case == "missing_payload":
+                        payload.unlink()
+                    elif case == "tampered_manifest":
+                        manifest.write_bytes(b"{}")
+                    elif case == "partial_manifest":
+                        partial = self.destination / ".pending.manifest.json.partial"
+                        partial.write_bytes(original[manifest])
+                        backup_guard.write_recovery_point(
+                            record, manifest_path=partial, manifest=newest, binding=binding,
+                        )
+                    elif case == "mismatched_record":
+                        backup_guard.write_recovery_point(
+                            record, manifest_path=manifest,
+                            manifest={**newest, "snapshot_sha256": "0" * 64}, binding=binding,
+                        )
+                    result = probe_latest(
+                        self.destination, record, self.staging / ".repoctl-backup.lock",
+                        identity, expected_binding, now=instant, history=history,
+                        last_job_state="success", publication_complete=True,
+                    )
+                    self.assertFalse(result["ready"], result)
+                    self.assertEqual(result["code"], expected, result)
+                    self.assertTrue(result["message"])
+                    self.assertEqual(json.loads(json.dumps(result)), result)
+                    self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), descriptors)
+                finally:
+                    for path, contents in original.items():
+                        path.write_bytes(contents)
+                        path.chmod(0o600)
+
+    def test_prototype_publication_lock_survives_offset_overrun_and_failed_jobs(self) -> None:
+        now = datetime(2026, 11, 24, 12, tzinfo=UTC)
+        newest = self._backup(now=now)
+        record, binding = self._record_fixture(newest)
+        history = full_scrub(self.destination, self.identity, now=now)
+        lock = self.staging / ".repoctl-backup.lock"
+        arguments = (self.destination, record, lock, self.identity, binding)
+        options = dict(now=now, history=history, last_job_state="success", publication_complete=True)
+        descriptor = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(backup_module, "_sha256_file", wraps=backup_module._sha256_file) as hashing:
+                for offset in (60, 120, 360):
+                    result = probe_latest(*arguments, **{**options, "now": now + timedelta(seconds=offset)})
+                    self.assertEqual(result["code"], "BACKUP_IN_PROGRESS")
+                    self.assertFalse(result["ready"])
+                hashing.assert_not_called()
+        finally:
+            os.close(descriptor)
+        result = probe_latest(*arguments, **{**options, "publication_complete": False})
+        self.assertEqual(result["code"], "PUBLICATION_PENDING")
+        for state in ("failed", "unknown"):
+            result = probe_latest(*arguments, **{**options, "last_job_state": state})
+            self.assertFalse(result["ready"])
+            self.assertEqual(result["code"], "BACKUP_JOB_UNVERIFIED")
+        self.assertTrue(probe_latest(*arguments, **options)["ready"])
+        lock.unlink()
+        self.assertEqual(probe_latest(*arguments, **options)["code"], "LOCK_UNAVAILABLE")
+
+    def test_reader_lock_requires_bounded_writer_retry_not_current_nonblocking_writer(self) -> None:
+        now = datetime(2026, 11, 24, 12, tzinfo=UTC)
+        self._backup(now=now)
+        descriptor = os.open(self.staging / ".repoctl-backup.lock", os.O_RDONLY)
+        real_flock = fcntl.flock
+        waiting = Event()
+        retry_seconds = 2.0
+
+        def bounded_fixture_flock(fd: int, operation: int) -> None:
+            deadline = time.monotonic() + retry_seconds
+            while True:
+                try:
+                    real_flock(fd, operation)
+                    return
+                except BlockingIOError:
+                    if operation != (fcntl.LOCK_EX | fcntl.LOCK_NB) or time.monotonic() >= deadline:
+                        raise
+                    waiting.set()
+                    time.sleep(0.005)
+
+        try:
+            real_flock(descriptor, fcntl.LOCK_SH)
+            with self.assertRaisesRegex(BackupError, "Another Repo Control backup"):
+                self._backup(now=now + timedelta(seconds=1))
+            with patch.object(backup_module.fcntl, "flock", side_effect=bounded_fixture_flock):
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(self._backup, now=now + timedelta(seconds=2))
+                    self.assertTrue(waiting.wait(1), "Fixture writer did not encounter the held reader lock.")
+                    self.assertFalse(future.done())
+                    real_flock(descriptor, fcntl.LOCK_UN)
+                    created = future.result(timeout=3)
+                    self.assertTrue(Path(created["manifest_path"]).is_file())
+                retry_seconds = 0.05
+                real_flock(descriptor, fcntl.LOCK_SH)
+                with self.assertRaisesRegex(BackupError, "Another Repo Control backup"):
+                    self._backup(now=now + timedelta(seconds=3))
+                self.assertEqual(len(list(self.destination.glob("*.manifest.json"))), 2)
+        finally:
+            os.close(descriptor)
 
     def test_restore_refuses_existing_destination_and_tampered_manifest(self) -> None:
         created = self._backup(now=datetime(2026, 11, 14, 12, 0, tzinfo=UTC))
@@ -488,6 +678,71 @@ class BackupTests(unittest.TestCase):
         self.assertIn("UNRESOLVED BACKUP WARNING: NAS backup destination check failed: NAS unavailable",
                       error_output.getvalue())
         send_alert.assert_not_called()
+
+
+class BackupSandboxFixtureTests(unittest.TestCase):
+    def test_disposable_setup_preserves_sidecar_cases_and_bounded_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="m011004-fixture-test-") as temporary:
+            root = Path(temporary).resolve() / "m011004-sandbox-test"
+            before = backup_sandbox_fixture.prepare(root)
+            self.assertFalse(before["prepared_shm_exists"])
+            self.assertTrue(backup_sandbox_fixture.inspect(root)["protected_unchanged"])
+            for case in backup_sandbox_fixture.CASES:
+                case_root = root / case
+                self.assertTrue((case_root / "protected/wal/managed.sqlite3-shm").is_file())
+                self.assertFalse((case_root / "protected/clean-wal/managed.sqlite3-shm").exists())
+                self.assertEqual(list((case_root / "prepared").iterdir()), [])
+            intruder = root / "not-owned-by-fixture"
+            intruder.write_text("leave this file", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "operation refused"):
+                backup_sandbox_fixture.cleanup(root)
+            with self.assertRaisesRegex(ValueError, "operation refused"):
+                backup_sandbox_fixture.probe(root, "separate")
+            self.assertEqual(intruder.read_text(encoding="utf-8"), "leave this file")
+            intruder.unlink()
+            backup_sandbox_fixture.cleanup(root)
+            self.assertFalse(root.exists())
+
+    def test_probe_refuses_execution_without_hardening_before_writes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="m011004-fixture-test-") as temporary:
+            root = Path(temporary).resolve() / "m011004-sandbox-test"
+            backup_sandbox_fixture.prepare(root)
+            real_read = Path.read_text
+
+            def read_without_hardening(path: Path, *args, **kwargs):
+                if path == Path("/proc/self/status"):
+                    return "NoNewPrivs:\t0\n"
+                return real_read(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read_without_hardening):
+                with self.assertRaisesRegex(ValueError, "no fixture writes"):
+                    backup_sandbox_fixture.probe(root, "separate")
+            observed = backup_sandbox_fixture.inspect(root)
+            self.assertTrue(observed["protected_unchanged"])
+            self.assertEqual(observed["reports"], {})
+            backup_sandbox_fixture.cleanup(root)
+
+    @unittest.skipUnless(shutil.which("setpriv"), "setpriv is unavailable for the unprivileged negative control")
+    def test_negative_control_rejects_unconfined_writes_instead_of_claiming_pass(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="m011004-fixture-test-") as temporary:
+            root = Path(temporary).resolve() / "m011004-sandbox-test"
+            backup_sandbox_fixture.prepare(root)
+            for _ in range(2):
+                result = subprocess.run(
+                    [
+                        "setpriv", "--no-new-privs", sys.executable, "-m", "tests.backup_sandbox_fixture",
+                        "probe", "--root", str(root), "--case", "parent",
+                    ],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                report = json.loads(result.stdout)
+                self.assertFalse(report["passed"])
+                self.assertTrue(report["no_new_privileges"])
+                self.assertTrue(any(attempt["allowed"] for attempt in report["attempts"]))
+                self.assertTrue(report["prepared_create_rename"])
+                self.assertTrue(report["prepared_sidecars_removed"])
+            backup_sandbox_fixture.cleanup(root)
 
 
 if __name__ == "__main__":

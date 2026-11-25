@@ -713,7 +713,8 @@ def main(
         if args.command not in {
             "scan", "context", "snapshot", "compare", "analyze", "milestone",
             "coder-context", "coder-verify", "coder-read-milestone-document", "coder-status",
-            "coder-read-dispatch", "coder-question", "coder-bug", "coder-bug-fixed", "coder-test",
+            "coder-read-dispatch", "coder-procedure-status", "coder-question", "coder-bug",
+            "coder-bug-fixed", "coder-test",
             "coder-closeout", "coder-intelligence", "coder-intelligence-rate", "coder-intelligence-refresh",
             "mcp-architect",
         }:
@@ -849,6 +850,7 @@ def _main(
         "coder-read-milestone-document",
         "coder-status",
         "coder-read-dispatch",
+        "coder-procedure-status",
         "coder-question",
         "coder-bug",
         "coder-bug-fixed",

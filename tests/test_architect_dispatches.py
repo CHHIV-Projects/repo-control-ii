@@ -175,6 +175,10 @@ class TestArchitectDispatches(unittest.TestCase):
             summary="Approve test prompt",
             actor_role="product_owner",
             po_approved=True,
+            approval_repository_key="test-repository",
+            expected_prompt_sha256=hashlib.sha256(
+                (self.repository / selected["prompt_path"]).read_bytes()
+            ).hexdigest(),
         )
         record_milestone_event(
             self.repository,

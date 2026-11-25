@@ -352,8 +352,32 @@ class InformationStoreApplicationClients:
     def list_documents(self, *, after_order: int = 0) -> dict[str, Any]:
         return self.store.list_documents(after_order=after_order)
 
-    def search_historical(self, repository: RepositoryEntry, **filters: Any) -> dict[str, Any]:
-        return self.library.search_historical(repository, self.identity.milestone_id, **filters)
+    def _allow_selected_closed_history(self, requested: bool) -> None:
+        if type(requested) is not bool:
+            raise ValueError("Selected closed-milestone history inclusion must be a boolean.")
+        if requested and self.workflow_snapshot()["projection"]["phase"] != "CLOSED":
+            from ..web.architect_contract import ArchitectContractError
+
+            raise ArchitectContractError(
+                "selected_milestone_not_closed",
+                "Selected-milestone archival access is available only after the milestone is CLOSED.",
+                409,
+            )
+
+    def search_historical(
+        self,
+        repository: RepositoryEntry,
+        *,
+        include_selected_closed: bool = False,
+        **filters: Any,
+    ) -> dict[str, Any]:
+        self._allow_selected_closed_history(include_selected_closed)
+        return self.library.search_historical(
+            repository,
+            self.identity.milestone_id,
+            include_selected_milestone=include_selected_closed,
+            **filters,
+        )
 
     def read_historical(
         self,
@@ -363,7 +387,9 @@ class InformationStoreApplicationClients:
         document_id: str | None = None,
         revision_id: str | None = None,
         cursor: str | None = None,
+        include_selected_closed: bool = False,
     ) -> dict[str, Any]:
+        self._allow_selected_closed_history(include_selected_closed)
         return self.library.read_historical(
             repository,
             self.identity.milestone_id,
@@ -371,6 +397,7 @@ class InformationStoreApplicationClients:
             document_id=document_id,
             revision_id=revision_id,
             cursor=cursor,
+            include_selected_milestone=include_selected_closed,
         )
 
     def get_dispatch(self, dispatch_id: str) -> dict[str, Any]:

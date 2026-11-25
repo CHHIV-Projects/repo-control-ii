@@ -19,6 +19,7 @@ from repoctl.workflow.errors import WorkflowReasonError
 from repoctl.web.views import summarize_workflow_artifacts
 from repoctl.workflow.git_state import inspect_git_state
 from repoctl.web.app import create_web_app
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -479,7 +480,7 @@ class WorkflowCommitTests(unittest.TestCase):
             state = root / "state"
             _prepare_staged_change(repo, state)
 
-            with mock.patch("repoctl.workflow.commit_plan.DEFAULT_STATE_ROOT", state), mock.patch(
+            with isolated_legacy_cli(state), mock.patch("repoctl.workflow.commit_plan.DEFAULT_STATE_ROOT", state), mock.patch(
                 "repoctl.workflow.commit_execution.DEFAULT_STATE_ROOT", state
             ), mock.patch("repoctl.workflow.status.DEFAULT_STATE_ROOT", state):
                 code = main(["milestone", "prepare-commit", "--repository", str(repo), "--message", "cli message"])

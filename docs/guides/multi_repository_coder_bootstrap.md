@@ -7,8 +7,10 @@ a preview, not an installed or trusted hook, and it does not demonstrate
 multi-repository host delivery.
 
 The selected design is a thin per-repository registration that invokes the
-trusted Repo Control II virtualenv and reuses the central Copilot or Codex
-adapter. A versioned repository-local adapter bundle was considered and
+trusted Repo Control II Python environment and reuses the central Copilot or
+Codex adapter. The adapter invokes the canonical CLI with its own launching
+interpreter; it does not select the checkout's `.venv` independently.
+A versioned repository-local adapter bundle was considered and
 rejected: it would duplicate authority-sensitive validation and require each
 target to track source updates. The central adapter invokes the canonical
 `repoctl.cli coder-context --repository <event cwd>` command on every hook
@@ -62,6 +64,14 @@ trusted central `repoctl` source. The default is this checkout's
 preview and re-review the new executable and source paths. Do not copy the
 adapter source into a target repository or substitute an unverified `repoctl`
 installation.
+
+Repo Control II's current project registrations instead pin
+`/home/chuck/.venvs/repo-control-python-3.12.16-sqlite-3.51.3/bin/python`,
+whose SQLite meets the managed authority floor. The current checkout `.venv`
+does not meet that floor. The preview CLI's managed-authority rejection
+remains a separately deferred M011.004 defect; the preview default and the
+example above are not current installation or acceptance evidence. Do not
+install a preview without separately reviewing and validating its runtime.
 
 ## Per-repository onboarding checklist
 

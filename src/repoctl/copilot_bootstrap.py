@@ -18,7 +18,7 @@ from uuid import uuid4
 from .scanner.util import make_repository_id
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_EXECUTABLE = REPOSITORY_ROOT / ".venv" / "bin" / "python"
+PYTHON_EXECUTABLE = Path(sys.executable)
 REPOSITORY_KEY = "repo-control-ii"
 REPOSITORY_ID = make_repository_id(REPOSITORY_ROOT)
 ADAPTER_VERSION = "1"
@@ -309,23 +309,62 @@ def _validate_context(
     if relative_prompt.is_absolute() or ".." in relative_prompt.parts:
         raise _BootstrapError("prompt_identity_mismatch")
     prompt_identity = _required_text(prompt, "identity")
-    if not _SHA256_RE.fullmatch(prompt_identity):
-        raise _BootstrapError("prompt_identity_mismatch")
     prompt_size = prompt.get("size_bytes")
     prompt_content = prompt.get("content")
     if isinstance(prompt_size, bool) or not isinstance(prompt_size, int) or prompt_size <= 0:
         raise _BootstrapError("prompt_identity_mismatch")
     if not isinstance(prompt_content, str) or not prompt_content:
         raise _BootstrapError("prompt_identity_mismatch")
-    prompt_file = canonical_root.joinpath(*relative_prompt.parts)
-    try:
-        resolved_prompt = prompt_file.resolve(strict=True)
-        resolved_prompt.relative_to(canonical_root)
-        actual_identity = hashlib.sha256(resolved_prompt.read_bytes()).hexdigest()
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise _BootstrapError("prompt_identity_mismatch") from exc
-    if actual_identity != prompt_identity:
-        raise _BootstrapError("prompt_identity_mismatch")
+
+    authority_present = "information_store_authority" in context
+    authority = context.get("information_store_authority")
+    if authority_present and authority != "sqlite_managed":
+        raise _BootstrapError("unsupported_prompt_authority")
+    managed_authority = authority_present
+    if managed_authority:
+        if prompt.get("authority_verified") is not True:
+            raise _BootstrapError("prompt_authority_unverified")
+        selection_id = _bounded_identifier(
+            _required_text(selection, "selection_id", "prompt_identity_mismatch"),
+            "prompt_identity_mismatch",
+        )
+        selection_revision = selection.get("selection_revision")
+        if (
+            not selection_id
+            or isinstance(selection_revision, bool)
+            or not isinstance(selection_revision, int)
+            or selection_revision < 0
+        ):
+            raise _BootstrapError("prompt_identity_mismatch")
+        try:
+            prompt_bytes = prompt_content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise _BootstrapError("prompt_identity_mismatch") from exc
+        if len(prompt_bytes) != prompt_size:
+            raise _BootstrapError("prompt_identity_mismatch")
+        # Document and revision IDs may contain colons; only the final digest is delimited.
+        identity_prefix, separator, declared_sha256 = prompt_identity.rpartition(":")
+        if (
+            not separator
+            or not identity_prefix.strip()
+            or not _SHA256_RE.fullmatch(declared_sha256)
+        ):
+            raise _BootstrapError("prompt_identity_mismatch")
+        prompt_sha256 = hashlib.sha256(prompt_bytes).hexdigest()
+        if prompt_sha256 != declared_sha256:
+            raise _BootstrapError("prompt_identity_mismatch")
+    else:
+        if prompt.get("authority_verified") is False or not _SHA256_RE.fullmatch(prompt_identity):
+            raise _BootstrapError("prompt_identity_mismatch")
+        prompt_file = canonical_root.joinpath(*relative_prompt.parts)
+        try:
+            resolved_prompt = prompt_file.resolve(strict=True)
+            resolved_prompt.relative_to(canonical_root)
+            prompt_sha256 = hashlib.sha256(resolved_prompt.read_bytes()).hexdigest()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _BootstrapError("prompt_identity_mismatch") from exc
+        if prompt_sha256 != prompt_identity:
+            raise _BootstrapError("prompt_identity_mismatch")
 
     authorization = _mapping(context.get("authorization"))
     authorized = authorization.get("authorized")
@@ -409,7 +448,7 @@ def _validate_context(
             "path": str(canonical_root),
         },
         "milestone": {"id": milestone_id, "phase": phase},
-        "prompt": {"path": prompt_path, "sha256": prompt_identity},
+        "prompt": {"path": prompt_path, "sha256": prompt_sha256},
         "authorization": {"authorized": authorized, "status": auth_status},
     }
     status = "CURRENT_CONTEXT" if authorized else "NO_AUTHORITY"
@@ -435,7 +474,7 @@ def _validate_context(
             "milestoneId": milestone_id,
             "phase": phase,
             "promptPath": prompt_path,
-            "promptSha256": prompt_identity,
+            "promptSha256": prompt_sha256,
             "promptSizeBytes": prompt_size,
         },
         "authorization": {

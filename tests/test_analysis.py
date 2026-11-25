@@ -27,6 +27,7 @@ from repoctl.cli import main
 from repoctl.compare.manager import compare_snapshots
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.snapshot.manager import create_snapshot
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -229,10 +230,11 @@ class AnalysisTests(unittest.TestCase):
             "model_digest": "c" * 64,
             "reused_existing": False,
         }
-        with mock.patch("repoctl.cli.analyze_comparison", return_value=fake) as patched:
-            code = main(["analyze", "cmp--x", "--repository", "/tmp/repo"])
-            self.assertEqual(code, 0)
-            self.assertTrue(patched.called)
+        with tempfile.TemporaryDirectory() as td, isolated_legacy_cli(Path(td) / "state"):
+            with mock.patch("repoctl.cli.analyze_comparison", return_value=fake) as patched:
+                code = main(["analyze", "cmp--x", "--repository", "/tmp/repo"])
+                self.assertEqual(code, 0)
+                self.assertTrue(patched.called)
 
     def test_analyze_missing_comparison_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -540,16 +542,17 @@ class AnalysisTests(unittest.TestCase):
         self.assertNotIn(secret, str(ctx.exception))
 
     def test_cli_provider_error_shape(self) -> None:
-        with mock.patch(
-            "repoctl.cli.analyze_comparison",
-            side_effect=AnalysisError("provider error [invalid_structured_content_json]: message.content was not valid JSON"),
-        ):
-            buf = StringIO()
-            with redirect_stderr(buf):
-                code = main(["analyze", "cmp--x", "--repository", "/tmp/repo"])
-            self.assertEqual(code, 2)
-            self.assertIn("provider error [invalid_structured_content_json]: message.content was not valid JSON", buf.getvalue())
-            self.assertNotIn("analyze failed:", buf.getvalue())
+        with tempfile.TemporaryDirectory() as td, isolated_legacy_cli(Path(td) / "state"):
+            with mock.patch(
+                "repoctl.cli.analyze_comparison",
+                side_effect=AnalysisError("provider error [invalid_structured_content_json]: message.content was not valid JSON"),
+            ):
+                buf = StringIO()
+                with redirect_stderr(buf):
+                    code = main(["analyze", "cmp--x", "--repository", "/tmp/repo"])
+                self.assertEqual(code, 2)
+                self.assertIn("provider error [invalid_structured_content_json]: message.content was not valid JSON", buf.getvalue())
+                self.assertNotIn("analyze failed:", buf.getvalue())
 
     def test_validation_error_codes_distinguish_schema_and_grounding(self) -> None:
         with tempfile.TemporaryDirectory() as td:

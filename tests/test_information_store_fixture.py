@@ -9,6 +9,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import threading
 from unittest.mock import Mock, patch
 
@@ -30,6 +31,7 @@ from repoctl.web.app import create_web_app
 from repoctl.cli import main as cli_main
 from repoctl.mcp.architect_adapter import handle_rpc_request
 from repoctl.procedure_release import inspect_procedure_release_preparation
+from repoctl.web.architect_contract import ArchitectContractError
 from repoctl.workflow.information_store_fixture import (
     FixtureInformationStoreClients,
     FixtureIntegrationError,
@@ -654,6 +656,18 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
             DocumentLibrary([GitFileProvider([GitRepositoryContext(repository)]), SQLiteRevisionProvider(store)]),
             fixture_only=True,
         )
+        with self.assertRaises(ArchitectContractError) as error:
+            clients.search_historical(
+                repository,
+                include_selected_closed=True,
+                query=None,
+                milestone_id=identity.milestone_id,
+                artifact_type="milestone_closeout",
+                category="milestone",
+                limit=20,
+                cursor=None,
+            )
+        self.assertEqual(error.exception.code, "selected_milestone_not_closed")
         registry = RepositoryRegistry((repository,), repository.key)
         with patch("repoctl.web.app.RepositoryRegistry.single", return_value=registry):
             app = create_web_app(
@@ -730,7 +744,10 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(json.loads(output.getvalue())["milestone"]["phase"], "IN_PROGRESS")
 
-    def test_imported_closed_selection_is_reportable_without_inventing_prompt_or_closeout_approval(self) -> None:
+    @patch("repoctl.web.app.generate_milestone_status")
+    def test_imported_closed_selection_is_reportable_without_inventing_prompt_or_closeout_approval(
+        self, _status
+    ) -> None:
         repository = self.library.providers[0].sources[0].repository
         identity = replace(self.identity, selection_id="imported-closed-selection")
         store = InformationStore.initialize_disposable(
@@ -738,7 +755,10 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
             identity,
             allow_unsupported_runtime_for_fixture=True,
         )
-        events = deepcopy(_closeout_history())
+        events = [
+            event for event in deepcopy(_closeout_history())
+            if event["event_type"] not in {"bug_classified", "bug_fixed"}
+        ]
         closeout_path = identity.prompt_path.removesuffix("_prompt.md") + "_closeout.md"
         submitted = next(
             index for index, event in enumerate(events)
@@ -779,7 +799,133 @@ class FixtureInformationStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(status["authorization"]["status"], "UNVERIFIED_PROMPT")
         self.assertFalse(status["prompt"]["authority_verified"])
         self.assertIsNone(store.snapshot()["prompt_revision_id"])
-        self.assertIsNone(clients.browser_snapshot()["workflow"]["accepted_closeout"])
+        browser_snapshot = clients.browser_snapshot()
+        self.assertIsNone(browser_snapshot["workflow"]["accepted_closeout"])
+        self.assertEqual(browser_snapshot["workflow"]["phase"], "CLOSED")
+
+        subprocess.run(
+            ["git", "-C", identity.repository_root, "init"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for git_args in (
+            ["add", "."],
+            ["commit", "-m", "isolated imported-history fixture"],
+        ):
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    identity.repository_root,
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    *git_args,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        with patch("repoctl.web.app.RepositoryRegistry.single", return_value=RepositoryRegistry(
+            (repository,), repository.key
+        )):
+            app = create_web_app(
+                repository_path=identity.repository_root,
+                state_root=Path(self.fixture.temporary.name) / "imported-closed-api",
+                information_store_clients=clients,
+            )
+        app.config["TESTING"] = True
+        browser = app.test_client()
+        generation = browser.get("/healthz").json["active_repository_generation"]
+        common = {
+            "expected_repository_key": repository.key,
+            "expected_generation": generation,
+            "expected_milestone_id": identity.milestone_id,
+        }
+
+        def get_architect(resource: str, **extra: str):
+            query = {**common, **extra}
+            if resource.startswith("history/"):
+                query.pop("expected_milestone_id")
+            return browser.get(
+                f"/api/architect/v1/{resource}",
+                query_string=query,
+            )
+
+        prompt = get_architect("prompt")
+        self.assertEqual(prompt.status_code, 200, prompt.json)
+        self.assertEqual(prompt.json["data"]["revision_status"], "unverified_imported")
+
+        for resource in ("status", "milestone", "review", "workflow", "closeout", "git"):
+            response = get_architect(resource)
+            self.assertEqual(response.status_code, 200, (resource, response.json))
+        workflow = get_architect("workflow").json["data"]
+        self.assertIn("NO — milestone is CLOSED", workflow["next_authorized_action"])
+        self.assertEqual(workflow["open_conditions"]["state"], "historical_only")
+        self.assertFalse(workflow["open_conditions"]["blocks_implementation"])
+        self.assertEqual(
+            workflow["open_conditions"]["reconciliation_status"],
+            "needs_product_owner_review",
+        )
+        self.assertEqual(workflow["evidence_reconciliation"]["status"], "needs_product_owner_review")
+        self.assertFalse(workflow["evidence_reconciliation"]["authorizes_implementation"])
+        self.assertEqual(workflow["evidence_reconciliation"]["source_milestone_id"], identity.milestone_id)
+        self.assertIn(
+            next(event["event_id"] for event in events if event["event_type"] == "bug_discovered"),
+            workflow["evidence_reconciliation"]["evidence_event_ids"],
+        )
+        self.assertEqual(
+            workflow["evidence_reconciliation"]["disposition_origin"],
+            "no_reconciliation_recorded",
+        )
+        closeout = get_architect("closeout").json["data"]
+        self.assertEqual(closeout["status"], "unverified")
+        self.assertEqual(closeout["revision_status"], "event_time_unverified")
+        self.assertEqual(closeout["error_code"], "unverified_closeout_revision")
+        self.assertIsNone(closeout["content"])
+
+        closeout_path = identity.prompt_path.removesuffix("_prompt.md") + "_closeout.md"
+        unverified_read = get_architect("milestone-document", path=closeout_path)
+        self.assertEqual(unverified_read.status_code, 409)
+        self.assertEqual(unverified_read.json["error"]["code"], "unverified_closeout_revision")
+
+        default_history = get_architect(
+            "history/search",
+            milestone_id=identity.milestone_id,
+            artifact_type="milestone_closeout",
+            category="milestone",
+        )
+        self.assertEqual(default_history.status_code, 200, default_history.json)
+        self.assertEqual(default_history.json["data"]["total_count"], 0)
+        selected_history = get_architect(
+            "history/search",
+            milestone_id=identity.milestone_id,
+            artifact_type="milestone_closeout",
+            category="milestone",
+            include_selected_closed="true",
+        )
+        self.assertEqual(selected_history.status_code, 200, selected_history.json)
+        historical_versions = selected_history.json["data"]["results"]
+        self.assertTrue(historical_versions)
+        self.assertTrue(all(item["is_selected_milestone"] for item in historical_versions))
+        self.assertTrue(all(item["is_current_authority"] is False for item in historical_versions))
+        sqlite_version = next(
+            item for item in historical_versions if item["source_kind"] == "sqlite_fixture"
+        )
+        self.assertEqual(sqlite_version["revision_status"], "unverified_imported")
+        exact_read = get_architect(
+            "history/document",
+            path=closeout_path,
+            document_id=sqlite_version["document_id"],
+            revision_id=sqlite_version["revision_id"],
+            include_selected_closed="true",
+        )
+        self.assertEqual(exact_read.status_code, 200, exact_read.json)
+        self.assertEqual(exact_read.json["data"]["content"], "# Imported historical closeout\n")
+        self.assertEqual(exact_read.json["data"]["revision_id"], sqlite_version["revision_id"])
+        self.assertFalse(exact_read.json["data"]["is_current_authority"])
 
     @patch("repoctl.web.app.generate_milestone_status")
     def test_dispatch_pages_cover_other_milestones_and_reject_stale_cursors(self, _status) -> None:

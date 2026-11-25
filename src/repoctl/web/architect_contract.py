@@ -123,6 +123,7 @@ def _event_view(event: dict[str, Any]) -> dict[str, Any]:
         "actor_authenticated": False,
         "summary": event["summary"],
         "binding": event.get("binding") is True and event["event_type"] == "lock_in_approved",
+        "bug_scope": event.get("bug_scope"),
         "related_event_id": event.get("related_event_id"),
         "evidence_source": event.get("evidence_source"),
         "result": event.get("result"),
@@ -139,6 +140,30 @@ def _bounded_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "omitted_count": len(events) - len(selected),
         "events": [_event_view(event) for event in selected],
     }
+
+
+def _condition_summary(workflow: dict[str, Any]) -> dict[str, Any]:
+    conditions = _open_conditions(workflow)
+    phase = workflow.get("phase")
+    closed = phase == "CLOSED"
+    needs_owner_review = any(
+        event.get("event_type") == "bug_classified"
+        and event.get("bug_scope") == "needs_escalation"
+        for event in conditions
+    ) or (closed and bool(conditions))
+    summary = _bounded_events(conditions)
+    summary.update(
+        {
+            "state": "historical_only" if closed else ("open" if conditions else "none"),
+            "blocks_implementation": phase == "WAITING",
+            "reconciliation_status": (
+                "needs_product_owner_review"
+                if needs_owner_review
+                else ("not_required" if closed else "not_applicable")
+            ),
+        }
+    )
+    return summary
 
 
 def _get_selection(repository: RepositoryEntry, state_root: str | Path) -> dict[str, Any]:
@@ -244,6 +269,18 @@ def _milestone_view(
             f"Selected prompt {candidate['prompt_path']} is {prompt_status}.",
             404 if prompt_status == "missing" else 422,
         )
+    open_conditions = _condition_summary(workflow)
+    evidence_reconciliation = {
+        "status": open_conditions["reconciliation_status"],
+        "source_milestone_id": candidate["milestone_id"],
+        "evidence_event_ids": [event["event_id"] for event in open_conditions["events"]],
+        "disposition_origin": (
+            "no_reconciliation_recorded"
+            if open_conditions["reconciliation_status"] == "needs_product_owner_review"
+            else "workflow_ledger_projection"
+        ),
+        "authorizes_implementation": False,
+    }
     return {
         "id": candidate["milestone_id"],
         "phase": workflow["phase"],
@@ -264,7 +301,8 @@ def _milestone_view(
         },
         "event_count": workflow["event_count"],
         "latest_binding_lock_in": _event_view(latest_lock_in) if latest_lock_in else None,
-        "open_conditions": _bounded_events(_open_conditions(workflow)),
+        "open_conditions": open_conditions,
+        "evidence_reconciliation": evidence_reconciliation,
         "lifecycle_phase": workflow["phase"],
         "next_authorized_action": workflow["next_action"],
         "lifecycle_source": {

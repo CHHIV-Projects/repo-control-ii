@@ -277,6 +277,12 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                     "maxLength": MAX_HISTORY_CURSOR_LENGTH,
                     "description": "Opaque continuation returned as next_cursor by the previous page.",
                 },
+                "include_selected_closed": {
+                    "type": "boolean",
+                    "description": (
+                        "Explicitly include the selected milestone as archival evidence, only when it is CLOSED."
+                    ),
+                },
                 "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
                 "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
             },
@@ -302,6 +308,12 @@ TOOL_INVENTORY: list[dict[str, Any]] = [
                 "document_id": {"type": "string", "minLength": 1, "maxLength": 256},
                 "revision_id": {"type": "string", "minLength": 1, "maxLength": 256},
                 "cursor": {"type": "string", "minLength": 1, "maxLength": MAX_HISTORY_CURSOR_LENGTH},
+                "include_selected_closed": {
+                    "type": "boolean",
+                    "description": (
+                        "Explicitly read an exact selected-milestone revision as archival evidence, only when CLOSED."
+                    ),
+                },
                 "expected_repository_key": PRECONDITION_PROPERTIES["expected_repository_key"],
                 "expected_generation": PRECONDITION_PROPERTIES["expected_generation"],
             },
@@ -608,6 +620,11 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
                     f"cursor must be a non-empty string <= {MAX_HISTORY_CURSOR_LENGTH} characters"
                 )
             history_params["cursor"] = value
+        if "include_selected_closed" in arguments:
+            value = arguments["include_selected_closed"]
+            if not isinstance(value, bool):
+                raise AdapterValidationError("include_selected_closed must be a boolean")
+            history_params["include_selected_closed"] = str(value).lower()
         return "/api/architect/v1/history/search", history_params
     elif tool_name == "repo_history_document":
         for key in ("path", "expected_repository_key", "expected_generation"):
@@ -630,6 +647,11 @@ def validate_tool_call(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
                 if not isinstance(value, str) or not 1 <= len(value) <= limit:
                     raise AdapterValidationError(f"{key} must be a non-empty string <= {limit} characters")
                 history_params[key] = value
+        if "include_selected_closed" in arguments:
+            value = arguments["include_selected_closed"]
+            if not isinstance(value, bool):
+                raise AdapterValidationError("include_selected_closed must be a boolean")
+            history_params["include_selected_closed"] = str(value).lower()
         return "/api/architect/v1/history/document", history_params
     elif tool_name == "repo_dispatches":
         if "milestone_id" in arguments:

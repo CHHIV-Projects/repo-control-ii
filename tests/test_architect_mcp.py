@@ -212,6 +212,7 @@ class TestArchitectMcpValidation(unittest.TestCase):
                 "category": "milestone",
                 "limit": 5,
                 "cursor": "eyJ2IjoxfQ",
+                "include_selected_closed": True,
                 "expected_repository_key": "repo-control-ii",
                 "expected_generation": 2,
             },
@@ -226,15 +227,23 @@ class TestArchitectMcpValidation(unittest.TestCase):
                 "category": "milestone",
                 "limit": "5",
                 "cursor": "eyJ2IjoxfQ",
+                "include_selected_closed": "true",
                 "expected_repository_key": "repo-control-ii",
                 "expected_generation": "2",
             },
         )
         self.assertIn("cursor", TOOL_MAP["repo_history_search"]["inputSchema"]["properties"])
+        self.assertIn(
+            "include_selected_closed",
+            TOOL_MAP["repo_history_search"]["inputSchema"]["properties"],
+        )
         endpoint, query = validate_tool_call(
             "repo_history_document",
             {
                 "path": "docs/history/context/old.md",
+                "document_id": "sqlite-document-id",
+                "revision_id": "sqlite-revision-id",
+                "include_selected_closed": True,
                 "expected_repository_key": "vocab-app",
                 "expected_generation": 1,
             },
@@ -244,9 +253,20 @@ class TestArchitectMcpValidation(unittest.TestCase):
             query,
             {
                 "path": "docs/history/context/old.md",
+                "document_id": "sqlite-document-id",
+                "revision_id": "sqlite-revision-id",
+                "include_selected_closed": "true",
                 "expected_repository_key": "vocab-app",
                 "expected_generation": "1",
             },
+        )
+        self.assertIn(
+            "document_id",
+            TOOL_MAP["repo_history_document"]["inputSchema"]["properties"],
+        )
+        self.assertIn(
+            "revision_id",
+            TOOL_MAP["repo_history_document"]["inputSchema"]["properties"],
         )
         invalid_calls = [
             (
@@ -281,6 +301,15 @@ class TestArchitectMcpValidation(unittest.TestCase):
                     "expected_repository_key": "first",
                     "expected_generation": 0,
                     "root": "/tmp",
+                },
+            ),
+            (
+                "repo_history_document",
+                {
+                    "path": "docs/history/context/old.md",
+                    "include_selected_closed": "true",
+                    "expected_repository_key": "first",
+                    "expected_generation": 0,
                 },
             ),
         ]

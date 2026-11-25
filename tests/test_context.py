@@ -11,6 +11,7 @@ from repoctl.cli import main
 from repoctl.context.policy import MATCH_STATUS_MATCHED, MATCH_STATUS_NO_MATCHES, make_context_id, tokenize_text
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.context.generator import build_and_publish_context
+from tests.cli_test_support import isolated_legacy_cli
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -62,7 +63,8 @@ class ContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             repo = _init_repo(root)
-            code = main(["context", "synonym", "--repository", str(repo)])
+            with isolated_legacy_cli(root / "state"):
+                code = main(["context", "synonym", "--repository", str(repo)])
             self.assertEqual(code, 0)
 
     def test_context_with_current_directory_default(self) -> None:
@@ -72,7 +74,8 @@ class ContextTests(unittest.TestCase):
             old = Path.cwd()
             try:
                 os.chdir(repo)
-                code = main(["context", "synonym"])
+                with isolated_legacy_cli(root / "state"):
+                    code = main(["context", "synonym"])
                 self.assertEqual(code, 0)
             finally:
                 os.chdir(old)
@@ -270,7 +273,8 @@ class ContextTests(unittest.TestCase):
             _git(repo, "add", "newsymbol.py")
             _git(repo, "commit", "-m", "add newsymbol")
 
-            code = main(["context", "newsymbol", "--repository", str(repo)])
+            with isolated_legacy_cli(root / "state"):
+                code = main(["context", "newsymbol", "--repository", str(repo)])
             self.assertEqual(code, 0)
 
     def test_target_repo_unchanged(self) -> None:
@@ -278,7 +282,8 @@ class ContextTests(unittest.TestCase):
             root = Path(td)
             repo = _init_repo(root)
             before = _git(repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
-            code = main(["context", "synonym", "--repository", str(repo)])
+            with isolated_legacy_cli(root / "state"):
+                code = main(["context", "synonym", "--repository", str(repo)])
             self.assertEqual(code, 0)
             after = _git(repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
             self.assertEqual(before, after)

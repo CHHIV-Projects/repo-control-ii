@@ -110,6 +110,7 @@ from .architect_contract import (
     MAX_PACKET_BYTES,
     ArchitectContractError,
     _bounded_events,
+    _condition_summary,
     _event_view,
     _git_view,
     _document_inventory,
@@ -1332,9 +1333,14 @@ def create_web_app(
         if resource == "repository_document":
             allowed_parameters.add("path")
         elif resource == "history_search":
-            allowed_parameters.update({"query", "milestone_id", "artifact_type", "category", "limit", "cursor"})
+            allowed_parameters.update({
+                "query", "milestone_id", "artifact_type", "category", "limit", "cursor",
+                "include_selected_closed",
+            })
         elif resource == "history_document":
-            allowed_parameters.update({"path", "document_id", "revision_id", "cursor"})
+            allowed_parameters.update({
+                "path", "document_id", "revision_id", "cursor", "include_selected_closed",
+            })
         elif resource == "milestone_document":
             allowed_parameters.update({"path", "expected_milestone_id", "start_byte", "source_fingerprint"})
         else:
@@ -1395,6 +1401,18 @@ def create_web_app(
                 if resource in {"history_search", "history_document"}
                 else None
             )
+            history_include_selected_closed_text = (
+                architect_query_value("include_selected_closed", maximum_length=5)
+                if resource in {"history_search", "history_document"}
+                else None
+            )
+            if history_include_selected_closed_text not in {None, "true", "false"}:
+                raise ArchitectContractError(
+                    "invalid_history_scope",
+                    "include_selected_closed must be 'true' or 'false'.",
+                    400,
+                )
+            history_include_selected_closed = history_include_selected_closed_text == "true"
             history_document_id = (
                 architect_query_value("document_id", maximum_length=256)
                 if resource == "history_document" else None
@@ -1409,12 +1427,14 @@ def create_web_app(
                     "Historical document and revision IDs must be supplied together.",
                     400,
                 )
-            if information_store_clients is None and (history_document_id is not None or (
-                resource == "history_document" and history_cursor is not None
-            )):
+            if information_store_clients is None and (
+                history_document_id is not None
+                or history_include_selected_closed
+                or (resource == "history_document" and history_cursor is not None)
+            ):
                 raise ArchitectContractError(
                     "unsupported_historical_revision",
-                    "Exact historical revision IDs require a configured document provider.",
+                    "Exact historical revisions and selected-closed archival access require a configured document provider.",
                     400,
                 )
             if history_limit_text is None:
@@ -1520,6 +1540,7 @@ def create_web_app(
                                 category=history_category,
                                 limit=history_limit,
                                 cursor=history_cursor,
+                                include_selected_closed=history_include_selected_closed,
                             )
                         else:
                             if document_path is None:
@@ -1532,6 +1553,7 @@ def create_web_app(
                                 document_id=history_document_id,
                                 revision_id=history_revision_id,
                                 cursor=history_cursor,
+                                include_selected_closed=history_include_selected_closed,
                             )
                     elif resource == "documents":
                         repository = current_repository()
@@ -1589,7 +1611,13 @@ def create_web_app(
                             "content_sha256": prompt["content_sha256"],
                             "authority": snapshot["authority"],
                             "revision_status": (
-                                "approved" if snapshot["prompt_revision_id"] == prompt["revision_id"] else "draft"
+                                "approved"
+                                if snapshot["prompt_revision_id"] == prompt["revision_id"]
+                                else (
+                                    "unverified_imported"
+                                    if selected["workflow"]["unverified_prompt"] is not None
+                                    else "draft"
+                                )
                             ),
                         }
                     elif resource == "milestone_document":
@@ -1621,7 +1649,7 @@ def create_web_app(
                             phase = projection["phase"]
                             workflow = {"phase": phase, "event_history": events}
                             authorization = get_authorization_status(phase, is_correction_mode(workflow))
-                            if snapshot["unverified_guidance"]:
+                            if snapshot["unverified_guidance"] and phase != "CLOSED":
                                 authorization = {
                                     **authorization,
                                     "authorized": False,
@@ -1641,9 +1669,68 @@ def create_web_app(
                                     event for event in events
                                     if event["event_type"] == "lock_in_approved" and event.get("binding") is True
                                 ]),
-                                "open_conditions": _bounded_events(_open_conditions(workflow)),
+                                "open_conditions": _condition_summary(workflow),
                                 "next_authorized_action": authorization["message"],
                             }
+                            if phase == "CLOSED":
+                                reconciliation_reasons = []
+                                reconciliation_event_ids: list[str] = []
+                                if selected["workflow"]["unverified_prompt"] is not None:
+                                    reconciliation_reasons.append("prompt_event_time_revision_unverified")
+                                    reconciliation_event_ids.extend(
+                                        event["event_id"] for event in events
+                                        if event["event_type"] == "prompt_approved"
+                                    )
+                                if snapshot["unverified_guidance"]:
+                                    reconciliation_reasons.append("guidance_event_time_binding_unverified")
+                                if any(event["event_type"] == "closeout_submitted" for event in events):
+                                    if selected["workflow"]["accepted_closeout"] is None:
+                                        reconciliation_reasons.append("closeout_event_time_revision_unverified")
+                                        reconciliation_event_ids.extend(
+                                            event["event_id"] for event in events
+                                            if event["event_type"] == "closeout_submitted"
+                                        )
+                                if workflow_data["open_conditions"]["reconciliation_status"] == (
+                                    "needs_product_owner_review"
+                                ):
+                                    reconciliation_reasons.append("historical_open_conditions")
+                                    reconciliation_event_ids.extend(
+                                        event["event_id"] for event in workflow_data["open_conditions"]["events"]
+                                    )
+                                reconciliation_event_ids = sorted(set(reconciliation_event_ids))
+                                workflow_data["evidence_reconciliation"] = {
+                                    "status": (
+                                        "needs_product_owner_review"
+                                        if reconciliation_reasons
+                                        else "not_required"
+                                    ),
+                                    "reasons": reconciliation_reasons,
+                                    "source_milestone_id": identity.milestone_id,
+                                    "evidence_event_ids": reconciliation_event_ids,
+                                    "source_dispatch_ids": [
+                                        item["dispatch_id"] for item in snapshot["unverified_guidance"]
+                                    ],
+                                    "disposition_origin": (
+                                        "no_reconciliation_recorded"
+                                        if reconciliation_reasons
+                                        else "workflow_ledger_projection"
+                                    ),
+                                    "authorizes_implementation": False,
+                                    "message": (
+                                        "Historical evidence may be reconciled separately; this does not change "
+                                        "the recorded CLOSED phase or authorize implementation."
+                                    ),
+                                }
+                            else:
+                                workflow_data["evidence_reconciliation"] = {
+                                    "status": "not_applicable",
+                                    "reasons": [],
+                                    "source_milestone_id": identity.milestone_id,
+                                    "evidence_event_ids": [],
+                                    "source_dispatch_ids": [],
+                                    "disposition_origin": "workflow_ledger_projection",
+                                    "authorizes_implementation": False,
+                                }
                             if resource == "workflow":
                                 data = workflow_data
                             else:
@@ -1660,40 +1747,72 @@ def create_web_app(
                                         "source_type": "milestone_closeout",
                                     }
                                 else:
-                                    closeout_page = information_store_clients.read_selected_milestone_document_page(
-                                        closeout_path
-                                    )
-                                    closeout_data = {
-                                        "status": "present",
-                                        "path": closeout_path,
-                                        "size_bytes": closeout_page["file_size_bytes"],
-                                        "required_in_review": True,
-                                        "lifecycle_phase": phase,
-                                        "source_type": "milestone_closeout",
-                                        "document_id": closeout_page["document_id"],
-                                        "revision_id": closeout_page["revision_id"],
-                                        "revision_status": closeout_page["revision_status"],
-                                        "content_sha256": closeout_page["sha256"],
-                                        "content": None,
-                                    }
-                                    if closeout_page["file_size_bytes"] <= MAX_SOURCE_BYTES:
-                                        revision = information_store_clients.get_revision(
-                                            closeout_page["document_id"], closeout_page["revision_id"]
+                                    try:
+                                        closeout_page = information_store_clients.read_selected_milestone_document_page(
+                                            closeout_path
                                         )
-                                        closeout_data["content"] = {
+                                    except ArchitectContractError as exc:
+                                        if exc.code != "unverified_closeout_revision":
+                                            raise
+                                        submitted_event = next(
+                                            (
+                                                event for event in reversed(events)
+                                                if event["event_type"] == "closeout_submitted"
+                                            ),
+                                            None,
+                                        )
+                                        closeout_data = {
+                                            "status": "unverified",
+                                            "path": closeout_path,
+                                            "size_bytes": None,
+                                            "required_in_review": phase == "REVIEW",
+                                            "lifecycle_phase": phase,
                                             "source_type": "milestone_closeout",
-                                            "source_path": closeout_path,
-                                            "size_bytes": closeout_page["file_size_bytes"],
-                                            "truncated": False,
-                                            "content": revision["content"],
+                                            "revision_status": "event_time_unverified",
+                                            "error_code": exc.code,
+                                            "submission_event_id": (
+                                                submitted_event["event_id"] if submitted_event else None
+                                            ),
+                                            "content": None,
+                                            "next_action": (
+                                                "For a CLOSED milestone, use repo_history_search with "
+                                                "include_selected_closed=true, then read an exact returned "
+                                                "document_id/revision_id. No archival revision is the submitted "
+                                                "closeout without event-time binding evidence."
+                                            ),
                                         }
                                     else:
-                                        closeout_data["content_paging"] = {
-                                            "endpoint": "/api/architect/v1/milestone-document",
-                                            "start_byte": 0,
-                                            "page_limit_bytes": closeout_page["page_limit_bytes"],
-                                            "required_source_fingerprint": "returned by the first page",
+                                        closeout_data = {
+                                            "status": "present",
+                                            "path": closeout_path,
+                                            "size_bytes": closeout_page["file_size_bytes"],
+                                            "required_in_review": True,
+                                            "lifecycle_phase": phase,
+                                            "source_type": "milestone_closeout",
+                                            "document_id": closeout_page["document_id"],
+                                            "revision_id": closeout_page["revision_id"],
+                                            "revision_status": closeout_page["revision_status"],
+                                            "content_sha256": closeout_page["sha256"],
+                                            "content": None,
                                         }
+                                        if closeout_page["file_size_bytes"] <= MAX_SOURCE_BYTES:
+                                            revision = information_store_clients.get_revision(
+                                                closeout_page["document_id"], closeout_page["revision_id"]
+                                            )
+                                            closeout_data["content"] = {
+                                                "source_type": "milestone_closeout",
+                                                "source_path": closeout_path,
+                                                "size_bytes": closeout_page["file_size_bytes"],
+                                                "truncated": False,
+                                                "content": revision["content"],
+                                            }
+                                        else:
+                                            closeout_data["content_paging"] = {
+                                                "endpoint": "/api/architect/v1/milestone-document",
+                                                "start_byte": 0,
+                                                "page_limit_bytes": closeout_page["page_limit_bytes"],
+                                                "required_source_fingerprint": "returned by the first page",
+                                            }
                                 latest_lock_in = next(
                                     (event for event in reversed(events)
                                      if event["event_type"] == "lock_in_approved" and event.get("binding") is True),
@@ -1723,6 +1842,7 @@ def create_web_app(
                                     "event_count": len(events),
                                     "latest_binding_lock_in": _event_view(latest_lock_in) if latest_lock_in else None,
                                     "open_conditions": workflow_data["open_conditions"],
+                                    "evidence_reconciliation": workflow_data["evidence_reconciliation"],
                                     "lifecycle_phase": phase,
                                     "next_authorized_action": authorization["message"],
                                     "lifecycle_source": source,

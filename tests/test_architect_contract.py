@@ -86,6 +86,12 @@ def _select(repository: Path, state_root: Path) -> dict:
 
 def _record(repository: Path, state_root: Path, event_type: str, summary: str, **kwargs) -> dict:
     selection = _select(repository, state_root)
+    if event_type == "prompt_approved":
+        kwargs.setdefault("approval_repository_key", repository.name)
+        kwargs.setdefault(
+            "expected_prompt_sha256",
+            hashlib.sha256((repository / PROMPT_PATH).read_bytes()).hexdigest(),
+        )
     return record_milestone_event(
         repository,
         state_root,

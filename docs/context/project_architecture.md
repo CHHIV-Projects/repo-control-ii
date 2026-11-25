@@ -1021,7 +1021,12 @@ prompt/workflow/closeout artifacts under each managed repository's configured
 milestone root and supported text files under the fixed `docs/history/`
 convention. No additional registry root field is introduced; the configured
 milestone root plus this repository-relative archive convention is the
-historical-root policy. The selected milestone's artifacts are excluded from historical results.
+historical-root policy. The selected milestone's artifacts are excluded from
+historical results by default. Both history tools accept the explicit
+`include_selected_closed=true` option to inspect selected-milestone archival
+revisions, and only when that milestone is CLOSED; these results remain
+historical evidence, not current authority or proof of an event-time
+submission.
 Discovery remains bounded at 2,000 candidate files, 2,000 directories, and
 50,000 directory entries. If discovery reaches one of those bounds, the API
 returns `historical_discovery_incomplete` (503) rather than presenting a
@@ -1052,8 +1057,16 @@ The service's in-memory signing key means outstanding cursors are invalidated
 by a service restart. Each page rediscovers the bounded candidate set and
 scans from its continuation offset. Oversized, invalid-encoding, or
 unsafe-content documents cause an explicit error rather than a false
-complete no-match. One selected result can be read with the same no-follow
-file protections and UTF-8/truncation bounds as current-document reads.
+complete no-match. Search results carry stable `document_id` and `revision_id`
+selectors with provider/source provenance. `repo_history_document` accepts
+that exact pair alongside the advertised path, so worktree and immutable
+SQLite versions can be selected independently. A path-only read remains
+supported when it identifies exactly one revision; ambiguous paths return
+`ambiguous_historical_revision` rather than choosing a provider or latest
+version. Exact selected-CLOSED reads must repeat
+`include_selected_closed=true`. One selected result can be read with the same
+no-follow file protections and UTF-8/truncation bounds as current-document
+reads.
 Results and retrieved content identify themselves as `historical_evidence`,
 sourced from the current working tree, and explicitly not current authority.
 Current PO decisions and approved dispatches, lifecycle and active prompt,
